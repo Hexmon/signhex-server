@@ -1,0 +1,542 @@
+import {
+  pgTable,
+  pgEnum,
+  uuid,
+  text,
+  varchar,
+  timestamp,
+  boolean,
+  integer,
+  jsonb,
+  uniqueIndex,
+  index,
+  foreignKey,
+} from 'drizzle-orm/pg-core';
+
+// Enums
+export const roleEnum = pgEnum('role', ['ADMIN', 'OPERATOR', 'DEPARTMENT']);
+export const requestStatusEnum = pgEnum('request_status', [
+  'OPEN',
+  'IN_PROGRESS',
+  'PENDING_APPROVAL',
+  'APPROVED',
+  'REJECTED',
+  'COMPLETED',
+]);
+export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
+export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
+export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
+export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN']);
+export const commandStatusEnum = pgEnum('command_status', ['PENDING', 'SENT', 'ACKNOWLEDGED', 'COMPLETED', 'FAILED']);
+
+// Users table
+export const users = pgTable(
+  'users',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    email: varchar('email', { length: 255 }).notNull().unique(),
+    password_hash: text('password_hash').notNull(),
+    first_name: varchar('first_name', { length: 100 }),
+    last_name: varchar('last_name', { length: 100 }),
+    role: roleEnum('role').notNull().default('OPERATOR'),
+    department_id: uuid('department_id'),
+    is_active: boolean('is_active').notNull().default(true),
+    ext: jsonb('ext'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    emailIdx: uniqueIndex('users_email_idx').on(table.email),
+  })
+);
+
+// Departments table
+export const departments = pgTable('departments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: varchar('name', { length: 255 }).notNull(),
+  description: text('description'),
+  created_at: timestamp('created_at').notNull().defaultNow(),
+  updated_at: timestamp('updated_at').notNull().defaultNow(),
+});
+
+// Sessions table (for JWT JTI revocation)
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    user_id: uuid('user_id').notNull(),
+    access_jti: varchar('access_jti', { length: 255 }).notNull(),
+    expires_at: timestamp('expires_at').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: index('sessions_user_id_idx').on(table.user_id),
+    jtiIdx: uniqueIndex('sessions_access_jti_idx').on(table.access_jti),
+  })
+);
+
+// Storage objects (MinIO references)
+export const storageObjects = pgTable(
+  'storage_objects',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    bucket: varchar('bucket', { length: 255 }).notNull(),
+    object_key: varchar('object_key', { length: 1024 }).notNull(),
+    content_type: varchar('content_type', { length: 100 }),
+    size: integer('size'),
+    sha256: varchar('sha256', { length: 64 }),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    bucketKeyIdx: uniqueIndex('storage_objects_bucket_key_idx').on(table.bucket, table.object_key),
+  })
+);
+
+// Media table
+export const media = pgTable(
+  'media',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    type: mediaTypeEnum('type').notNull(),
+    status: mediaStatusEnum('status').notNull().default('PENDING'),
+    source_object_id: uuid('source_object_id'),
+    ready_object_id: uuid('ready_object_id'),
+    thumbnail_object_id: uuid('thumbnail_object_id'),
+    duration_seconds: integer('duration_seconds'),
+    width: integer('width'),
+    height: integer('height'),
+    created_by: uuid('created_by').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    createdByIdx: index('media_created_by_idx').on(table.created_by),
+    statusIdx: index('media_status_idx').on(table.status),
+  })
+);
+
+// Presentations table
+export const presentations = pgTable(
+  'presentations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    description: text('description'),
+    created_by: uuid('created_by').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    createdByIdx: index('presentations_created_by_idx').on(table.created_by),
+  })
+);
+
+// Presentation items table
+export const presentationItems = pgTable(
+  'presentation_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    presentation_id: uuid('presentation_id').notNull(),
+    media_id: uuid('media_id').notNull(),
+    order: integer('order').notNull(),
+    duration_seconds: integer('duration_seconds'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    presentationIdIdx: index('presentation_items_presentation_id_idx').on(table.presentation_id),
+  })
+);
+
+// Schedules table
+export const schedules = pgTable(
+  'schedules',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    description: text('description'),
+    is_active: boolean('is_active').notNull().default(true),
+    created_by: uuid('created_by').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    createdByIdx: index('schedules_created_by_idx').on(table.created_by),
+    isActiveIdx: index('schedules_is_active_idx').on(table.is_active),
+  })
+);
+
+// Schedule items table
+export const scheduleItems = pgTable(
+  'schedule_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    schedule_id: uuid('schedule_id').notNull(),
+    presentation_id: uuid('presentation_id').notNull(),
+    start_at: timestamp('start_at').notNull(),
+    end_at: timestamp('end_at').notNull(),
+    priority: integer('priority').notNull().default(0),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    scheduleIdIdx: index('schedule_items_schedule_id_idx').on(table.schedule_id),
+    startAtIdx: index('schedule_items_start_at_idx').on(table.start_at),
+  })
+);
+
+// Schedule snapshots (immutable published versions)
+export const scheduleSnapshots = pgTable(
+  'schedule_snapshots',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    schedule_id: uuid('schedule_id').notNull(),
+    payload: jsonb('payload').notNull(),
+    storage_object_id: uuid('storage_object_id'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    scheduleIdIdx: index('schedule_snapshots_schedule_id_idx').on(table.schedule_id),
+  })
+);
+
+// Publishes (schedule publication events)
+export const publishes = pgTable(
+  'publishes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    schedule_id: uuid('schedule_id').notNull(),
+    snapshot_id: uuid('snapshot_id').notNull(),
+    published_by: uuid('published_by').notNull(),
+    published_at: timestamp('published_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    scheduleIdIdx: index('publishes_schedule_id_idx').on(table.schedule_id),
+  })
+);
+
+// Screens table
+export const screens = pgTable(
+  'screens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    location: varchar('location', { length: 255 }),
+    status: screenStatusEnum('status').notNull().default('OFFLINE'),
+    last_heartbeat_at: timestamp('last_heartbeat_at'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    statusIdx: index('screens_status_idx').on(table.status),
+  })
+);
+
+// Screen groups table
+export const screenGroups = pgTable(
+  'screen_groups',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    description: text('description'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  }
+);
+
+// Screen group members table
+export const screenGroupMembers = pgTable(
+  'screen_group_members',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    group_id: uuid('group_id').notNull(),
+    screen_id: uuid('screen_id').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    groupIdIdx: index('screen_group_members_group_id_idx').on(table.group_id),
+  })
+);
+
+// Device certificates (mTLS)
+export const deviceCertificates = pgTable(
+  'device_certificates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    screen_id: uuid('screen_id').notNull(),
+    serial: varchar('serial', { length: 255 }).notNull().unique(),
+    certificate_pem: text('certificate_pem').notNull(),
+    is_revoked: boolean('is_revoked').notNull().default(false),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    revoked_at: timestamp('revoked_at'),
+  },
+  (table) => ({
+    screenIdIdx: index('device_certificates_screen_id_idx').on(table.screen_id),
+    serialIdx: uniqueIndex('device_certificates_serial_idx').on(table.serial),
+  })
+);
+
+// Device commands
+export const deviceCommands = pgTable(
+  'device_commands',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    screen_id: uuid('screen_id').notNull(),
+    type: commandTypeEnum('type').notNull(),
+    status: commandStatusEnum('status').notNull().default('PENDING'),
+    payload: jsonb('payload'),
+    created_by: uuid('created_by').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    screenIdIdx: index('device_commands_screen_id_idx').on(table.screen_id),
+    statusIdx: index('device_commands_status_idx').on(table.status),
+  })
+);
+
+// Heartbeats (device telemetry)
+export const heartbeats = pgTable(
+  'heartbeats',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    screen_id: uuid('screen_id').notNull(),
+    storage_object_id: uuid('storage_object_id'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    screenIdIdx: index('heartbeats_screen_id_idx').on(table.screen_id),
+    createdAtIdx: index('heartbeats_created_at_idx').on(table.created_at),
+  })
+);
+
+// Proof of Play (PoP)
+export const proofOfPlay = pgTable(
+  'proof_of_play',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    screen_id: uuid('screen_id').notNull(),
+    media_id: uuid('media_id'),
+    presentation_id: uuid('presentation_id'),
+    started_at: timestamp('started_at').notNull(),
+    ended_at: timestamp('ended_at'),
+    storage_object_id: uuid('storage_object_id'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    screenIdIdx: index('proof_of_play_screen_id_idx').on(table.screen_id),
+    createdAtIdx: index('proof_of_play_created_at_idx').on(table.created_at),
+  })
+);
+
+// Screenshots
+export const screenshots = pgTable(
+  'screenshots',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    screen_id: uuid('screen_id').notNull(),
+    storage_object_id: uuid('storage_object_id').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    screenIdIdx: index('screenshots_screen_id_idx').on(table.screen_id),
+  })
+);
+
+// Requests (Kanban)
+export const requests = pgTable(
+  'requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    title: varchar('title', { length: 255 }).notNull(),
+    description: text('description'),
+    status: requestStatusEnum('status').notNull().default('OPEN'),
+    created_by: uuid('created_by').notNull(),
+    assigned_to: uuid('assigned_to'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    createdByIdx: index('requests_created_by_idx').on(table.created_by),
+    statusIdx: index('requests_status_idx').on(table.status),
+  })
+);
+
+// Request status history
+export const requestStatusHistory = pgTable(
+  'request_status_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    request_id: uuid('request_id').notNull(),
+    old_status: requestStatusEnum('old_status'),
+    new_status: requestStatusEnum('new_status').notNull(),
+    changed_by: uuid('changed_by').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    requestIdIdx: index('request_status_history_request_id_idx').on(table.request_id),
+  })
+);
+
+// Request messages (chat)
+export const requestMessages = pgTable(
+  'request_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    request_id: uuid('request_id').notNull(),
+    author_id: uuid('author_id').notNull(),
+    content: text('content').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    requestIdIdx: index('request_messages_request_id_idx').on(table.request_id),
+  })
+);
+
+// Request attachments
+export const requestAttachments = pgTable(
+  'request_attachments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    request_id: uuid('request_id').notNull(),
+    message_id: uuid('message_id'),
+    storage_object_id: uuid('storage_object_id').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    requestIdIdx: index('request_attachments_request_id_idx').on(table.request_id),
+  })
+);
+
+// Notifications
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    user_id: uuid('user_id').notNull(),
+    title: varchar('title', { length: 255 }).notNull(),
+    message: text('message'),
+    is_read: boolean('is_read').notNull().default(false),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: index('notifications_user_id_idx').on(table.user_id),
+    isReadIdx: index('notifications_is_read_idx').on(table.is_read),
+    createdAtIdx: index('notifications_created_at_idx').on(table.created_at),
+  })
+);
+
+// Audit logs
+export const auditLogs = pgTable(
+  'audit_logs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    user_id: uuid('user_id'),
+    action: varchar('action', { length: 100 }).notNull(),
+    entity_type: varchar('entity_type', { length: 100 }).notNull(),
+    entity_id: uuid('entity_id'),
+    ip_address: varchar('ip_address', { length: 45 }),
+    storage_object_id: uuid('storage_object_id'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: index('audit_logs_user_id_idx').on(table.user_id),
+    createdAtIdx: index('audit_logs_created_at_idx').on(table.created_at),
+  })
+);
+
+// System logs
+export const systemLogs = pgTable(
+  'system_logs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    level: varchar('level', { length: 20 }).notNull(),
+    message: text('message').notNull(),
+    context: jsonb('context'),
+    storage_object_id: uuid('storage_object_id'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    levelIdx: index('system_logs_level_idx').on(table.level),
+    createdAtIdx: index('system_logs_created_at_idx').on(table.created_at),
+  })
+);
+
+// Login attempts
+export const loginAttempts = pgTable(
+  'login_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    email: varchar('email', { length: 255 }).notNull(),
+    success: boolean('success').notNull(),
+    ip_address: varchar('ip_address', { length: 45 }),
+    storage_object_id: uuid('storage_object_id'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    emailIdx: index('login_attempts_email_idx').on(table.email),
+    createdAtIdx: index('login_attempts_created_at_idx').on(table.created_at),
+  })
+);
+
+// Log archives
+export const logArchives = pgTable(
+  'log_archives',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    log_type: varchar('log_type', { length: 50 }).notNull(),
+    window_start: timestamp('window_start').notNull(),
+    window_end: timestamp('window_end').notNull(),
+    record_count: integer('record_count').notNull(),
+    storage_object_id: uuid('storage_object_id').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    logTypeIdx: index('log_archives_log_type_idx').on(table.log_type),
+  })
+);
+
+// Emergency status
+export const emergencyStatus = pgTable('emergency_status', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  is_active: boolean('is_active').notNull().default(false),
+  triggered_by: uuid('triggered_by'),
+  triggered_at: timestamp('triggered_at'),
+  cleared_by: uuid('cleared_by'),
+  cleared_at: timestamp('cleared_at'),
+  updated_at: timestamp('updated_at').notNull().defaultNow(),
+});
+
+// Settings
+export const settings = pgTable('settings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  key: varchar('key', { length: 255 }).notNull().unique(),
+  value: jsonb('value'),
+  created_at: timestamp('created_at').notNull().defaultNow(),
+  updated_at: timestamp('updated_at').notNull().defaultNow(),
+});
+
+// Device pairings (for backward compatibility with repositories)
+export const devicePairings = pgTable('device_pairings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  device_id: uuid('device_id'),
+  pairing_code: varchar('pairing_code', { length: 255 }).notNull(),
+  used: boolean('used').notNull().default(false),
+  used_at: timestamp('used_at'),
+  expires_at: timestamp('expires_at').notNull(),
+  created_at: timestamp('created_at').notNull().defaultNow(),
+});
+
+// Emergencies (for backward compatibility with repositories)
+export const emergencies = pgTable('emergencies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  message: text('message').notNull(),
+  priority: varchar('priority', { length: 20 }).notNull().default('HIGH'),
+  is_active: boolean('is_active').notNull().default(true),
+  triggered_by: uuid('triggered_by'),
+  triggered_at: timestamp('triggered_at').notNull().defaultNow(),
+  cleared_by: uuid('cleared_by'),
+  cleared_at: timestamp('cleared_at'),
+  created_at: timestamp('created_at').notNull().defaultNow(),
+  updated_at: timestamp('updated_at').notNull().defaultNow(),
+});
+

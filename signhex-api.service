@@ -1,0 +1,19 @@
+[Unit]
+Description=Hexmon Signage API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=signhex
+WorkingDirectory=/opt/hexmon-api
+EnvironmentFile=/etc/hexmon/api.env
+ExecStart=/usr/bin/node /opt/hexmon-api/dist/index.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hexmon-api
+
+[Install]
+WantedBy=multi-user.target
+

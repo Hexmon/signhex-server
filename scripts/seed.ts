@@ -1,0 +1,81 @@
+import 'dotenv/config';
+import { loadConfig, getConfig } from '@/config';
+import { initializeDatabase, getDatabase, schema } from '@/db';
+import { hashPassword } from '@/auth/password';
+import { createLogger } from '@/utils/logger';
+
+const logger = createLogger('seed');
+
+async function seed() {
+  try {
+    logger.info('Loading configuration...');
+    loadConfig();
+    const config = getConfig();
+
+    logger.info('Initializing database...');
+    await initializeDatabase();
+    const db = getDatabase();
+
+    // Create admin user
+    logger.info('Creating admin user...');
+    const adminPasswordHash = await hashPassword(config.ADMIN_PASSWORD);
+
+    const existingAdmin = await db
+      .select()
+      .from(schema.users)
+      .where(schema.users.email === config.ADMIN_EMAIL);
+
+    if (existingAdmin.length === 0) {
+      await db.insert(schema.users).values({
+        email: config.ADMIN_EMAIL,
+        password_hash: adminPasswordHash,
+        first_name: 'Admin',
+        last_name: 'User',
+        role: 'ADMIN',
+        is_active: true,
+      });
+      logger.info(`Admin user created: ${config.ADMIN_EMAIL}`);
+    } else {
+      logger.info(`Admin user already exists: ${config.ADMIN_EMAIL}`);
+    }
+
+    // Create sample departments
+    logger.info('Creating sample departments...');
+    const departments = [
+      { name: 'Marketing', description: 'Marketing Department' },
+      { name: 'Sales', description: 'Sales Department' },
+      { name: 'Operations', description: 'Operations Department' },
+    ];
+
+    for (const dept of departments) {
+      const existing = await db
+        .select()
+        .from(schema.departments)
+        .where(schema.departments.name === dept.name);
+
+      if (existing.length === 0) {
+        await db.insert(schema.departments).values(dept);
+        logger.info(`Department created: ${dept.name}`);
+      }
+    }
+
+    // Create emergency status record
+    logger.info('Creating emergency status record...');
+    const existingEmergency = await db.select().from(schema.emergencyStatus);
+    if (existingEmergency.length === 0) {
+      await db.insert(schema.emergencyStatus).values({
+        is_active: false,
+      });
+      logger.info('Emergency status record created');
+    }
+
+    logger.info('Seed completed successfully');
+    process.exit(0);
+  } catch (error) {
+    logger.error(error, 'Seed failed');
+    process.exit(1);
+  }
+}
+
+seed();
+
