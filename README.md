@@ -29,7 +29,7 @@ A comprehensive, production-ready digital signage CMS backend built with Node.js
 ### 1. Clone and Install
 
 ```bash
-git clone <repository>
+git clone https://github.com/Hexmon/signhex-server
 cd server
 npm install
 ```

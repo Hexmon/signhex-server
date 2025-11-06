@@ -54,7 +54,7 @@ JWT_SECRET=<paste-your-generated-secret-here>
 
 **Optional: Change database name if needed:**
 ```bash
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/signhex
+DATABASE_URL=postgresql://postgres:root@localhost:5432/signhex
 ```
 
 ### Step 3: Start Services
@@ -319,33 +319,33 @@ For production deployment instructions, including:
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Hexmon Signage Backend                   │
-├─────────────────────────────────────────────────────────────┤
-│                                                               │
+┌────────────────────────────────────────────────────────────┐
+│                     Signhex Backend                        │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
 │  │   Fastify    │  │  PostgreSQL  │  │    MinIO     │      │
 │  │  Web Server  │──│   Database   │  │   Storage    │      │
 │  │  (Port 3000) │  │  (Port 5432) │  │  (Port 9000) │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
-│         │                  │                  │              │
-│         │                  │                  │              │
-│  ┌──────▼──────────────────▼──────────────────▼──────┐      │
-│  │                                                     │      │
-│  │              Application Layer                     │      │
-│  │                                                     │      │
-│  │  • JWT Authentication                              │      │
-│  │  • RBAC (Role-Based Access Control)               │      │
-│  │  • RESTful API Endpoints                           │      │
-│  │  • Background Jobs (pg-boss)                       │      │
-│  │  • Media Processing (FFmpeg)                       │      │
-│  │  • Audit Logging                                   │      │
-│  │  • WebSocket Support                               │      │
-│  │  • mTLS Device Authentication                      │      │
-│  │                                                     │      │
-│  └─────────────────────────────────────────────────────┘      │
-│                                                               │
-└─────────────────────────────────────────────────────────────┘
+│         │                  │                  │            │
+│         │                  │                  │            │
+│  ┌──────▼──────────────────▼──────────────────▼──────┐     │
+│  │                                                   │     │
+│  │              Application Layer                    │     │
+│  │                                                   │     │
+│  │  • JWT Authentication                             │     │
+│  │  • RBAC (Role-Based Access Control)               │     │
+│  │  • RESTful API Endpoints                          │     │
+│  │  • Background Jobs (pg-boss)                      │     │
+│  │  • Media Processing (FFmpeg)                      │     │
+│  │  • Audit Logging                                  │     │
+│  │  • WebSocket Support                              │     │
+│  │  • mTLS Device Authentication                     │     │
+│  │                                                   │     │
+│  └───────────────────────────────────────────────────┘     │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ---
