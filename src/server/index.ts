@@ -19,6 +19,15 @@ import { notificationRoutes } from '@/routes/notifications';
 import { presentationRoutes } from '@/routes/presentations';
 import { devicePairingRoutes } from '@/routes/device-pairing';
 import { deviceTelemetryRoutes } from '@/routes/device-telemetry';
+import { apiKeyRoutes } from '@/routes/api-keys';
+import { webhookRoutes } from '@/routes/webhooks';
+import { ssoConfigRoutes } from '@/routes/sso-config';
+import { settingsRoutes } from '@/routes/settings';
+import { conversationRoutes } from '@/routes/conversations';
+import { proofOfPlayRoutes } from '@/routes/proof-of-play';
+import { metricsRoutes } from '@/routes/metrics';
+import { reportsRoutes } from '@/routes/reports';
+import { userInviteRoutes } from '@/routes/users-invite';
 
 // const logger = createLogger('server');
 
@@ -106,7 +115,15 @@ export async function createServer() {
   await fastify.register(presentationRoutes);
   await fastify.register(devicePairingRoutes);
   await fastify.register(deviceTelemetryRoutes);
+  await fastify.register(apiKeyRoutes);
+  await fastify.register(webhookRoutes);
+  await fastify.register(ssoConfigRoutes);
+  await fastify.register(settingsRoutes);
+  await fastify.register(conversationRoutes);
+  await fastify.register(proofOfPlayRoutes);
+  await fastify.register(metricsRoutes);
+  await fastify.register(reportsRoutes);
+  await fastify.register(userInviteRoutes);
 
   return fastify;
 }
-

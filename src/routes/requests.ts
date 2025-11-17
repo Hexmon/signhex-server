@@ -5,6 +5,8 @@ import { createRequestMessageRepository } from '@/db/repositories/request-messag
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { createUserRepository } from '@/db/repositories/user';
+import { getDatabase, schema } from '@/db';
 
 const logger = createLogger('request-routes');
 
@@ -29,6 +31,8 @@ const createMessageSchema = z.object({
 export async function requestRoutes(fastify: FastifyInstance) {
   const reqRepo = createRequestRepository();
   const msgRepo = createRequestMessageRepository();
+  const userRepo = createUserRepository();
+  const db = getDatabase();
 
   // Create request
   fastify.post<{ Body: typeof createRequestSchema._type }>(
@@ -61,9 +65,10 @@ export async function requestRoutes(fastify: FastifyInstance) {
           title: req.title,
           description: req.description,
           status: req.status,
-          priority: null,
+          priority: req.priority,
           created_by: req.created_by,
           assigned_to: req.assigned_to,
+          attachments: [],
           created_at: req.created_at.toISOString(),
           updated_at: req.updated_at.toISOString(),
         });
@@ -106,9 +111,10 @@ export async function requestRoutes(fastify: FastifyInstance) {
             title: r.title,
             description: r.description,
             status: r.status,
-            priority: null,
+            priority: r.priority,
             created_by: r.created_by,
             assigned_to: r.assigned_to,
+            attachments: [],
             created_at: r.created_at.toISOString(),
             updated_at: r.updated_at.toISOString(),
           })),
@@ -149,14 +155,20 @@ export async function requestRoutes(fastify: FastifyInstance) {
           return reply.status(404).send({ error: 'Request not found' });
         }
 
+        const attachments = await db
+          .select()
+          .from(schema.requestAttachments)
+          .where((schema.requestAttachments.request_id as any).eq(req.id));
+
         return reply.send({
           id: req.id,
           title: req.title,
           description: req.description,
           status: req.status,
-          priority: null,
+          priority: req.priority,
           created_by: req.created_by,
           assigned_to: req.assigned_to,
+          attachments: attachments.map((a) => a.storage_object_id),
           created_at: req.created_at.toISOString(),
           updated_at: req.updated_at.toISOString(),
         });
@@ -198,9 +210,10 @@ export async function requestRoutes(fastify: FastifyInstance) {
           title: req.title,
           description: req.description,
           status: req.status,
-          priority: null,
+          priority: req.priority,
           created_by: req.created_by,
           assigned_to: req.assigned_to,
+          attachments: [],
           created_at: req.created_at.toISOString(),
           updated_at: req.updated_at.toISOString(),
         });
@@ -238,12 +251,22 @@ export async function requestRoutes(fastify: FastifyInstance) {
           attachments: data.attachments,
         });
 
+        const author = await userRepo.findById(payload.sub);
+
         return reply.status(201).send({
           id: message.id,
           request_id: message.request_id,
           user_id: message.author_id,
+          author: author
+            ? {
+                id: author.id,
+                email: author.email,
+                first_name: author.first_name,
+                last_name: author.last_name,
+              }
+            : null,
           message: message.content,
-          attachments: null,
+          attachments: data.attachments || [],
           created_at: message.created_at.toISOString(),
           updated_at: null,
         });
@@ -278,13 +301,26 @@ export async function requestRoutes(fastify: FastifyInstance) {
 
         const result = await msgRepo.listByRequest((request.params as any).id, { page, limit });
 
+        // Fetch authors for messages
+        const authorIds = Array.from(new Set(result.items.map((m) => m.author_id)));
+        const authors = await db.select().from(schema.users).where((schema.users.id as any).in(authorIds));
+        const authorMap = new Map(authors.map((a) => [a.id, a]));
+
         return reply.send({
           items: result.items.map((m) => ({
             id: m.id,
             request_id: m.request_id,
             user_id: m.author_id,
+            author: authorMap.get(m.author_id)
+              ? {
+                  id: authorMap.get(m.author_id)!.id,
+                  email: authorMap.get(m.author_id)!.email,
+                  first_name: authorMap.get(m.author_id)!.first_name,
+                  last_name: authorMap.get(m.author_id)!.last_name,
+                }
+              : null,
             message: m.content,
-            attachments: null,
+            attachments: (m as any).attachments || [],
             created_at: m.created_at.toISOString(),
             updated_at: null,
           })),
@@ -301,4 +337,3 @@ export async function requestRoutes(fastify: FastifyInstance) {
     }
   );
 }
-

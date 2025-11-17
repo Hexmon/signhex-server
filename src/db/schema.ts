@@ -10,7 +10,6 @@ import {
   jsonb,
   uniqueIndex,
   index,
-  foreignKey,
 } from 'drizzle-orm/pg-core';
 
 // Enums
@@ -101,6 +100,10 @@ export const media = pgTable(
     type: mediaTypeEnum('type').notNull(),
     status: mediaStatusEnum('status').notNull().default('PENDING'),
     source_object_id: uuid('source_object_id'),
+    source_bucket: varchar('source_bucket', { length: 255 }),
+    source_object_key: varchar('source_object_key', { length: 1024 }),
+    source_content_type: varchar('source_content_type', { length: 255 }),
+    source_size: integer('source_size'),
     ready_object_id: uuid('ready_object_id'),
     thumbnail_object_id: uuid('thumbnail_object_id'),
     duration_seconds: integer('duration_seconds'),
@@ -155,6 +158,8 @@ export const schedules = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
     description: text('description'),
+    start_at: timestamp('start_at').notNull(),
+    end_at: timestamp('end_at').notNull(),
     is_active: boolean('is_active').notNull().default(true),
     created_by: uuid('created_by').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
@@ -163,6 +168,8 @@ export const schedules = pgTable(
   (table) => ({
     createdByIdx: index('schedules_created_by_idx').on(table.created_by),
     isActiveIdx: index('schedules_is_active_idx').on(table.is_active),
+    startAtIdx: index('schedules_start_at_idx').on(table.start_at),
+    endAtIdx: index('schedules_end_at_idx').on(table.end_at),
   })
 );
 
@@ -350,6 +357,7 @@ export const requests = pgTable(
     title: varchar('title', { length: 255 }).notNull(),
     description: text('description'),
     status: requestStatusEnum('status').notNull().default('OPEN'),
+    priority: varchar('priority', { length: 20 }).default('MEDIUM'),
     created_by: uuid('created_by').notNull(),
     assigned_to: uuid('assigned_to'),
     created_at: timestamp('created_at').notNull().defaultNow(),
@@ -515,6 +523,144 @@ export const settings = pgTable('settings', {
   updated_at: timestamp('updated_at').notNull().defaultNow(),
 });
 
+// API Keys
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    scopes: text('scopes').array(),
+    roles: text('roles').array(),
+    token_prefix: varchar('token_prefix', { length: 12 }).notNull(),
+    secret_hash: varchar('secret_hash', { length: 255 }).notNull(),
+    created_by: uuid('created_by').notNull(),
+    expires_at: timestamp('expires_at'),
+    is_revoked: boolean('is_revoked').notNull().default(false),
+    last_used_at: timestamp('last_used_at'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    prefixIdx: uniqueIndex('api_keys_token_prefix_idx').on(table.token_prefix),
+    createdByIdx: index('api_keys_created_by_idx').on(table.created_by),
+    expiresAtIdx: index('api_keys_expires_at_idx').on(table.expires_at),
+  })
+);
+
+// Webhook subscriptions
+export const webhookSubscriptions = pgTable(
+  'webhook_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).array().notNull(),
+    event_types: text('event_types').notNull(),
+    target_url: varchar('target_url', { length: 2048 }).notNull(),
+    secret: varchar('secret', { length: 255 }).notNull(),
+    headers: jsonb('headers'),
+    is_active: boolean('is_active').notNull().default(true),
+    last_status: varchar('last_status', { length: 50 }),
+    last_status_at: timestamp('last_status_at'),
+    created_by: uuid('created_by').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    createdByIdx: index('webhook_subscriptions_created_by_idx').on(table.created_by),
+    activeIdx: index('webhook_subscriptions_is_active_idx').on(table.is_active),
+  })
+);
+
+// SSO configuration (single active record)
+export const ssoConfigs = pgTable(
+  'sso_configs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: varchar('provider', { length: 50 }).notNull().default('oidc'),
+    issuer: varchar('issuer', { length: 255 }).notNull(),
+    client_id: varchar('client_id', { length: 255 }).notNull(),
+    client_secret: varchar('client_secret', { length: 255 }).notNull(),
+    authorization_url: varchar('authorization_url', { length: 512 }),
+    token_url: varchar('token_url', { length: 512 }),
+    jwks_url: varchar('jwks_url', { length: 512 }),
+    redirect_uri: varchar('redirect_uri', { length: 512 }),
+    scopes: text('scopes').array(),
+    is_active: boolean('is_active').notNull().default(false),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    activeIdx: index('sso_configs_is_active_idx').on(table.is_active),
+  })
+);
+
+// Conversations (1:1 threads)
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    participant_a: uuid('participant_a').notNull(),
+    participant_b: uuid('participant_b').notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    participantsIdx: uniqueIndex('conversations_participants_idx').on(table.participant_a, table.participant_b),
+  })
+);
+
+export const conversationMessages = pgTable(
+  'conversation_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    author_id: uuid('author_id').notNull(),
+    content: text('content').notNull(),
+    attachments: jsonb('attachments'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationIdx: index('conversation_messages_conversation_idx').on(table.conversation_id),
+    authorIdx: index('conversation_messages_author_idx').on(table.author_id),
+  })
+);
+
+export const conversationReads = pgTable(
+  'conversation_reads',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    last_read_at: timestamp('last_read_at'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationUserIdx: uniqueIndex('conversation_reads_conversation_user_idx').on(
+      table.conversation_id,
+      table.user_id
+    ),
+  })
+);
+
+// Publish targets for schedule publishes
+export const publishTargets = pgTable(
+  'publish_targets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    publish_id: uuid('publish_id').notNull(),
+    screen_id: uuid('screen_id'),
+    screen_group_id: uuid('screen_group_id'),
+    status: varchar('status', { length: 50 }).notNull().default('PENDING'),
+    error: text('error'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    publishIdx: index('publish_targets_publish_id_idx').on(table.publish_id),
+    screenIdx: index('publish_targets_screen_id_idx').on(table.screen_id),
+  })
+);
+
 // Device pairings (for backward compatibility with repositories)
 export const devicePairings = pgTable('device_pairings', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -539,4 +685,3 @@ export const emergencies = pgTable('emergencies', {
   created_at: timestamp('created_at').notNull().defaultNow(),
   updated_at: timestamp('updated_at').notNull().defaultNow(),
 });
-

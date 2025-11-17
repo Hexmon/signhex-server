@@ -234,7 +234,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         }
 
         await userRepo.delete((request.params as any).id);
-        return reply.status(204).send();
+        return reply.status(204).send({message: "User Deleted Successfully"});
       } catch (error) {
         logger.error(error, 'Delete user error');
         return reply.status(400).send({ error: 'Invalid request' });

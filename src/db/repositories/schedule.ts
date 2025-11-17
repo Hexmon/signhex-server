@@ -5,6 +5,8 @@ export class ScheduleRepository {
   async create(data: {
     name: string;
     description?: string;
+    start_at: Date;
+    end_at: Date;
     created_by: string;
   }) {
     const db = getDatabase();
@@ -75,4 +77,3 @@ export class ScheduleRepository {
 export function createScheduleRepository(): ScheduleRepository {
   return new ScheduleRepository();
 }
-

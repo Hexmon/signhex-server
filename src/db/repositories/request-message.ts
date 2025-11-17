@@ -9,12 +9,28 @@ export class RequestMessageRepository {
     attachments?: string[];
   }) {
     const db = getDatabase();
-    const result = await db.insert(schema.requestMessages).values({
-      request_id: data.request_id,
-      author_id: data.user_id,
-      content: data.message,
-    }).returning();
-    return result[0];
+    const result = await db
+      .insert(schema.requestMessages)
+      .values({
+        request_id: data.request_id,
+        author_id: data.user_id,
+        content: data.message,
+      })
+      .returning();
+
+    const message = result[0];
+
+    if (data.attachments && data.attachments.length > 0) {
+      await db.insert(schema.requestAttachments).values(
+        data.attachments.map((storageId) => ({
+          request_id: data.request_id,
+          message_id: message.id,
+          storage_object_id: storageId,
+        }))
+      );
+    }
+
+    return message;
   }
 
   async findById(id: string) {
@@ -48,8 +64,27 @@ export class RequestMessageRepository {
       .limit(limit)
       .offset(offset);
 
+    // Attach attachments for each message
+    const messageIds = items.map((i) => i.id);
+    const attachments = messageIds.length
+      ? await db
+          .select()
+          .from(schema.requestAttachments)
+          .where(eq(schema.requestAttachments.request_id, requestId) as any)
+      : [];
+
+    const attachmentMap = new Map<string, string[]>();
+    for (const att of attachments) {
+      const arr = attachmentMap.get(att.message_id || '') || [];
+      arr.push(att.storage_object_id);
+      attachmentMap.set(att.message_id || '', arr);
+    }
+
     return {
-      items,
+      items: items.map((i) => ({
+        ...i,
+        attachments: attachmentMap.get(i.id) || [],
+      })),
       total: total.length,
       page,
       limit,
@@ -75,4 +110,3 @@ export class RequestMessageRepository {
 export function createRequestMessageRepository(): RequestMessageRepository {
   return new RequestMessageRepository();
 }
-

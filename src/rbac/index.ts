@@ -16,6 +16,13 @@ export type Subject =
   | 'AuditLog'
   | 'DevicePairing'
   | 'Emergency'
+  | 'ApiKey'
+  | 'Webhook'
+  | 'SsoConfig'
+  | 'OrgSettings'
+  | 'Conversation'
+  | 'ProofOfPlay'
+  | 'Dashboard'
   | 'all';
 
 // Define the fields that can be used in conditions for each subject
@@ -45,6 +52,9 @@ export function defineAbilityFor(role: Role, userId: string, departmentId?: stri
     can('create', 'Presentation');
     can('update', 'Presentation');
     can('read', 'AuditLog');
+    can('read', 'Dashboard');
+    can('read', 'ProofOfPlay');
+    can('read', 'Conversation');
   } else if (role === 'DEPARTMENT') {
     // Department users can only manage their own department's resources
     can('read', 'User', { department_id: departmentId } as any);
@@ -53,6 +63,7 @@ export function defineAbilityFor(role: Role, userId: string, departmentId?: stri
     can('update', 'Request', { created_by: userId } as any);
     can('read', 'Notification', { user_id: userId } as any);
     can('update', 'Notification', { user_id: userId } as any);
+    can('read', 'Conversation');
   }
 
   return build();
@@ -61,4 +72,3 @@ export function defineAbilityFor(role: Role, userId: string, departmentId?: stri
 export function checkAbility(ability: AppAbility, action: Action, subject: Subject): boolean {
   return ability.can(action, subject);
 }
-
