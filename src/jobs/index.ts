@@ -1,5 +1,5 @@
 import PgBoss from 'pg-boss';
-import { getConfig } from '@/config';
+import { config as appConfig } from '@/config';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('jobs');
@@ -11,11 +11,9 @@ export async function initializeJobs(): Promise<PgBoss> {
     return boss;
   }
 
-  const config = getConfig();
-
   boss = new PgBoss({
-    connectionString: config.DATABASE_URL,
-    schema: 'pgboss',
+    connectionString: appConfig.DATABASE_URL,
+    schema: appConfig.PG_BOSS_SCHEMA,
     archiveCompletedAfterSeconds: 60 * 60 * 24 * 7, // 7 days
     deleteAfterDays: 30, // 30 days
   });
@@ -160,38 +158,64 @@ export async function registerJobHandlers() {
 }
 
 // Scheduled jobs
+// export async function scheduleRecurringJobs() {
+//   const jobs = getJobs();
+
+//   try {
+//     // pg-boss requires queues to exist in the database before scheduling
+//     // We need to create the queues first by sending a job to each queue
+//     // This will create the queue entry in pgboss.queue table
+
+//     // Create cleanup queue by sending a job (will be processed immediately or soon)
+//     const cleanupJobId = await jobs.send('cleanup', { type: 'expired_sessions' });
+//     logger.info(`Created cleanup queue with initial job: ${cleanupJobId}`);
+
+//     // Create archive queue by sending a job
+//     const archiveJobId = await jobs.send('archive', { type: 'logs', startDate: '', endDate: '' });
+//     logger.info(`Created archive queue with initial job: ${archiveJobId}`);
+
+//     // Wait a bit for pg-boss to process and create queue entries
+//     await new Promise(resolve => setTimeout(resolve, 1000));
+
+//     // Now schedule recurring jobs (queues should exist now)
+//     // Daily cleanup at 2 AM
+//     await jobs.unschedule('cleanup').catch(() => {}); // Remove any existing schedule
+//     await jobs.schedule('cleanup', '0 2 * * *', { type: 'expired_sessions' });
+
+//     // Weekly archive at 3 AM on Sunday
+//     await jobs.unschedule('archive').catch(() => {}); // Remove any existing schedule
+//     await jobs.schedule('archive', '0 3 * * 0', { type: 'logs', startDate: '', endDate: '' });
+
+//     logger.info('Recurring jobs scheduled successfully');
+//   } catch (error) {
+//     logger.error(error, 'Failed to schedule recurring jobs');
+//     // Don't throw - allow server to start even if scheduling fails
+//     logger.warn('Server will continue without scheduled jobs');
+//   }
+// }
 export async function scheduleRecurringJobs() {
   const jobs = getJobs();
 
   try {
-    // pg-boss requires queues to exist in the database before scheduling
-    // We need to create the queues first by sending a job to each queue
-    // This will create the queue entry in pgboss.queue table
+    // Ensure queues exist BEFORE scheduling
+    await jobs.createQueue('cleanup').catch(() => { }); // ignore "already exists"
+    await jobs.createQueue('archive').catch(() => { });
 
-    // Create cleanup queue by sending a job (will be processed immediately or soon)
-    const cleanupJobId = await jobs.send('cleanup', { type: 'expired_sessions' });
-    logger.info(`Created cleanup queue with initial job: ${cleanupJobId}`);
+    // (Optional) also ensure worker queues exist if you schedule them too later on:
+    // await jobs.createQueue('ffmpeg:transcode').catch(() => {});
+    // await jobs.createQueue('ffmpeg:thumbnail').catch(() => {});
 
-    // Create archive queue by sending a job
-    const archiveJobId = await jobs.send('archive', { type: 'logs', startDate: '', endDate: '' });
-    logger.info(`Created archive queue with initial job: ${archiveJobId}`);
+    // Clean any prior schedules
+    await jobs.unschedule('cleanup').catch(() => { });
+    await jobs.unschedule('archive').catch(() => { });
 
-    // Wait a bit for pg-boss to process and create queue entries
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Now schedule recurring jobs (queues should exist now)
-    // Daily cleanup at 2 AM
-    await jobs.unschedule('cleanup').catch(() => {}); // Remove any existing schedule
-    await jobs.schedule('cleanup', '0 2 * * *', { type: 'expired_sessions' });
-
-    // Weekly archive at 3 AM on Sunday
-    await jobs.unschedule('archive').catch(() => {}); // Remove any existing schedule
-    await jobs.schedule('archive', '0 3 * * 0', { type: 'logs', startDate: '', endDate: '' });
+    // Now schedule safely (queues exist)
+    await jobs.schedule('cleanup', '0 2 * * *', { type: 'expired_sessions' });      // daily 2 AM
+    await jobs.schedule('archive', '0 3 * * 0', { type: 'logs', startDate: '', endDate: '' }); // Sun 3 AM
 
     logger.info('Recurring jobs scheduled successfully');
   } catch (error) {
     logger.error(error, 'Failed to schedule recurring jobs');
-    // Don't throw - allow server to start even if scheduling fails
     logger.warn('Server will continue without scheduled jobs');
   }
 }

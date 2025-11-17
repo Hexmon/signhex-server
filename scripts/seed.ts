@@ -1,42 +1,39 @@
 import 'dotenv/config';
-import { loadConfig, getConfig } from '@/config';
-import { initializeDatabase, getDatabase, schema } from '@/db';
-import { hashPassword } from '@/auth/password';
-import { createLogger } from '@/utils/logger';
+import { eq } from 'drizzle-orm';
+import { config as appConfig } from '../src/config/index.js';
+import { initializeDatabase, getDatabase, schema } from '../src/db/index.js';
+import { hashPassword } from '../src/auth/password.js';
+import { createLogger } from '../src/utils/logger.js';
 
 const logger = createLogger('seed');
 
 async function seed() {
   try {
-    logger.info('Loading configuration...');
-    loadConfig();
-    const config = getConfig();
-
     logger.info('Initializing database...');
     await initializeDatabase();
     const db = getDatabase();
 
     // Create admin user
     logger.info('Creating admin user...');
-    const adminPasswordHash = await hashPassword(config.ADMIN_PASSWORD);
+    const adminPasswordHash = await hashPassword(appConfig.ADMIN_PASSWORD);
 
     const existingAdmin = await db
       .select()
       .from(schema.users)
-      .where(schema.users.email === config.ADMIN_EMAIL);
+      .where(eq(schema.users.email, appConfig.ADMIN_EMAIL));
 
     if (existingAdmin.length === 0) {
       await db.insert(schema.users).values({
-        email: config.ADMIN_EMAIL,
+        email: appConfig.ADMIN_EMAIL,
         password_hash: adminPasswordHash,
         first_name: 'Admin',
         last_name: 'User',
         role: 'ADMIN',
         is_active: true,
       });
-      logger.info(`Admin user created: ${config.ADMIN_EMAIL}`);
+      logger.info(`Admin user created: ${appConfig.ADMIN_EMAIL}`);
     } else {
-      logger.info(`Admin user already exists: ${config.ADMIN_EMAIL}`);
+      logger.info(`Admin user already exists: ${appConfig.ADMIN_EMAIL}`);
     }
 
     // Create sample departments
@@ -51,11 +48,13 @@ async function seed() {
       const existing = await db
         .select()
         .from(schema.departments)
-        .where(schema.departments.name === dept.name);
+        .where(eq(schema.departments.name, dept.name));
 
       if (existing.length === 0) {
         await db.insert(schema.departments).values(dept);
         logger.info(`Department created: ${dept.name}`);
+      } else {
+        logger.info(`Department already exists: ${dept.name}`);
       }
     }
 
@@ -78,4 +77,3 @@ async function seed() {
 }
 
 seed();
-

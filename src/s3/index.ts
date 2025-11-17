@@ -9,19 +9,17 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createHash } from 'crypto';
-import { getConfig } from '@/config';
+import { config as appConfig } from '@/config';
 
 let s3Client: S3Client | null = null;
 
 export function initializeS3(): S3Client {
-  const config = getConfig();
-
   s3Client = new S3Client({
-    region: config.MINIO_REGION,
-    endpoint: `http${config.MINIO_USE_SSL ? 's' : ''}://${config.MINIO_ENDPOINT}:${config.MINIO_PORT}`,
+    region: appConfig.MINIO_REGION,
+    endpoint: `http${appConfig.MINIO_USE_SSL ? 's' : ''}://${appConfig.MINIO_ENDPOINT}:${appConfig.MINIO_PORT}`,
     credentials: {
-      accessKeyId: config.MINIO_ACCESS_KEY,
-      secretAccessKey: config.MINIO_SECRET_KEY,
+      accessKeyId: appConfig.MINIO_ACCESS_KEY,
+      secretAccessKey: appConfig.MINIO_SECRET_KEY,
     },
     forcePathStyle: true,
   });

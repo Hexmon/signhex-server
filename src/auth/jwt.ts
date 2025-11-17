@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify, type JWTPayload as JoseJWTPayload } from 'jose';
-import { getConfig } from '@/config';
+import { config as appConfig } from '@/config';
 import { randomUUID } from 'crypto';
 
 export interface JWTPayload extends JoseJWTPayload {
@@ -11,15 +11,16 @@ export interface JWTPayload extends JoseJWTPayload {
   exp: number;
 }
 
+const encoder = new TextEncoder();
+const secret = encoder.encode(appConfig.JWT_SECRET);
+
 export async function generateAccessToken(
   userId: string,
   email: string,
   role: string
 ): Promise<{ token: string; jti: string; expiresAt: Date }> {
-  const config = getConfig();
-  const secret = new TextEncoder().encode(config.JWT_SECRET);
   const jti = randomUUID();
-  const expiresAt = new Date(Date.now() + config.JWT_EXPIRY * 1000);
+  const expiresAt = new Date(Date.now() + appConfig.JWT_EXPIRY * 1000);
 
   const token = await new SignJWT({
     sub: userId,
@@ -36,8 +37,7 @@ export async function generateAccessToken(
 }
 
 export async function verifyAccessToken(token: string): Promise<JWTPayload> {
-  const config = getConfig();
-  const secret = new TextEncoder().encode(config.JWT_SECRET);
+  const secret = new TextEncoder().encode(appConfig.JWT_SECRET);
 
   try {
     const verified = await jwtVerify(token, secret);

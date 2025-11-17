@@ -1,16 +1,18 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
+import { config as appConfig } from '@/config';
 import * as schema from './schema.js';
 
 let db: ReturnType<typeof drizzle> | null = null;
+let pool: Pool | null = null;
 
 export async function initializeDatabase(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL;
+  const connectionString = appConfig.DATABASE_URL;
   if (!connectionString) {
     throw new Error('DATABASE_URL environment variable is not set');
   }
 
-  const pool = new Pool({
+  pool = new Pool({
     connectionString,
   });
 
@@ -26,3 +28,8 @@ export function getDatabase(): ReturnType<typeof drizzle> {
 
 export { schema };
 
+export async function closeDatabase() {
+  await pool?.end();
+  pool = null;
+  db = null;
+}

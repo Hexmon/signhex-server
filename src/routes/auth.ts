@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { loginSchema, meResponseSchema } from '@/schemas/auth';
+import { loginSchema } from '@/schemas/auth';
 import { createUserRepository } from '@/db/repositories/user';
 import { createSessionRepository } from '@/db/repositories/session';
 import { verifyPassword } from '@/auth/password';
@@ -35,7 +35,7 @@ export async function authRoutes(fastify: FastifyInstance) {
 
         const user = await userRepo.findByEmail(email);
         if (!user) {
-          return reply.status(401).send({ error: 'Invalid credentials' });
+          return reply.status(401).send({ error: 'Invalid credentials !! User dosnt exist' });
         }
 
         const passwordValid = await verifyPassword(password, user.password_hash);

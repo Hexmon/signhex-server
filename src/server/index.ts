@@ -4,8 +4,8 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
-import { getConfig } from '@/config';
-import { createLogger } from '@/utils/logger';
+import { config as appConfig } from '@/config';
+// import { createLogger } from '@/utils/logger';
 import { authRoutes } from '@/routes/auth';
 import { userRoutes } from '@/routes/users';
 import { mediaRoutes } from '@/routes/media';
@@ -20,14 +20,12 @@ import { presentationRoutes } from '@/routes/presentations';
 import { devicePairingRoutes } from '@/routes/device-pairing';
 import { deviceTelemetryRoutes } from '@/routes/device-telemetry';
 
-const logger = createLogger('server');
+// const logger = createLogger('server');
 
 export async function createServer() {
-  const config = getConfig();
-
   const fastify = Fastify({
     logger: {
-      level: config.LOG_LEVEL,
+      level: appConfig.LOG_LEVEL,
       transport: {
         target: 'pino-pretty',
         options: {
@@ -69,10 +67,19 @@ export async function createServer() {
         description: 'Production-ready digital signage CMS backend',
         version: '1.0.0',
       },
-      host: `localhost:${config.PORT}`,
+      host: `localhost:${appConfig.PORT}`,
       schemes: ['http', 'https'],
       consumes: ['application/json'],
       produces: ['application/json'],
+      securityDefinitions: {
+        bearerAuth: {
+          type: 'apiKey',
+          name: 'Authorization',
+          in: 'header',
+          description: 'Use: Bearer <JWT>',
+        },
+      },
+      security: [{ bearerAuth: [] }],
     },
   });
 

@@ -1,9 +1,7 @@
-// Increase max listeners FIRST to prevent warnings from multiple modules
-// This must be before any imports that might add listeners
 process.setMaxListeners(20);
 
-import 'dotenv/config';
-import { loadConfig, getConfig } from '@/config';
+// import 'dotenv/config';
+import { config as appConfig  } from '@/config';
 import { initializeDatabase } from '@/db';
 import { initializeS3, createBucketIfNotExists } from '@/s3';
 import { createServer } from '@/server';
@@ -14,11 +12,6 @@ const logger = createLogger('main');
 
 async function main() {
   try {
-    // Load configuration
-    logger.info('Loading configuration...');
-    loadConfig();
-    const config = getConfig();
-
     // Initialize database
     logger.info('Initializing database...');
     await initializeDatabase();
@@ -57,8 +50,8 @@ async function main() {
     const fastify = await createServer();
 
     // Start server
-    await fastify.listen({ port: config.PORT, host: '0.0.0.0' });
-    logger.info(`Server listening on port ${config.PORT}`);
+    await fastify.listen({ port: appConfig.PORT, host: '0.0.0.0' });
+    logger.info(`Server listening on port ${appConfig.PORT} (env: ${appConfig.NODE_ENV})`);
 
     // Graceful shutdown
     process.on('SIGTERM', async () => {

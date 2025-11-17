@@ -1,4 +1,4 @@
-import { AbilityBuilder, createMongoAbility, MongoAbility, MongoQuery } from '@casl/ability';
+import { AbilityBuilder, createMongoAbility, MongoAbility } from '@casl/ability';
 
 export type Role = 'ADMIN' | 'OPERATOR' | 'DEPARTMENT';
 
@@ -28,7 +28,7 @@ export interface SubjectFields {
 export type AppAbility = MongoAbility<[Action, Subject]>;
 
 export function defineAbilityFor(role: Role, userId: string, departmentId?: string): AppAbility {
-  const { can, cannot, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+  const { can, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
 
   if (role === 'ADMIN') {
     // Admins can do everything

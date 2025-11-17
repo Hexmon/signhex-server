@@ -5,15 +5,15 @@
  */
 
 import { Client } from 'pg';
-import { loadConfig, getConfig } from '../src/config/index.js';
+// import { loadConfig, getConfig } from '../src/config/index.js';
+import { config as appConfig } from '../src/config/index.js';
 
 async function checkPostgres() {
   console.log('🔍 Checking PostgreSQL connection...');
-  const config = getConfig();
   
   try {
     const client = new Client({
-      connectionString: config.DATABASE_URL,
+      connectionString: appConfig.DATABASE_URL,
     });
     
     await client.connect();
@@ -25,24 +25,23 @@ async function checkPostgres() {
   } catch (error: any) {
     console.error('❌ PostgreSQL connection failed');
     console.error(`   Error: ${error.message}`);
-    console.error(`   Connection string: ${config.DATABASE_URL.replace(/:[^:@]+@/, ':****@')}`);
+    console.error(`   Connection string: ${appConfig.DATABASE_URL.replace(/:[^:@]+@/, ':****@')}`);
     return false;
   }
 }
 
 async function checkMinIO() {
   console.log('\n🔍 Checking MinIO connection...');
-  const config = getConfig();
   
   try {
-    const protocol = config.MINIO_USE_SSL ? 'https' : 'http';
-    const url = `${protocol}://${config.MINIO_ENDPOINT}:${config.MINIO_PORT}/minio/health/live`;
+    const protocol = appConfig.MINIO_USE_SSL ? 'https' : 'http';
+    const url = `${protocol}://${appConfig.MINIO_ENDPOINT}:${appConfig.MINIO_PORT}/minio/health/live`;
     
     const response = await fetch(url);
     
     if (response.ok) {
       console.log('✅ MinIO is accessible');
-      console.log(`   Endpoint: ${config.MINIO_ENDPOINT}:${config.MINIO_PORT}`);
+      console.log(`   Endpoint: ${appConfig.MINIO_ENDPOINT}:${appConfig.MINIO_PORT}`);
       return true;
     } else {
       console.error('❌ MinIO health check failed');
@@ -52,15 +51,12 @@ async function checkMinIO() {
   } catch (error: any) {
     console.error('❌ MinIO connection failed');
     console.error(`   Error: ${error.message}`);
-    console.error(`   Endpoint: ${config.MINIO_ENDPOINT}:${config.MINIO_PORT}`);
+    console.error(`   Endpoint: ${appConfig.MINIO_ENDPOINT}:${appConfig.MINIO_PORT}`);
     return false;
   }
 }
 
 async function main() {
-  // Load configuration first
-  loadConfig();
-
   console.log('🚀 Hexmon Signage - Service Health Check\n');
   console.log('=' .repeat(50));
   

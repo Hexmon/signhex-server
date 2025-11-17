@@ -1,5 +1,5 @@
 import pino, { type Logger } from 'pino';
-import { getConfig } from '@/config';
+import { config as appConfig } from '@/config';
 
 const loggers = new Map<string, Logger>();
 
@@ -7,13 +7,11 @@ export function createLogger(name: string): Logger {
   if (loggers.has(name)) {
     return loggers.get(name)!;
   }
-
-  const config = getConfig();
   const logger = pino({
-    level: config.LOG_LEVEL,
+    level: appConfig.LOG_LEVEL,
     base: { name },
     transport:
-      config.NODE_ENV === 'development'
+      appConfig.NODE_ENV === 'development'
         ? {
             target: 'pino-pretty',
             options: {

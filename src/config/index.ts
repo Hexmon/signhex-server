@@ -1,8 +1,5 @@
 import { z } from 'zod';
-import { config as dotenvConfig } from 'dotenv';
-
-// Load .env file
-dotenvConfig();
+import 'dotenv/config'; 
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -26,31 +23,39 @@ const envSchema = z.object({
   FFMPEG_PATH: z.string().default('/usr/bin/ffmpeg'),
   PG_BOSS_SCHEMA: z.string().default('pgboss'),
 });
-
-export type Config = z.infer<typeof envSchema>;
-
-let config: Config | null = null;
-
-export function loadConfig(): Config {
-  if (config) {
-    return config;
-  }
-
-  const result = envSchema.safeParse(process.env);
-
-  if (!result.success) {
-    console.error('Invalid environment variables:', result.error.flatten());
-    throw new Error('Invalid environment variables');
-  }
-
-  config = result.data;
-  return config;
+const parsed = envSchema.safeParse(process.env);
+if (!parsed.success) {
+  console.error('Invalid environment variables:', parsed.error.flatten());
+  throw new Error('Invalid environment variables');
 }
 
-export function getConfig(): Config {
-  // if (!config) {
-  //   throw new Error('Config not loaded. Call loadConfig() first.');
-  // }
-  return config ?? loadConfig();
-}
+export const config = Object.freeze(parsed.data);
+export type Config = typeof config;
+
+// export type Config = z.infer<typeof envSchema>;
+
+// let config: Config | null = null;
+
+// export function loadConfig(): Config {
+//   if (config) {
+//     return config;
+//   }
+
+//   const result = envSchema.safeParse(process.env);
+
+//   if (!result.success) {
+//     console.error('Invalid environment variables:', result.error.flatten());
+//     throw new Error('Invalid environment variables');
+//   }
+
+//   config = result.data;
+//   return config;
+// }
+
+// export function getConfig(): Config {
+//   if (!config) {
+//     throw new Error('Config not loaded. Call loadConfig() first.');
+//   }
+//   return config ?? loadConfig();
+// }
 
