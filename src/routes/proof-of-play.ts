@@ -6,6 +6,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { stringify } from 'csv-stringify/sync';
+import { getPresignedUrl } from '@/s3';
 
 const logger = createLogger('proof-of-play-routes');
 
@@ -18,6 +19,8 @@ const listSchema = z.object({
   start: z.string().datetime().optional(),
   end: z.string().datetime().optional(),
   status: z.enum(['COMPLETED', 'INCOMPLETE']).optional(),
+  include_url: z.enum(['true', 'false']).optional(),
+  group_by: z.enum(['day', 'screen', 'media']).optional(),
 });
 
 export async function proofOfPlayRoutes(fastify: FastifyInstance) {
@@ -59,6 +62,44 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
         const conditions = buildConditions(query);
         const where = conditions.length ? and(...conditions) : undefined;
 
+        // Grouping mode for charts
+        if (query.group_by) {
+          if (query.group_by === 'day') {
+            const grouped = await db
+              .select({
+                day: sql<string>`date(${schema.proofOfPlay.created_at})`,
+                count: sql<number>`count(*)`,
+              })
+              .from(schema.proofOfPlay)
+              .where(where as any)
+              .groupBy(sql`date(${schema.proofOfPlay.created_at})`)
+              .orderBy(sql`date(${schema.proofOfPlay.created_at})`);
+            return reply.send({ items: grouped, pagination: null });
+          }
+          if (query.group_by === 'screen') {
+            const grouped = await db
+              .select({
+                screen_id: schema.proofOfPlay.screen_id,
+                count: sql<number>`count(*)`,
+              })
+              .from(schema.proofOfPlay)
+              .where(where as any)
+              .groupBy(schema.proofOfPlay.screen_id);
+            return reply.send({ items: grouped, pagination: null });
+          }
+          if (query.group_by === 'media') {
+            const grouped = await db
+              .select({
+                media_id: schema.proofOfPlay.media_id,
+                count: sql<number>`count(*)`,
+              })
+              .from(schema.proofOfPlay)
+              .where(where as any)
+              .groupBy(schema.proofOfPlay.media_id);
+            return reply.send({ items: grouped, pagination: null });
+          }
+        }
+
         const items = await db
           .select()
           .from(schema.proofOfPlay)
@@ -69,8 +110,27 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
 
         const total = await db.select().from(schema.proofOfPlay).where(where as any);
 
+        let enriched = items;
+        if (query.include_url === 'true') {
+          const storageIds = items.map((i) => i.storage_object_id).filter(Boolean) as string[];
+          const storageRows = storageIds.length
+            ? await db
+                .select()
+                .from(schema.storageObjects)
+                .where((schema.storageObjects.id as any).in(storageIds))
+            : [];
+          const storageMap = new Map(storageRows.map((s) => [s.id, s]));
+          enriched = await Promise.all(
+            items.map(async (i) => {
+              const storage = i.storage_object_id ? storageMap.get(i.storage_object_id) : null;
+              const url = storage ? await getPresignedUrl(storage.bucket, storage.object_key, 3600) : null;
+              return { ...i, url };
+            })
+          );
+        }
+
         return reply.send({
-          items,
+          items: enriched,
           pagination: { page, limit, total: total.length },
         });
       } catch (error) {

@@ -164,18 +164,66 @@ Set Postman env vars:
     -d '{"name":"Updated","start_at":"2025-01-02T09:00:00Z","end_at":"2025-01-02T12:00:00Z","is_active":true}'
   ```
 - Publish response includes publish_id, snapshot_id, and targets count for status tracking.
+- Poll publish  
+  ```bash
+  curl "{{baseURL}}/v1/publishes/{{publishId}}" -H "Authorization: Bearer {{authToken}}"
+  ```
+- Publish targets status history  
+  ```bash
+  curl "{{baseURL}}/v1/schedules/{{scheduleId}}/publishes" -H "Authorization: Bearer {{authToken}}"
+  ```
+- Update publish target status  
+  ```bash
+  curl -X PATCH "{{baseURL}}/v1/publishes/{{publishId}}/targets/{{targetId}}" -H "Authorization: Bearer {{authToken}}" \
+    -H "Content-Type: application/json" -d '{"status":"SENT","error":null}'
+  ```
 
 ## Proof of Play
+- List with filters  
+  ```bash
+  curl "{{baseURL}}/v1/proof-of-play?page=1&limit=20&screen_id={{screenId}}&media_id={{mediaId}}&start=2024-01-01T00:00:00Z&end=2024-01-31T23:59:59Z&status=COMPLETED" \
+    -H "Authorization: Bearer {{authToken}}"
+  ```
 - Export CSV  
   ```bash
   curl "{{baseURL}}/v1/proof-of-play/export?start=2024-01-01T00:00:00Z&end=2024-01-31T23:59:59Z" \
     -H "Authorization: Bearer {{authToken}}"
+  ```
+- Grouping (for charts)  
+  ```bash
+  curl "{{baseURL}}/v1/proof-of-play?group_by=day&start=2024-01-01T00:00:00Z&end=2024-01-31T23:59:59Z" \
+    -H "Authorization: Bearer {{authToken}}"
+  ```
+- Include URLs  
+  ```bash
+  curl "{{baseURL}}/v1/proof-of-play?page=1&limit=20&include_url=true" -H "Authorization: Bearer {{authToken}}"
   ```
 
 ## Reports
 - Summary KPIs  
   ```bash
   curl "{{baseURL}}/v1/reports/summary" -H "Authorization: Bearer {{authToken}}"
+  ```
+  (includes uptime %, open/completed requests, active/offline screens)
+- Trends (PoP daily, media by type, requests by status)  
+  ```bash
+  curl "{{baseURL}}/v1/reports/trends" -H "Authorization: Bearer {{authToken}}"
+  ```
+
+## Users (Invites/Reset)
+- Invite (returns temp password and invite token)  
+  ```bash
+  curl -X POST "{{baseURL}}/v1/users/invite" -H "Authorization: Bearer {{authToken}}" -H "Content-Type: application/json" \
+    -d '{"email":"invitee@org.com","role":"OPERATOR","department_id":"{{deptId}}"}'
+  ```
+- Activate invited user  
+  ```bash
+  curl -X POST "{{baseURL}}/v1/users/activate" -H "Content-Type: application/json" \
+    -d '{"token":"{{inviteToken}}","password":"NewStrongPass123"}'
+  ```
+- Reset password (admin)  
+  ```bash
+  curl -X POST "{{baseURL}}/v1/users/{{userId}}/reset-password" -H "Authorization: Bearer {{authToken}}"
   ```
 
 Use these commands directly in Postman by substituting environment variables.***

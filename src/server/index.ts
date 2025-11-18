@@ -28,6 +28,7 @@ import { proofOfPlayRoutes } from '@/routes/proof-of-play';
 import { metricsRoutes } from '@/routes/metrics';
 import { reportsRoutes } from '@/routes/reports';
 import { userInviteRoutes } from '@/routes/users-invite';
+import { userActivateRoutes } from '@/routes/users-activate';
 
 // const logger = createLogger('server');
 
@@ -124,6 +125,7 @@ export async function createServer() {
   await fastify.register(metricsRoutes);
   await fastify.register(reportsRoutes);
   await fastify.register(userInviteRoutes);
+  await fastify.register(userActivateRoutes);
 
   return fastify;
 }

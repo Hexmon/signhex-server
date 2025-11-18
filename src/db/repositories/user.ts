@@ -21,6 +21,15 @@ export class UserRepository {
     return result[0] || null;
   }
 
+  async findByInviteToken(token: string) {
+    const db = getDatabase();
+    const result = await db
+      .select()
+      .from(schema.users)
+      .where(sql`(ext->>'invite_token') = ${token}`);
+    return (result as any)[0] || null;
+  }
+
   async findByEmail(email: string) {
     const db = getDatabase();
     const result = await db.select().from(schema.users).where(eq(schema.users.email, email));
@@ -90,4 +99,3 @@ export class UserRepository {
 export function createUserRepository(): UserRepository {
   return new UserRepository();
 }
-

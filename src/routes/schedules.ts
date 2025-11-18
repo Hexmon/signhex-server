@@ -89,6 +89,94 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // Publish status and history
+  fastify.get<{ Params: { id: string } }>(
+    '/v1/schedules/:id/publishes',
+    {
+      schema: {
+        description: 'Get publish history and target status for a schedule',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(401).send({ error: 'Missing authorization header' });
+        }
+
+        await verifyAccessToken(token);
+
+        const publishes = await db
+          .select()
+          .from(schema.publishes)
+          .where((schema.publishes.schedule_id as any).eq((request.params as any).id))
+          .orderBy(desc(schema.publishes.published_at));
+
+        const publishIds = publishes.map((p) => p.id);
+        const targets = publishIds.length
+          ? await db.select().from(schema.publishTargets).where((schema.publishTargets.publish_id as any).in(publishIds))
+          : [];
+        const targetsByPublish = new Map<string, any[]>();
+        targets.forEach((t) => {
+          const arr = targetsByPublish.get(t.publish_id) || [];
+          arr.push(t);
+          targetsByPublish.set(t.publish_id, arr);
+        });
+
+        return reply.send({
+          items: publishes.map((p) => ({
+            ...p,
+            published_at: p.published_at.toISOString?.() ?? p.published_at,
+            targets: targetsByPublish.get(p.id) || [],
+          })),
+        });
+      } catch (error) {
+        logger.error(error, 'List publishes error');
+        return reply.status(400).send({ error: 'Invalid request' });
+      }
+    }
+  );
+
+  fastify.patch<{ Params: { publishId: string; targetId: string }; Body: { status: string; error?: string } }>(
+    '/v1/publishes/:publishId/targets/:targetId',
+    {
+      schema: {
+        description: 'Update publish target status',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(401).send({ error: 'Missing authorization header' });
+        }
+
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Schedule')) {
+          return reply.status(403).send({ error: 'Forbidden' });
+        }
+
+        const body = request.body as any;
+        const [target] = await db
+          .update(schema.publishTargets)
+          .set({ status: body.status, error: body.error, updated_at: new Date() })
+          .where((schema.publishTargets.id as any).eq((request.params as any).targetId))
+          .returning();
+
+        if (!target) return reply.status(404).send({ error: 'Target not found' });
+        return reply.send(target);
+      } catch (error) {
+        logger.error(error, 'Update publish target error');
+        return reply.status(400).send({ error: 'Invalid request' });
+      }
+    }
+  );
+
   // List schedules
   fastify.get<{ Querystring: typeof listSchedulesQuerySchema._type }>(
     '/v1/schedules',
@@ -325,6 +413,45 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Publish schedule error');
+        return reply.status(400).send({ error: 'Invalid request' });
+      }
+    }
+  );
+
+  // Poll single publish
+  fastify.get<{ Params: { id: string } }>(
+    '/v1/publishes/:id',
+    {
+      schema: {
+        description: 'Get publish record and target statuses',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        await verifyAccessToken(token);
+
+        const [publish] = await db
+          .select()
+          .from(schema.publishes)
+          .where((schema.publishes.id as any).eq((request.params as any).id));
+        if (!publish) return reply.status(404).send({ error: 'Publish not found' });
+
+        const targets = await db
+          .select()
+          .from(schema.publishTargets)
+          .where((schema.publishTargets.publish_id as any).eq(publish.id));
+
+        return reply.send({
+          ...publish,
+          published_at: publish.published_at.toISOString?.() ?? publish.published_at,
+          targets,
+        });
+      } catch (error) {
+        logger.error(error, 'Get publish error');
         return reply.status(400).send({ error: 'Invalid request' });
       }
     }

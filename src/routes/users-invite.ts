@@ -6,6 +6,7 @@ import { createUserRepository } from '@/db/repositories/user';
 import { hashPassword } from '@/auth/password';
 import { randomBytes } from 'crypto';
 import { createLogger } from '@/utils/logger';
+import { getDatabase, schema } from '@/db';
 
 const logger = createLogger('users-invite-routes');
 
@@ -17,6 +18,7 @@ const inviteSchema = z.object({
 
 export async function userInviteRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
+  const db = getDatabase();
 
   fastify.post<{ Body: typeof inviteSchema._type }>(
     '/v1/users/invite',
@@ -37,12 +39,18 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
 
         const data = inviteSchema.parse(request.body);
         const tempPassword = randomBytes(6).toString('hex');
+        const token = randomBytes(16).toString('hex');
+        const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         const passwordHash = await hashPassword(tempPassword);
         const user = await userRepo.create({
           email: data.email,
           password_hash: passwordHash,
           role: data.role,
           department_id: data.department_id,
+          ext: {
+            invite_token: token,
+            invite_expires_at: expires.toISOString(),
+          },
         });
 
         return reply.status(201).send({
@@ -50,6 +58,8 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
           email: user.email,
           role: user.role,
           department_id: user.department_id,
+          invite_token: token,
+          invite_expires_at: expires.toISOString(),
           temp_password: tempPassword,
         });
       } catch (error) {
@@ -77,8 +87,16 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         if (!ability.can('update', 'User')) return reply.status(403).send({ error: 'Forbidden' });
 
         const tempPassword = randomBytes(6).toString('hex');
+        const token = randomBytes(16).toString('hex');
+        const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         const passwordHash = await hashPassword(tempPassword);
-        const user = await userRepo.update((request.params as any).id, { password_hash: passwordHash });
+        const user = await userRepo.update((request.params as any).id, {
+          password_hash: passwordHash,
+          ext: {
+            invite_token: token,
+            invite_expires_at: expires.toISOString(),
+          },
+        });
         if (!user) return reply.status(404).send({ error: 'User not found' });
 
         return reply.send({

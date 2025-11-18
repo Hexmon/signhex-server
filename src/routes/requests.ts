@@ -7,6 +7,7 @@ import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { createUserRepository } from '@/db/repositories/user';
 import { getDatabase, schema } from '@/db';
+import { getPresignedUrl } from '@/s3';
 
 const logger = createLogger('request-routes');
 
@@ -33,6 +34,22 @@ export async function requestRoutes(fastify: FastifyInstance) {
   const msgRepo = createRequestMessageRepository();
   const userRepo = createUserRepository();
   const db = getDatabase();
+
+  const resolveAttachments = async (storageIds: string[] | undefined) => {
+    if (!storageIds || storageIds.length === 0) return [];
+    const rows = await db
+      .select()
+      .from(schema.storageObjects)
+      .where((schema.storageObjects.id as any).in(storageIds));
+    const map = new Map(rows.map((r) => [r.id, r]));
+    return Promise.all(
+      storageIds.map(async (id) => {
+        const r = map.get(id);
+        if (!r) return { id, url: null };
+        return { id: r.id, url: await getPresignedUrl(r.bucket, r.object_key, 3600) };
+      })
+    );
+  };
 
   // Create request
   fastify.post<{ Body: typeof createRequestSchema._type }>(
@@ -159,6 +176,8 @@ export async function requestRoutes(fastify: FastifyInstance) {
           .select()
           .from(schema.requestAttachments)
           .where((schema.requestAttachments.request_id as any).eq(req.id));
+        const attachmentIds = attachments.map((a) => a.storage_object_id);
+        const attachmentUrls = await resolveAttachments(attachmentIds);
 
         return reply.send({
           id: req.id,
@@ -168,7 +187,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
           priority: req.priority,
           created_by: req.created_by,
           assigned_to: req.assigned_to,
-          attachments: attachments.map((a) => a.storage_object_id),
+          attachments: attachmentUrls,
           created_at: req.created_at.toISOString(),
           updated_at: req.updated_at.toISOString(),
         });
@@ -252,6 +271,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         });
 
         const author = await userRepo.findById(payload.sub);
+        const attachmentUrls = await resolveAttachments(data.attachments);
 
         return reply.status(201).send({
           id: message.id,
@@ -266,7 +286,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
               }
             : null,
           message: message.content,
-          attachments: data.attachments || [],
+          attachments: attachmentUrls,
           created_at: message.created_at.toISOString(),
           updated_at: null,
         });
@@ -306,6 +326,22 @@ export async function requestRoutes(fastify: FastifyInstance) {
         const authors = await db.select().from(schema.users).where((schema.users.id as any).in(authorIds));
         const authorMap = new Map(authors.map((a) => [a.id, a]));
 
+        // Resolve attachments for all messages
+        const allAttachmentIds = result.items.flatMap((m: any) => m.attachments || []);
+        const attachmentUrlMap = new Map<string, { id: string; url: string }>();
+        if (allAttachmentIds.length) {
+          const attachmentRows = await db
+            .select()
+            .from(schema.storageObjects)
+            .where((schema.storageObjects.id as any).in(allAttachmentIds));
+          for (const row of attachmentRows) {
+            attachmentUrlMap.set(row.id, {
+              id: row.id,
+              url: await getPresignedUrl(row.bucket, row.object_key, 3600),
+            });
+          }
+        }
+
         return reply.send({
           items: result.items.map((m) => ({
             id: m.id,
@@ -320,7 +356,9 @@ export async function requestRoutes(fastify: FastifyInstance) {
                 }
               : null,
             message: m.content,
-            attachments: (m as any).attachments || [],
+            attachments: (m as any).attachments
+              ? (m as any).attachments.map((id: string) => attachmentUrlMap.get(id) || { id, url: null })
+              : [],
             created_at: m.created_at.toISOString(),
             updated_at: null,
           })),
