@@ -22,6 +22,9 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   FFMPEG_PATH: z.string().default('/usr/bin/ffmpeg'),
   PG_BOSS_SCHEMA: z.string().default('pgboss'),
+  RATE_LIMIT_ENABLED: z.enum(['true', 'false']).transform((v) => v === 'true').default('true'),
+  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(1000),
+  RATE_LIMIT_TIME_WINDOW: z.string().default('1 minute'),
 });
 const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -31,31 +34,3 @@ if (!parsed.success) {
 
 export const config = Object.freeze(parsed.data);
 export type Config = typeof config;
-
-// export type Config = z.infer<typeof envSchema>;
-
-// let config: Config | null = null;
-
-// export function loadConfig(): Config {
-//   if (config) {
-//     return config;
-//   }
-
-//   const result = envSchema.safeParse(process.env);
-
-//   if (!result.success) {
-//     console.error('Invalid environment variables:', result.error.flatten());
-//     throw new Error('Invalid environment variables');
-//   }
-
-//   config = result.data;
-//   return config;
-// }
-
-// export function getConfig(): Config {
-//   if (!config) {
-//     throw new Error('Config not loaded. Call loadConfig() first.');
-//   }
-//   return config ?? loadConfig();
-// }
-

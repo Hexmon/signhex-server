@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { eq } from 'drizzle-orm';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createUserRepository } from '@/db/repositories/user';
@@ -58,7 +59,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
               invite_expires_at: expires.toISOString(),
             },
           })
-          .where((schema.users.id as any).eq(user.id));
+          .where(eq(schema.users.id, user.id));
 
         return reply.status(201).send({
           id: user.id,

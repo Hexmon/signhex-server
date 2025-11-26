@@ -60,11 +60,13 @@ export async function createServer() {
     credentials: true,
   });
 
-  // Rate limiting
-  await fastify.register(rateLimit, {
-    max: 100,
-    timeWindow: '15 minutes',
-  });
+  // Rate limiting (can be disabled or tuned via env)
+  if (appConfig.RATE_LIMIT_ENABLED) {
+    await fastify.register(rateLimit, {
+      max: appConfig.RATE_LIMIT_MAX,
+      timeWindow: appConfig.RATE_LIMIT_TIME_WINDOW,
+    });
+  }
 
   // Swagger
   await fastify.register(swagger, {

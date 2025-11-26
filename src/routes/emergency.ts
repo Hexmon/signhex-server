@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { Server as SocketIOServer } from 'socket.io';
 import { createEmergencyRepository } from '@/db/repositories/emergency';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
@@ -14,6 +15,19 @@ const triggerEmergencySchema = z.object({
 
 export async function emergencyRoutes(fastify: FastifyInstance) {
   const emergencyRepo = createEmergencyRepository();
+  const io: SocketIOServer =
+    (fastify as any).io ??
+    ((fastify as any).io = new SocketIOServer(fastify.server, {
+      cors: {
+        origin: true,
+        credentials: true,
+      },
+    }));
+
+  fastify.addHook('onClose', (_, done) => {
+    io.close();
+    done();
+  });
 
   // Trigger emergency
   fastify.post<{ Body: typeof triggerEmergencySchema._type }>(
@@ -53,7 +67,13 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           severity: data.severity,
         });
 
-        // TODO: Broadcast to all connected WebSocket clients
+        io.emit('emergency:triggered', {
+          id: emergency.id,
+          triggered_by: emergency.triggered_by,
+          message: emergency.message,
+          severity: emergency.priority,
+          created_at: emergency.created_at.toISOString(),
+        });
         logger.warn(
           {
             emergencyId: emergency.id,
@@ -154,7 +174,15 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           return reply.status(404).send({ error: 'Emergency not found' });
         }
 
-        // TODO: Broadcast to all connected WebSocket clients
+        io.emit('emergency:cleared', {
+          id: emergency.id,
+          triggered_by: emergency.triggered_by,
+          message: emergency.message,
+          severity: emergency.priority,
+          created_at: emergency.created_at.toISOString(),
+          cleared_at: emergency.cleared_at?.toISOString(),
+          cleared_by: emergency.cleared_by,
+        });
         logger.info(
           {
             emergencyId: emergency.id,
@@ -231,4 +259,3 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     }
   );
 }
-

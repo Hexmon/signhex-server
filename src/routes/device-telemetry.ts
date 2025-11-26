@@ -1,9 +1,13 @@
+import { and, eq } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
 import { putObject } from '@/s3';
 
 const logger = createLogger('device-telemetry-routes');
+const HEARTBEAT_BUCKET = 'logs-heartbeats';
+const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
 
 const heartbeatSchema = z.object({
   device_id: z.string().min(1),
@@ -33,6 +37,8 @@ const screenshotSchema = z.object({
 });
 
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
+  const db = getDatabase();
+
   // Device heartbeat (no auth required - mTLS authenticated)
   fastify.post<{ Body: typeof heartbeatSchema._type }>(
     '/v1/device/heartbeat',
@@ -45,11 +51,49 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const data = heartbeatSchema.parse(request.body);
+        const [screen] = await db
+          .select({ id: schema.screens.id })
+          .from(schema.screens)
+          .where(eq(schema.screens.id, data.device_id));
 
-        // TODO: Store heartbeat in database
-        // - Update device status
-        // - Store metrics in time-series database or MinIO
-        // - Check for commands to send to device
+        if (!screen) {
+          return reply.status(404).send({ error: 'Device not registered' });
+        }
+
+        const receivedAt = new Date();
+        const objectKey = `heartbeats/${data.device_id}/${receivedAt.getTime()}.json`;
+        const payload = JSON.stringify({ ...data, received_at: receivedAt.toISOString() });
+
+        const upload = await putObject(HEARTBEAT_BUCKET, objectKey, payload, 'application/json');
+
+        const [storageObject] = await db
+          .insert(schema.storageObjects)
+          .values({
+            bucket: HEARTBEAT_BUCKET,
+            object_key: objectKey,
+            content_type: 'application/json',
+            size: Buffer.byteLength(payload),
+            sha256: upload.sha256,
+          })
+          .returning();
+
+        await db.insert(schema.heartbeats).values({
+          screen_id: data.device_id,
+          storage_object_id: storageObject?.id,
+          created_at: receivedAt,
+        });
+
+        const screenStatus =
+          data.status === 'ONLINE' ? 'ACTIVE' : data.status === 'OFFLINE' ? 'OFFLINE' : 'INACTIVE';
+
+        await db
+          .update(schema.screens)
+          .set({
+            status: screenStatus as any,
+            last_heartbeat_at: receivedAt,
+            updated_at: receivedAt,
+          })
+          .where(eq(schema.screens.id, data.device_id));
 
         logger.info(
           {
@@ -61,10 +105,28 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           'Device heartbeat received'
         );
 
+        const pendingCommands = await db
+          .select({
+            id: schema.deviceCommands.id,
+            type: schema.deviceCommands.type,
+            payload: schema.deviceCommands.payload,
+            createdAt: schema.deviceCommands.created_at,
+          })
+          .from(schema.deviceCommands)
+          .where(
+            and(eq(schema.deviceCommands.screen_id, data.device_id), eq(schema.deviceCommands.status, 'PENDING'))
+          )
+          .orderBy(schema.deviceCommands.created_at);
+
         return reply.send({
           success: true,
           timestamp: new Date().toISOString(),
-          commands: [], // TODO: Return pending commands
+          commands: pendingCommands.map((command) => ({
+            id: command.id,
+            type: command.type,
+            payload: command.payload,
+            timestamp: new Date(command.createdAt).toISOString(),
+          })),
         });
       } catch (error) {
         logger.error(error, 'Heartbeat error');
@@ -86,10 +148,33 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       try {
         const data = proofOfPlaySchema.parse(request.body);
 
-        // TODO: Store PoP in database and MinIO
-        // - Create PoP record
-        // - Store raw payload in MinIO
-        // - Update media play count
+        const receivedAt = new Date();
+        const startedAt = new Date(data.start_time);
+        const endedAt = new Date(data.end_time);
+        const objectKey = `proof-of-play/${data.device_id}/${receivedAt.getTime()}.json`;
+        const payload = JSON.stringify({ ...data, received_at: receivedAt.toISOString() });
+
+        const upload = await putObject(PROOF_OF_PLAY_BUCKET, objectKey, payload, 'application/json');
+
+        const [storageObject] = await db
+          .insert(schema.storageObjects)
+          .values({
+            bucket: PROOF_OF_PLAY_BUCKET,
+            object_key: objectKey,
+            content_type: 'application/json',
+            size: Buffer.byteLength(payload),
+            sha256: upload.sha256,
+          })
+          .returning();
+
+        await db.insert(schema.proofOfPlay).values({
+          screen_id: data.device_id,
+          media_id: data.media_id,
+          presentation_id: data.schedule_id,
+          started_at: startedAt,
+          ended_at: endedAt,
+          storage_object_id: storageObject?.id,
+        });
 
         logger.info(
           {
@@ -166,27 +251,37 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       try {
         const deviceId = (request.params as any).deviceId;
 
-        // TODO: Query pending commands from database
-        // - Get commands for this device
-        // - Mark as sent
-        // - Return command list
+        const pendingCommands = await db.transaction(async (tx) => {
+          const commands = await tx
+            .select({
+              id: schema.deviceCommands.id,
+              type: schema.deviceCommands.type,
+              payload: schema.deviceCommands.payload,
+              createdAt: schema.deviceCommands.created_at,
+            })
+            .from(schema.deviceCommands)
+            .where(and(eq(schema.deviceCommands.screen_id, deviceId), eq(schema.deviceCommands.status, 'PENDING')))
+            .orderBy(schema.deviceCommands.created_at);
+
+          if (commands.length > 0) {
+            await tx
+              .update(schema.deviceCommands)
+              .set({ status: 'SENT', updated_at: new Date() })
+              .where(and(eq(schema.deviceCommands.screen_id, deviceId), eq(schema.deviceCommands.status, 'PENDING')));
+          }
+
+          return commands;
+        });
 
         logger.info({ deviceId }, 'Fetching pending commands');
 
         return reply.send({
-          commands: [
-            // Example commands:
-            // {
-            //   id: 'cmd-1',
-            //   type: 'REBOOT',
-            //   timestamp: '2024-01-01T00:00:00Z'
-            // },
-            // {
-            //   id: 'cmd-2',
-            //   type: 'REFRESH_SCHEDULE',
-            //   timestamp: '2024-01-01T00:00:00Z'
-            // }
-          ],
+          commands: pendingCommands.map((command) => ({
+            id: command.id,
+            type: command.type,
+            payload: command.payload,
+            timestamp: new Date(command.createdAt).toISOString(),
+          })),
         });
       } catch (error) {
         logger.error(error, 'Get commands error');
@@ -208,15 +303,26 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       try {
         const { deviceId, commandId } = request.params as any;
 
-        // TODO: Mark command as acknowledged
-        // - Update command status
-        // - Store acknowledgment timestamp
+        const acknowledgedAt = new Date();
+
+        const [updatedCommand] = await db
+          .update(schema.deviceCommands)
+          .set({
+            status: 'ACKNOWLEDGED',
+            updated_at: acknowledgedAt,
+          })
+          .where(and(eq(schema.deviceCommands.id, commandId), eq(schema.deviceCommands.screen_id, deviceId)))
+          .returning({ id: schema.deviceCommands.id });
+
+        if (!updatedCommand) {
+          return reply.status(404).send({ error: 'Command not found' });
+        }
 
         logger.info({ deviceId, commandId }, 'Command acknowledged');
 
         return reply.send({
           success: true,
-          timestamp: new Date().toISOString(),
+          timestamp: acknowledgedAt.toISOString(),
         });
       } catch (error) {
         logger.error(error, 'Acknowledge command error');
@@ -225,4 +331,3 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     }
   );
 }
-

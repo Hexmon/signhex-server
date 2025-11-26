@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { desc } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import {
   createScheduleSchema,
   updateScheduleSchema,
@@ -112,12 +112,12 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const publishes = await db
           .select()
           .from(schema.publishes)
-          .where((schema.publishes.schedule_id as any).eq((request.params as any).id))
+          .where(eq(schema.publishes.schedule_id, (request.params as any).id))
           .orderBy(desc(schema.publishes.published_at));
 
         const publishIds = publishes.map((p) => p.id);
         const targets = publishIds.length
-          ? await db.select().from(schema.publishTargets).where((schema.publishTargets.publish_id as any).in(publishIds))
+          ? await db.select().from(schema.publishTargets).where(inArray(schema.publishTargets.publish_id, publishIds))
           : [];
         const targetsByPublish = new Map<string, any[]>();
         targets.forEach((t) => {
@@ -166,7 +166,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const [target] = await db
           .update(schema.publishTargets)
           .set({ status: body.status, error: body.error, updated_at: new Date() })
-          .where((schema.publishTargets.id as any).eq((request.params as any).targetId))
+          .where(eq(schema.publishTargets.id, (request.params as any).targetId))
           .returning();
 
         if (!target) return reply.status(404).send({ error: 'Target not found' });
@@ -438,13 +438,13 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const [publish] = await db
           .select()
           .from(schema.publishes)
-          .where((schema.publishes.id as any).eq((request.params as any).id));
+          .where(eq(schema.publishes.id, (request.params as any).id));
         if (!publish) return reply.status(404).send({ error: 'Publish not found' });
 
         const targets = await db
           .select()
           .from(schema.publishTargets)
-          .where((schema.publishTargets.publish_id as any).eq(publish.id));
+          .where(eq(schema.publishTargets.publish_id, publish.id));
 
         return reply.send({
           ...publish,

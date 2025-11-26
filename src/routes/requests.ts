@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { eq, inArray } from 'drizzle-orm';
 import { createRequestRepository } from '@/db/repositories/request';
 import { createRequestMessageRepository } from '@/db/repositories/request-message';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
@@ -40,7 +41,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
     const rows = await db
       .select()
       .from(schema.storageObjects)
-      .where((schema.storageObjects.id as any).in(storageIds));
+      .where(inArray(schema.storageObjects.id, storageIds));
     const map = new Map(rows.map((r) => [r.id, r]));
     return Promise.all(
       storageIds.map(async (id) => {
@@ -175,7 +176,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         const attachments = await db
           .select()
           .from(schema.requestAttachments)
-          .where((schema.requestAttachments.request_id as any).eq(req.id));
+          .where(eq(schema.requestAttachments.request_id, req.id));
         const attachmentIds = attachments.map((a) => a.storage_object_id);
         const attachmentUrls = await resolveAttachments(attachmentIds);
 
@@ -322,8 +323,10 @@ export async function requestRoutes(fastify: FastifyInstance) {
         const result = await msgRepo.listByRequest((request.params as any).id, { page, limit });
 
         // Fetch authors for messages
-        const authorIds = Array.from(new Set(result.items.map((m) => m.author_id)));
-        const authors = await db.select().from(schema.users).where((schema.users.id as any).in(authorIds));
+        const authorIds = Array.from(new Set(result.items.map((m) => m.author_id))).filter(Boolean);
+        const authors = authorIds.length
+          ? await db.select().from(schema.users).where(inArray(schema.users.id, authorIds))
+          : [];
         const authorMap = new Map(authors.map((a) => [a.id, a]));
 
         // Resolve attachments for all messages
@@ -333,7 +336,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
           const attachmentRows = await db
             .select()
             .from(schema.storageObjects)
-            .where((schema.storageObjects.id as any).in(allAttachmentIds));
+            .where(inArray(schema.storageObjects.id, allAttachmentIds));
           for (const row of attachmentRows) {
             attachmentUrlMap.set(row.id, {
               id: row.id,

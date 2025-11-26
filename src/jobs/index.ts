@@ -1,8 +1,83 @@
 import PgBoss from 'pg-boss';
+import ffmpeg from 'fluent-ffmpeg';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { and, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { getDatabase, schema } from '@/db';
 import { config as appConfig } from '@/config';
+import { deleteObject, getObject, putObject } from '@/s3';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('jobs');
+
+ffmpeg.setFfmpegPath(appConfig.FFMPEG_PATH);
+
+const READY_BUCKET = 'media-ready';
+const THUMBNAIL_BUCKET = 'media-thumbnails';
+const ARCHIVE_BUCKET = 'archives';
+const HLS_SEGMENT_CONTENT_TYPE = 'video/mp2t';
+const THUMBNAIL_CONTENT_TYPE = 'image/jpeg';
+const NDJSON_CONTENT_TYPE = 'application/x-ndjson';
+
+const QUALITY_OPTIONS: Record<FFmpegTranscodeJob['quality'], string[]> = {
+  low: ['-preset', 'veryfast', '-crf', '30', '-b:a', '96k'],
+  medium: ['-preset', 'fast', '-crf', '24', '-b:a', '128k'],
+  high: ['-preset', 'slower', '-crf', '20', '-b:a', '192k'],
+};
+
+const FORMAT_CONTENT_TYPE: Record<FFmpegTranscodeJob['targetFormat'], string> = {
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  hls: 'application/vnd.apple.mpegurl',
+};
+
+async function runTranscode(
+  inputPath: string,
+  outputPath: string,
+  job: FFmpegTranscodeJob,
+  segmentTemplate: string
+) {
+  const qualityFlags = QUALITY_OPTIONS[job.quality] ?? QUALITY_OPTIONS.medium;
+
+  return new Promise<void>((resolve, reject) => {
+    const command = ffmpeg(inputPath).outputOptions([...qualityFlags]);
+
+    if (job.targetFormat === 'hls') {
+      command.videoCodec('libx264').audioCodec('aac').format('hls');
+      command.outputOptions([
+        '-hls_time',
+        '6',
+        '-hls_list_size',
+        '0',
+        '-hls_playlist_type',
+        'vod',
+        '-hls_segment_filename',
+        segmentTemplate,
+      ]);
+    } else if (job.targetFormat === 'webm') {
+      command.videoCodec('libvpx-vp9').audioCodec('libopus').format('webm');
+    } else {
+      command.videoCodec('libx264').audioCodec('aac').format('mp4');
+      command.outputOptions(['-movflags', 'faststart']);
+    }
+
+    command
+      .output(outputPath)
+      .on('end', () => resolve())
+      .on('error', (error) => reject(error))
+      .run();
+  });
+}
+
+async function cleanupTempDir(dir: string | null) {
+  if (!dir) return;
+  try {
+    await fs.rm(dir, { recursive: true, force: true });
+  } catch (error) {
+    logger.warn(error, 'Failed to clean up temp directory');
+  }
+}
 
 let boss: PgBoss | null = null;
 
@@ -109,48 +184,412 @@ export async function registerJobHandlers() {
 
   // FFmpeg transcode handler
   await jobs.work<FFmpegTranscodeJob>('ffmpeg:transcode', async (jobBatch) => {
-    for (const job of jobBatch) {
-      logger.info(`Processing transcode job: ${job.data.mediaId}`);
-      // TODO: Implement FFmpeg transcoding
-      // - Download source from MinIO
-      // - Run FFmpeg
-      // - Upload result to MinIO
-      // - Update media record
+    const db = getDatabase();
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      const { mediaId, sourceObjectId, targetFormat, quality } = job.data;
+      let tempDir: string | null = null;
+
+      logger.info(`Processing transcode job: ${mediaId}`);
+
+      try {
+        const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+        if (!media) {
+          logger.warn(`Media not found for transcode job: ${mediaId}`);
+          continue;
+        }
+
+        const [sourceObject] =
+          sourceObjectId && !media.source_bucket
+            ? await db
+                .select()
+                .from(schema.storageObjects)
+                .where(eq(schema.storageObjects.id, sourceObjectId))
+            : [];
+
+        const sourceBucket = media.source_bucket ?? sourceObject?.bucket;
+        const sourceKey = media.source_object_key ?? sourceObject?.object_key;
+
+        if (!sourceBucket || !sourceKey) {
+          logger.warn(`Missing source object info for media ${mediaId}`);
+          await db
+            .update(schema.media)
+            .set({ status: 'FAILED', updated_at: new Date() })
+            .where(eq(schema.media.id, mediaId));
+          continue;
+        }
+
+        await db
+          .update(schema.media)
+          .set({ status: 'PROCESSING', updated_at: new Date() })
+          .where(eq(schema.media.id, mediaId));
+
+        const sourceBuffer = await getObject(sourceBucket, sourceKey);
+        tempDir = await fs.mkdtemp(join(tmpdir(), 'ffmpeg-'));
+        const workDir = tempDir;
+        const inputPath = join(workDir, 'input');
+        await fs.writeFile(inputPath, sourceBuffer);
+
+        const outputExt = targetFormat === 'hls' ? 'm3u8' : targetFormat;
+        const outputPath = join(workDir, `output.${outputExt}`);
+        const segmentTemplate = join(workDir, 'segment_%03d.ts');
+
+        await runTranscode(inputPath, outputPath, { mediaId, sourceObjectId, targetFormat, quality }, segmentTemplate);
+
+        if (targetFormat === 'hls') {
+          const playlistBuffer = await fs.readFile(outputPath);
+          const playlistKey = `${mediaId}/hls/playlist.m3u8`;
+          const playlistUpload = await putObject(
+            READY_BUCKET,
+            playlistKey,
+            playlistBuffer,
+            FORMAT_CONTENT_TYPE.hls
+          );
+
+          const [readyObject] = await db
+            .insert(schema.storageObjects)
+            .values({
+              bucket: READY_BUCKET,
+              object_key: playlistKey,
+              content_type: FORMAT_CONTENT_TYPE.hls,
+              size: playlistBuffer.length,
+              sha256: playlistUpload.sha256,
+            })
+            .returning();
+
+          const files = await fs.readdir(workDir);
+          const segments = files.filter((file) => file.startsWith('segment_') && file.endsWith('.ts'));
+
+          await Promise.all(
+            segments.map(async (file) => {
+              const buffer = await fs.readFile(join(workDir, file));
+              const key = `${mediaId}/hls/${file}`;
+              await putObject(READY_BUCKET, key, buffer, HLS_SEGMENT_CONTENT_TYPE);
+            })
+          );
+
+          await db
+            .update(schema.media)
+            .set({
+              ready_object_id: readyObject?.id,
+              status: 'READY',
+              updated_at: new Date(),
+            })
+            .where(eq(schema.media.id, mediaId));
+        } else {
+          const outputBuffer = await fs.readFile(outputPath);
+          const readyKey = `${mediaId}/ready.${outputExt}`;
+          const upload = await putObject(
+            READY_BUCKET,
+            readyKey,
+            outputBuffer,
+            FORMAT_CONTENT_TYPE[targetFormat] ?? 'application/octet-stream'
+          );
+
+          const [readyObject] = await db
+            .insert(schema.storageObjects)
+            .values({
+              bucket: READY_BUCKET,
+              object_key: readyKey,
+              content_type: FORMAT_CONTENT_TYPE[targetFormat],
+              size: outputBuffer.length,
+              sha256: upload.sha256,
+            })
+            .returning();
+
+          await db
+            .update(schema.media)
+            .set({
+              ready_object_id: readyObject?.id,
+              status: 'READY',
+              updated_at: new Date(),
+            })
+            .where(eq(schema.media.id, mediaId));
+        }
+      } catch (error) {
+        logger.error(error, `Transcode failed for media ${mediaId}`);
+        try {
+          await db
+            .update(schema.media)
+            .set({ status: 'FAILED', updated_at: new Date() })
+            .where(eq(schema.media.id, mediaId));
+        } catch (updateError) {
+          logger.error(updateError, `Failed to mark media ${mediaId} as failed`);
+        }
+      } finally {
+        await cleanupTempDir(tempDir);
+      }
     }
   });
 
   // FFmpeg thumbnail handler
   await jobs.work<FFmpegThumbnailJob>('ffmpeg:thumbnail', async (jobBatch) => {
-    for (const job of jobBatch) {
-      logger.info(`Processing thumbnail job: ${job.data.mediaId}`);
-      // TODO: Implement FFmpeg thumbnail generation
-      // - Download source from MinIO
-      // - Generate thumbnail
-      // - Upload to MinIO
-      // - Update media record
+    const db = getDatabase();
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      const { mediaId, sourceObjectId, timestamp } = job.data;
+      let tempDir: string | null = null;
+
+      logger.info(`Processing thumbnail job: ${mediaId}`);
+
+      try {
+        const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+        if (!media) {
+          logger.warn(`Media not found for thumbnail job: ${mediaId}`);
+          continue;
+        }
+
+        const [sourceObject] =
+          sourceObjectId && !media.source_bucket
+            ? await db
+                .select()
+                .from(schema.storageObjects)
+                .where(eq(schema.storageObjects.id, sourceObjectId))
+            : [];
+
+        const sourceBucket = media.source_bucket ?? sourceObject?.bucket;
+        const sourceKey = media.source_object_key ?? sourceObject?.object_key;
+
+        if (!sourceBucket || !sourceKey) {
+          logger.warn(`Missing source object info for media ${mediaId}`);
+          continue;
+        }
+
+        const sourceBuffer = await getObject(sourceBucket, sourceKey);
+        tempDir = await fs.mkdtemp(join(tmpdir(), 'thumb-'));
+        const inputPath = join(tempDir, 'input');
+        await fs.writeFile(inputPath, sourceBuffer);
+
+        const outputPath = join(tempDir, 'thumbnail.jpg');
+        const seekTime = Math.max(0, timestamp ?? 1);
+
+        await new Promise<void>((resolve, reject) => {
+          ffmpeg(inputPath)
+            .seekInput(seekTime)
+            .frames(1)
+            .outputOptions(['-q:v', '2'])
+            .output(outputPath)
+            .on('end', () => resolve())
+            .on('error', (error) => reject(error))
+            .run();
+        });
+
+        const thumbnailBuffer = await fs.readFile(outputPath);
+        const thumbnailKey = `${mediaId}/thumbnail.jpg`;
+        const upload = await putObject(THUMBNAIL_BUCKET, thumbnailKey, thumbnailBuffer, THUMBNAIL_CONTENT_TYPE);
+
+        const [thumbnailObject] = await db
+          .insert(schema.storageObjects)
+          .values({
+            bucket: THUMBNAIL_BUCKET,
+            object_key: thumbnailKey,
+            content_type: THUMBNAIL_CONTENT_TYPE,
+            size: thumbnailBuffer.length,
+            sha256: upload.sha256,
+          })
+          .returning();
+
+        await db
+          .update(schema.media)
+          .set({ thumbnail_object_id: thumbnailObject?.id, updated_at: new Date() })
+          .where(eq(schema.media.id, mediaId));
+      } catch (error) {
+        logger.error(error, `Thumbnail generation failed for media ${mediaId}`);
+      } finally {
+        await cleanupTempDir(tempDir);
+      }
     }
   });
 
   // Archive handler
   await jobs.work<ArchiveJob>('archive', async (jobBatch) => {
-    for (const job of jobBatch) {
+    const db = getDatabase();
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+    const sources = [
+      { logType: 'audit', table: schema.auditLogs },
+      { logType: 'system', table: schema.systemLogs },
+      { logType: 'auth', table: schema.loginAttempts },
+      { logType: 'heartbeats', table: schema.heartbeats },
+      { logType: 'pop', table: schema.proofOfPlay },
+    ];
+
+    for (const job of batch) {
       logger.info(`Processing archive job: ${job.data.type}`);
-      // TODO: Implement archival
-      // - Query data from database
-      // - Generate Parquet/NDJSON
-      // - Upload to MinIO
-      // - Create archive record
+
+      if (job.data.type !== 'logs') {
+        logger.warn(`Archive type not implemented: ${job.data.type}`);
+        continue;
+      }
+
+      const windowStart = job.data.startDate ? new Date(job.data.startDate) : new Date(0);
+      const windowEnd = job.data.endDate ? new Date(job.data.endDate) : new Date();
+
+      if (Number.isNaN(windowStart.getTime()) || Number.isNaN(windowEnd.getTime())) {
+        logger.warn(`Invalid archive window: ${job.data.startDate} - ${job.data.endDate}`);
+        continue;
+      }
+
+      for (const source of sources) {
+        try {
+          const rows = await db
+            .select()
+            .from(source.table)
+            .where(and(gte(source.table.created_at, windowStart), lte(source.table.created_at, windowEnd)));
+
+          if (!rows.length) {
+            continue;
+          }
+
+          const payload = rows.map((row) => JSON.stringify(row)).join('\n');
+          const objectKey = `logs/${source.logType}/${windowStart.toISOString()}_${windowEnd.toISOString()}.ndjson`;
+          const upload = await putObject(ARCHIVE_BUCKET, objectKey, payload, NDJSON_CONTENT_TYPE);
+
+          const [storageObject] = await db
+            .insert(schema.storageObjects)
+            .values({
+              bucket: ARCHIVE_BUCKET,
+              object_key: objectKey,
+              content_type: NDJSON_CONTENT_TYPE,
+              size: Buffer.byteLength(payload),
+              sha256: upload.sha256,
+            })
+            .returning();
+
+          await db.insert(schema.logArchives).values({
+            log_type: source.logType,
+            window_start: windowStart,
+            window_end: windowEnd,
+            record_count: rows.length,
+            storage_object_id: storageObject.id,
+          });
+        } catch (error) {
+          logger.error(error, `Failed to archive ${source.logType} logs`);
+        }
+      }
     }
   });
 
   // Cleanup handler
   await jobs.work<CleanupJob>('cleanup', async (jobBatch) => {
-    for (const job of jobBatch) {
-      logger.info(`Processing cleanup job: ${job.data.type}`);
-      // TODO: Implement cleanup
-      // - Delete expired sessions
-      // - Archive old logs
-      // - Remove orphaned objects
+    const db = getDatabase();
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      const type = job.data.type;
+      logger.info(`Processing cleanup job: ${type}`);
+
+      try {
+        switch (type) {
+          case 'expired_sessions': {
+            const deleted = await db
+              .delete(schema.sessions)
+              .where(lte(schema.sessions.expires_at, new Date()))
+              .returning({ id: schema.sessions.id });
+            logger.info(`Deleted ${deleted.length} expired sessions`);
+            break;
+          }
+          case 'old_logs': {
+            const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+            const sources = [
+              { logType: 'audit', table: schema.auditLogs },
+              { logType: 'system', table: schema.systemLogs },
+              { logType: 'auth', table: schema.loginAttempts },
+              { logType: 'heartbeats', table: schema.heartbeats },
+              { logType: 'pop', table: schema.proofOfPlay },
+            ];
+
+            for (const source of sources) {
+              const rows = await db
+                .select()
+                .from(source.table)
+                .where(lte(source.table.created_at, cutoff));
+
+              if (!rows.length) continue;
+
+              const timestamps = rows
+                .map((row: any) => new Date(row.created_at).getTime())
+                .filter((value) => Number.isFinite(value));
+              if (!timestamps.length) continue;
+
+              const payload = rows.map((row) => JSON.stringify(row)).join('\n');
+              const objectKey = `logs/${source.logType}/cleanup_${cutoff.toISOString()}_${Date.now()}.ndjson`;
+              const upload = await putObject(ARCHIVE_BUCKET, objectKey, payload, NDJSON_CONTENT_TYPE);
+
+              const windowStart = new Date(Math.min(...timestamps));
+              const windowEnd = new Date(Math.max(...timestamps));
+
+              const [storageObject] = await db
+                .insert(schema.storageObjects)
+                .values({
+                  bucket: ARCHIVE_BUCKET,
+                  object_key: objectKey,
+                  content_type: NDJSON_CONTENT_TYPE,
+                  size: Buffer.byteLength(payload),
+                  sha256: upload.sha256,
+                })
+                .returning();
+
+              await db.insert(schema.logArchives).values({
+                log_type: source.logType,
+                window_start: windowStart,
+                window_end: windowEnd,
+                record_count: rows.length,
+                storage_object_id: storageObject.id,
+              });
+
+              await db.delete(source.table).where(lte(source.table.created_at, cutoff));
+            }
+            break;
+          }
+          case 'orphaned_objects': {
+            const orphansResult = await db.execute(
+              sql`
+                SELECT id, bucket, object_key
+                FROM storage_objects so
+                WHERE NOT EXISTS (SELECT 1 FROM media m WHERE m.source_object_id = so.id OR m.ready_object_id = so.id OR m.thumbnail_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM schedule_snapshots ss WHERE ss.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM heartbeats h WHERE h.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM proof_of_play pop WHERE pop.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM screenshots s WHERE s.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM request_attachments ra WHERE ra.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM audit_logs al WHERE al.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM system_logs sl WHERE sl.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM login_attempts la WHERE la.storage_object_id = so.id)
+                  AND NOT EXISTS (SELECT 1 FROM log_archives lga WHERE lga.storage_object_id = so.id)
+              `
+            );
+
+            const orphans = (orphansResult as { rows?: any[] }).rows ?? [];
+            if (!orphans.length) {
+              logger.info('No orphaned storage objects found');
+              break;
+            }
+
+            const orphanIds: string[] = [];
+            for (const orphan of orphans) {
+              const { id, bucket, object_key: objectKey } = orphan as any;
+              try {
+                await deleteObject(bucket, objectKey);
+                orphanIds.push(id);
+              } catch (error) {
+                logger.warn(error, `Failed to delete object ${bucket}/${objectKey}`);
+              }
+            }
+
+            if (orphanIds.length) {
+              await db.delete(schema.storageObjects).where(inArray(schema.storageObjects.id, orphanIds));
+              logger.info(`Removed ${orphanIds.length} orphaned storage objects`);
+            }
+            break;
+          }
+          default:
+            logger.warn(`Unknown cleanup type: ${type}`);
+        }
+      } catch (error) {
+        logger.error(error, `Cleanup failed for type ${type}`);
+      }
     }
   });
 
@@ -219,4 +658,3 @@ export async function scheduleRecurringJobs() {
     logger.warn('Server will continue without scheduled jobs');
   }
 }
-

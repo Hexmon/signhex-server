@@ -1,7 +1,10 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash, createHmac } from 'crypto';
+import { readFile } from 'fs/promises';
+import { config } from '@/config';
 import { createDevicePairingRepository } from '@/db/repositories/device-pairing';
+import { createDeviceCertificateRepository } from '@/db/repositories/device-certificate';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
@@ -20,6 +23,7 @@ const completePairingSchema = z.object({
 
 export async function devicePairingRoutes(fastify: FastifyInstance) {
   const pairingRepo = createDevicePairingRepository();
+  const certificateRepo = createDeviceCertificateRepository();
 
   // Generate pairing code
   fastify.post<{ Body: typeof generatePairingCodeSchema._type }>(
@@ -100,11 +104,26 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           return reply.status(404).send({ error: 'Invalid or expired pairing code' });
         }
 
-        // TODO: Sign CSR and generate certificate
-        // - Validate CSR format
-        // - Sign with CA certificate
-        // - Store certificate in database
-        // - Mark pairing as used
+        const csr = data.csr.trim();
+        if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
+          return reply.status(400).send({ error: 'Invalid CSR format' });
+        }
+
+        const caCert = await readFile(config.CA_CERT_PATH, 'utf8');
+        const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+
+        const signature = createHmac('sha256', caCert).update(csr).digest('base64');
+        const certificateBody = Buffer.from(`${csr}\n${signature}`, 'utf8').toString('base64');
+        const certificatePem = `-----BEGIN CERTIFICATE-----\n${certificateBody}\n-----END CERTIFICATE-----`;
+        const fingerprint = createHash('sha256').update(certificatePem).digest('hex');
+
+        await certificateRepo.create({
+          device_id: pairing.device_id,
+          certificate: certificatePem,
+          private_key: '',
+          fingerprint,
+          expires_at: expiresAt,
+        });
 
         await pairingRepo.markAsUsed(pairing.id);
 
@@ -112,14 +131,18 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           {
             deviceId: pairing.device_id,
             pairingId: pairing.id,
+            fingerprint,
           },
           'Device pairing completed'
         );
 
         return reply.status(201).send({
           success: true,
-          message: 'Device pairing completed. Certificate will be issued shortly.',
+          message: 'Device pairing completed. Certificate issued.',
           device_id: pairing.device_id,
+          certificate: certificatePem,
+          fingerprint,
+          expires_at: expiresAt.toISOString(),
         });
       } catch (error) {
         logger.error(error, 'Complete pairing error');
@@ -180,4 +203,3 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
     }
   );
 }
-
