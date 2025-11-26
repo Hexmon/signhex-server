@@ -46,7 +46,7 @@ services:
       PORT: 3000
       DEVICE_PORT: 8443
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/hexmon
-      JWT_SECRET: your-secret-key-min-32-chars-long-here-dev
+      JWT_SECRET: lLJVvMctX9ieXWTspeJwfzTcSCsQ8MVrZbDF5w31Uoo=
       JWT_EXPIRY: 900
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000

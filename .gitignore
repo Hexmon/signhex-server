@@ -49,3 +49,4 @@ minio_data/
 # Database
 postgres_data/
 
+reports/
