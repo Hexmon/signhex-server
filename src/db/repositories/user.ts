@@ -1,4 +1,4 @@
-import { eq, and, like, desc } from 'drizzle-orm';
+import { eq, and, like, desc, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class UserRepository {

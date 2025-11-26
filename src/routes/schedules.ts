@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { desc } from 'drizzle-orm';
 import {
   createScheduleSchema,
   updateScheduleSchema,

@@ -5,7 +5,6 @@ import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { config as appConfig } from '@/config';
-// import { createLogger } from '@/utils/logger';
 import { authRoutes } from '@/routes/auth';
 import { userRoutes } from '@/routes/users';
 import { mediaRoutes } from '@/routes/media';
@@ -29,8 +28,6 @@ import { metricsRoutes } from '@/routes/metrics';
 import { reportsRoutes } from '@/routes/reports';
 import { userInviteRoutes } from '@/routes/users-invite';
 import { userActivateRoutes } from '@/routes/users-activate';
-
-// const logger = createLogger('server');
 
 export async function createServer() {
   const fastify = Fastify({

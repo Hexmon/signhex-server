@@ -552,8 +552,8 @@ export const webhookSubscriptions = pgTable(
   'webhook_subscriptions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    name: varchar('name', { length: 255 }).array().notNull(),
-    event_types: text('event_types').notNull(),
+    name: varchar('name', { length: 255 }).notNull(),
+    event_types: text('event_types').array().notNull(),
     target_url: varchar('target_url', { length: 2048 }).notNull(),
     secret: varchar('secret', { length: 255 }).notNull(),
     headers: jsonb('headers'),

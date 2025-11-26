@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { and, desc, gte, lte, eq, isNull, isNotNull } from 'drizzle-orm';
+import { and, desc, gte, lte, eq, isNull, isNotNull, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
@@ -115,9 +115,9 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
           const storageIds = items.map((i) => i.storage_object_id).filter(Boolean) as string[];
           const storageRows = storageIds.length
             ? await db
-                .select()
-                .from(schema.storageObjects)
-                .where((schema.storageObjects.id as any).in(storageIds))
+              .select()
+              .from(schema.storageObjects)
+              .where((schema.storageObjects.id as any).in(storageIds))
             : [];
           const storageMap = new Map(storageRows.map((s) => [s.id, s]));
           enriched = await Promise.all(

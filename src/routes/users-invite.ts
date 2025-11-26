@@ -39,7 +39,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
 
         const data = inviteSchema.parse(request.body);
         const tempPassword = randomBytes(6).toString('hex');
-        const token = randomBytes(16).toString('hex');
+        const inviteToken = randomBytes(16).toString('hex');
         const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         const passwordHash = await hashPassword(tempPassword);
         const user = await userRepo.create({
@@ -47,18 +47,25 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
           password_hash: passwordHash,
           role: data.role,
           department_id: data.department_id,
-          ext: {
-            invite_token: token,
-            invite_expires_at: expires.toISOString(),
-          },
         });
+
+        // Update with invite metadata using SQL
+        await db
+          .update(schema.users)
+          .set({
+            ext: {
+              invite_token: inviteToken,
+              invite_expires_at: expires.toISOString(),
+            },
+          })
+          .where((schema.users.id as any).eq(user.id));
 
         return reply.status(201).send({
           id: user.id,
           email: user.email,
           role: user.role,
           department_id: user.department_id,
-          invite_token: token,
+          invite_token: inviteToken,
           invite_expires_at: expires.toISOString(),
           temp_password: tempPassword,
         });
@@ -87,13 +94,13 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         if (!ability.can('update', 'User')) return reply.status(403).send({ error: 'Forbidden' });
 
         const tempPassword = randomBytes(6).toString('hex');
-        const token = randomBytes(16).toString('hex');
+        const inviteToken = randomBytes(16).toString('hex');
         const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         const passwordHash = await hashPassword(tempPassword);
         const user = await userRepo.update((request.params as any).id, {
           password_hash: passwordHash,
           ext: {
-            invite_token: token,
+            invite_token: inviteToken,
             invite_expires_at: expires.toISOString(),
           },
         });

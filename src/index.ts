@@ -1,7 +1,6 @@
 process.setMaxListeners(20);
 
-// import 'dotenv/config';
-import { config as appConfig  } from '@/config';
+import { config as appConfig } from '@/config';
 import { initializeDatabase } from '@/db';
 import { initializeS3, createBucketIfNotExists } from '@/s3';
 import { createServer } from '@/server';
