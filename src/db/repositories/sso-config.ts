@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class SsoConfigRepository {

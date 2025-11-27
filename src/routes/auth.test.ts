@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
-import { createTestServer, generateTestToken, testUser } from '@/test/helpers';
+import { createTestServer, generateTestToken, testUser } from '../test/helpers';
 
 describe('Auth Routes', () => {
   let server: FastifyInstance;

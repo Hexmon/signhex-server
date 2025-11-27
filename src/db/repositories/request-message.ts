@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class RequestMessageRepository {

@@ -4,6 +4,7 @@ import { createDepartmentRepository } from '@/db/repositories/department';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('department-routes');
 
@@ -22,7 +23,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
 
   // Create department
   fastify.post<{ Body: typeof createDepartmentSchema._type }>(
-    '/v1/departments',
+    apiEndpoints.departments.create,
     {
       schema: {
         description: 'Create a new department (admin only)',
@@ -63,7 +64,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
 
   // List departments
   fastify.get<{ Querystring: typeof listDepartmentsQuerySchema._type }>(
-    '/v1/departments',
+    apiEndpoints.departments.list,
     {
       schema: {
         description: 'List departments with pagination',
@@ -109,7 +110,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
 
   // Get department by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/departments/:id',
+    apiEndpoints.departments.get,
     {
       schema: {
         description: 'Get department by ID',
@@ -147,7 +148,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
 
   // Update department
   fastify.patch<{ Params: { id: string }; Body: Partial<typeof createDepartmentSchema._type> }>(
-    '/v1/departments/:id',
+    apiEndpoints.departments.update,
     {
       schema: {
         description: 'Update department (admin only)',
@@ -192,7 +193,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
 
   // Delete department
   fastify.delete<{ Params: { id: string } }>(
-    '/v1/departments/:id',
+    apiEndpoints.departments.delete,
     {
       schema: {
         description: 'Delete department (admin only)',

@@ -7,6 +7,7 @@ import { getPresignedPutUrl, createBucketIfNotExists, headObject } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('media-routes');
 
@@ -24,7 +25,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
   // Presign upload URL
   fastify.post<{ Body: typeof presignUploadSchema._type }>(
-    '/v1/media/presign-upload',
+    apiEndpoints.media.presignUpload,
     {
       schema: {
         description: 'Get presigned URL for direct media upload to MinIO',

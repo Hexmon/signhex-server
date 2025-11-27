@@ -5,6 +5,7 @@ import { hashPassword } from '@/auth/password';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('user-routes');
 
@@ -13,7 +14,7 @@ export async function userRoutes(fastify: FastifyInstance) {
 
   // Create user (admin only)
   fastify.post<{ Body: typeof createUserSchema._type }>(
-    '/v1/users',
+    apiEndpoints.users.create,
     {
       schema: {
         description: 'Create a new user (admin only)',
@@ -67,7 +68,7 @@ export async function userRoutes(fastify: FastifyInstance) {
 
   // List users
   fastify.get<{ Querystring: typeof listUsersQuerySchema._type }>(
-    '/v1/users',
+    apiEndpoints.users.list,
     {
       schema: {
         description: 'List users with pagination and filtering',
@@ -120,7 +121,7 @@ export async function userRoutes(fastify: FastifyInstance) {
 
   // Get user by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/users/:id',
+    apiEndpoints.users.get,
     {
       schema: {
         description: 'Get user by ID',
@@ -162,7 +163,7 @@ export async function userRoutes(fastify: FastifyInstance) {
 
   // Update user
   fastify.patch<{ Params: { id: string }; Body: typeof updateUserSchema._type }>(
-    '/v1/users/:id',
+    apiEndpoints.users.update,
     {
       schema: {
         description: 'Update user (admin only)',
@@ -211,7 +212,7 @@ export async function userRoutes(fastify: FastifyInstance) {
 
   // Delete user (admin only)
   fastify.delete<{ Params: { id: string } }>(
-    '/v1/users/:id',
+    apiEndpoints.users.delete,
     {
       schema: {
         description: 'Delete user (admin only)',
@@ -234,7 +235,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         }
 
         await userRepo.delete((request.params as any).id);
-        return reply.status(204).send({message: "User Deleted Successfully"});
+        return reply.status(204).send({ message: "User Deleted Successfully" });
       } catch (error) {
         logger.error(error, 'Delete user error');
         return reply.status(400).send({ error: 'Invalid request' });
