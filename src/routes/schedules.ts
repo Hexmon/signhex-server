@@ -12,8 +12,11 @@ import { getDatabase, schema } from '@/db';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('schedule-routes');
+const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 export async function scheduleRoutes(fastify: FastifyInstance) {
   const scheduleRepo = createScheduleRepository();
@@ -53,14 +56,14 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Schedule')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = createScheduleSchema.parse(request.body);
@@ -72,7 +75,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           created_by: payload.sub,
         });
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: schedule.id,
           name: schedule.name,
           description: schedule.description,
@@ -85,7 +88,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Create schedule error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -104,7 +107,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -135,7 +138,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List publishes error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -153,13 +156,13 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
         if (!ability.can('update', 'Schedule')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const body = request.body as any;
@@ -169,11 +172,11 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           .where(eq(schema.publishTargets.id, (request.params as any).targetId))
           .returning();
 
-        if (!target) return reply.status(404).send({ error: 'Target not found' });
+        if (!target) return reply.status(NOT_FOUND).send({ error: 'Target not found' });
         return reply.send(target);
       } catch (error) {
         logger.error(error, 'Update publish target error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -192,7 +195,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -224,7 +227,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List schedules error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -243,14 +246,14 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         const schedule = await scheduleRepo.findById((request.params as any).id);
         if (!schedule) {
-          return reply.status(404).send({ error: 'Schedule not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Schedule not found' });
         }
 
         return reply.send({
@@ -266,7 +269,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get schedule error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -285,14 +288,14 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('update', 'Schedule')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = updateScheduleSchema.parse(request.body);
@@ -319,7 +322,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
 
         if (!schedule) {
-          return reply.status(404).send({ error: 'Schedule not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Schedule not found' });
         }
 
         return reply.send({
@@ -335,7 +338,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Update schedule error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -354,14 +357,14 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('update', 'Schedule')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = publishScheduleSchema.parse(request.body);
@@ -414,7 +417,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Publish schedule error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -432,14 +435,14 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         await verifyAccessToken(token);
 
         const [publish] = await db
           .select()
           .from(schema.publishes)
           .where(eq(schema.publishes.id, (request.params as any).id));
-        if (!publish) return reply.status(404).send({ error: 'Publish not found' });
+        if (!publish) return reply.status(NOT_FOUND).send({ error: 'Publish not found' });
 
         const targets = await db
           .select()
@@ -453,7 +456,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get publish error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

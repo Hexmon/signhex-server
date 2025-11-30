@@ -5,8 +5,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('audit-log-routes');
+const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const listAuditLogsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
@@ -35,14 +38,14 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('read', 'AuditLog')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const query = listAuditLogsQuerySchema.parse(request.query);
@@ -76,7 +79,7 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List audit logs error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -95,19 +98,19 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('read', 'AuditLog')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const log = await auditRepo.findById(request.params.id);
         if (!log) {
-          return reply.status(404).send({ error: 'Audit log not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Audit log not found' });
         }
 
         return reply.send({
@@ -123,7 +126,7 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get audit log error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

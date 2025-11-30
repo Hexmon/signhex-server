@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { randomUUID } from 'crypto';
 import { loginSchema } from '@/schemas/auth';
 import { createUserRepository } from '@/db/repositories/user';
 import { createSessionRepository } from '@/db/repositories/session';
@@ -6,8 +7,13 @@ import { verifyPassword } from '@/auth/password';
 import { generateAccessToken, extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { config as appConfig } from '@/config';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
+import { isLockedOut, recordFailedAttempt, resetAttempts } from '@/auth/login-throttle';
 
 const logger = createLogger('auth-routes');
+const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, TOO_MANY_REQUESTS, UNAUTHORIZED } = HTTP_STATUS;
 
 export async function authRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
@@ -29,28 +35,46 @@ export async function authRoutes(fastify: FastifyInstance) {
           },
         },
       },
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: '1 minute',
+        },
+      },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { email, password } = loginSchema.parse(request.body);
 
+        const throttleKey = `${email.toLowerCase()}:${request.ip}`;
+        const locked = isLockedOut(throttleKey, appConfig.LOGIN_LOCKOUT_WINDOW_SECONDS * 1000);
+        if (locked.locked) {
+          return reply
+            .status(TOO_MANY_REQUESTS)
+            .send({ error: 'Too many failed attempts. Try again later.', retry_after_seconds: locked.retryAfter });
+        }
+
         const user = await userRepo.findByEmail(email);
         if (!user) {
-          return reply.status(401).send({ error: 'Invalid credentials !! User dosnt exist' });
+          recordFailedAttempt(throttleKey, appConfig.LOGIN_MAX_ATTEMPTS, appConfig.LOGIN_LOCKOUT_WINDOW_SECONDS * 1000);
+          return reply.status(UNAUTHORIZED).send({ error: 'Invalid credentials' });
         }
 
         const passwordValid = await verifyPassword(password, user.password_hash);
         if (!passwordValid) {
-          return reply.status(401).send({ error: 'Invalid credentials !! Password is incorrect' });
+          recordFailedAttempt(throttleKey, appConfig.LOGIN_MAX_ATTEMPTS, appConfig.LOGIN_LOCKOUT_WINDOW_SECONDS * 1000);
+          return reply.status(UNAUTHORIZED).send({ error: 'Invalid credentials' });
         }
+        resetAttempts(throttleKey);
 
         const { is_active, id, role, first_name, last_name } = user || {}
 
         if (!is_active) {
-          return reply.status(403).send({ error: 'User account is inactive' });
+          return reply.status(FORBIDDEN).send({ error: 'User account is inactive' });
         }
 
         const { token, jti, expiresAt } = await generateAccessToken(id, email, role);
+        const csrfToken = randomUUID();
 
         await sessionRepo.create({
           user_id: id,
@@ -58,8 +82,32 @@ export async function authRoutes(fastify: FastifyInstance) {
           expires_at: expiresAt,
         });
 
-        return reply.send({
-          token,
+        // Issue cookies (JWT as HttpOnly, CSRF as readable token)
+        const secure = appConfig.NODE_ENV !== 'development';
+        const maxAge = Math.max(Math.floor((expiresAt.getTime() - Date.now()) / 1000), 0);
+        const accessCookie = [
+          `access_token=${token}`,
+          'Path=/',
+          'HttpOnly',
+          'SameSite=Lax',
+          `Max-Age=${maxAge}`,
+          secure ? 'Secure' : '',
+        ]
+          .filter(Boolean)
+          .join('; ');
+        const csrfCookie = [
+          `csrf_token=${csrfToken}`,
+          'Path=/',
+          'SameSite=Lax',
+          `Max-Age=${maxAge}`,
+          secure ? 'Secure' : '',
+        ]
+          .filter(Boolean)
+          .join('; ');
+        reply.header('Set-Cookie', [accessCookie, csrfCookie]);
+
+        const includeTokensInBody = appConfig.NODE_ENV === 'development';
+        const responseBody: any = {
           user: {
             id: id,
             email: email,
@@ -68,10 +116,16 @@ export async function authRoutes(fastify: FastifyInstance) {
             role: role,
           },
           expiresAt: expiresAt.toISOString(),
-        });
+        };
+        if (includeTokensInBody) {
+          responseBody.token = token;
+          responseBody.csrf_token = csrfToken;
+        }
+
+        return reply.send(responseBody);
       } catch (error) {
         logger.error(error, 'Login error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -90,16 +144,21 @@ export async function authRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         await sessionRepo.revokeByJti(payload.jti);
 
+        // Clear cookies
+        const secure = appConfig.NODE_ENV !== 'development';
+        const expired = 'Max-Age=0; Path=/; SameSite=Lax' + (secure ? '; Secure' : '');
+        reply.header('Set-Cookie', [`access_token=; ${expired}; HttpOnly`, `csrf_token=; ${expired}`]);
+
         return reply.send({ message: 'Logged out successfully' });
       } catch (error) {
         logger.error(error, 'Logout error');
-        return reply.status(401).send({ error: 'Invalid token' });
+        return reply.status(UNAUTHORIZED).send({ error: 'Invalid token' });
       }
     }
   );
@@ -118,7 +177,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
@@ -126,12 +185,12 @@ export async function authRoutes(fastify: FastifyInstance) {
         // Check if token is revoked
         const session = await sessionRepo.findByJti(payload.jti);
         if (!session) {
-          return reply.status(401).send({ error: 'Token has been revoked' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Token has been revoked' });
         }
 
         const user = await userRepo.findById(payload.sub);
         if (!user) {
-          return reply.status(404).send({ error: 'User not found' });
+          return reply.status(NOT_FOUND).send({ error: 'User not found' });
         }
 
         return reply.send({
@@ -147,9 +206,8 @@ export async function authRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get me error');
-        return reply.status(401).send({ error: 'Invalid token' });
+        return reply.status(UNAUTHORIZED).send({ error: 'Invalid token' });
       }
     }
   );
 }
-

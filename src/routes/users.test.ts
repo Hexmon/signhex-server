@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import { createTestServer, generateTestToken, testUser, closeTestServer } from '@/test/helpers';
+import { HTTP_STATUS } from '@/http-status-codes';
 
 describe('User Routes', () => {
   let server: FastifyInstance;
@@ -29,7 +30,7 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
 
     it('should create user with valid admin token', async () => {
@@ -49,7 +50,7 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(201);
+      expect(response.statusCode).toBe(HTTP_STATUS.CREATED);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty('id');
       expect(body.email).toBe('newuser@example.com');
@@ -72,7 +73,7 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
     });
   });
 
@@ -83,7 +84,7 @@ describe('User Routes', () => {
         url: '/v1/users',
       });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
 
     it('should list users with valid token', async () => {
@@ -95,7 +96,7 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(HTTP_STATUS.OK);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty('items');
       expect(body).toHaveProperty('pagination');
@@ -111,7 +112,7 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(HTTP_STATUS.OK);
       const body = JSON.parse(response.body);
       expect(body.pagination.page).toBe(1);
       expect(body.pagination.limit).toBe(10);
@@ -125,7 +126,7 @@ describe('User Routes', () => {
         url: `/v1/users/${testUser.id}`,
       });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
 
     it('should return 404 for non-existent user', async () => {
@@ -137,7 +138,7 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(404);
+      expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
     });
 
     it('should get user by ID', async () => {
@@ -149,7 +150,7 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(HTTP_STATUS.OK);
       const body = JSON.parse(response.body);
       expect(body.id).toBe(testUser.id);
     });

@@ -9,8 +9,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('device-pairing-routes');
+const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const generatePairingCodeSchema = z.object({
   device_id: z.string().min(1),
@@ -40,14 +43,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'DevicePairing')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = generatePairingCodeSchema.parse(request.body);
@@ -73,7 +76,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           'Pairing code generated'
         );
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: pairing.id,
           pairing_code: pairingCode,
           expires_at: expiresAt.toISOString(),
@@ -81,7 +84,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Generate pairing code error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -102,12 +105,12 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         // Find pairing by code
         const pairing = await pairingRepo.findByCode(data.pairing_code);
         if (!pairing) {
-          return reply.status(404).send({ error: 'Invalid or expired pairing code' });
+          return reply.status(NOT_FOUND).send({ error: 'Invalid or expired pairing code' });
         }
 
         const csr = data.csr.trim();
         if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
-          return reply.status(400).send({ error: 'Invalid CSR format' });
+          return reply.status(BAD_REQUEST).send({ error: 'Invalid CSR format' });
         }
 
         const caCert = await readFile(config.CA_CERT_PATH, 'utf8');
@@ -137,7 +140,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           'Device pairing completed'
         );
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           success: true,
           message: 'Device pairing completed. Certificate issued.',
           device_id: pairing.device_id,
@@ -147,7 +150,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Complete pairing error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -166,14 +169,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('read', 'DevicePairing')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const page = (request.query as any).page ? parseInt((request.query as any).page as string) : 1;
@@ -199,7 +202,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List pairings error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

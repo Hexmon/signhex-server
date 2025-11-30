@@ -5,8 +5,11 @@ import { defineAbilityFor } from '@/rbac';
 import { createSsoConfigRepository } from '@/db/repositories/sso-config';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('sso-config-routes');
+const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const ssoSchema = z.object({
   provider: z.string().default('oidc'),
@@ -36,19 +39,19 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
         if (!ability.can('manage', 'SsoConfig') && !ability.can('update', 'SsoConfig')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = ssoSchema.parse(request.body);
         const record = await repo.upsertActive(data);
-        return reply.status(201).send(record);
+        return reply.status(CREATED).send(record);
       } catch (error) {
         logger.error(error, 'Upsert SSO error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -65,16 +68,16 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'SsoConfig')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'SsoConfig')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const result = await repo.listActive();
         return reply.send({ items: result });
       } catch (error) {
         logger.error(error, 'List SSO error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -91,17 +94,17 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'SsoConfig')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'SsoConfig')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const record = await repo.deactivate((request.params as any).id);
-        if (!record) return reply.status(404).send({ error: 'SSO config not found' });
+        if (!record) return reply.status(NOT_FOUND).send({ error: 'SSO config not found' });
         return reply.send(record);
       } catch (error) {
         logger.error(error, 'Deactivate SSO error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

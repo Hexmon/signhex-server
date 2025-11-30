@@ -5,8 +5,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('presentation-routes');
+const { BAD_REQUEST, CREATED, NOT_FOUND, NO_CONTENT, UNAUTHORIZED } = HTTP_STATUS;
 
 const createPresentationSchema = z.object({
   name: z.string().min(1).max(255),
@@ -35,7 +38,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
@@ -46,7 +49,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           created_by: payload.sub,
         });
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: presentation.id,
           name: presentation.name,
           description: presentation.description,
@@ -56,7 +59,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Create presentation error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -75,7 +78,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -103,7 +106,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List presentations error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -122,14 +125,14 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         const presentation = await presRepo.findById((request.params as any).id);
         if (!presentation) {
-          return reply.status(404).send({ error: 'Presentation not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
         }
 
         return reply.send({
@@ -142,7 +145,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get presentation error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -161,7 +164,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -170,7 +173,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
         const presentation = await presRepo.update((request.params as any).id, data);
 
         if (!presentation) {
-          return reply.status(404).send({ error: 'Presentation not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
         }
 
         return reply.send({
@@ -183,7 +186,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Update presentation error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -202,16 +205,16 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         await presRepo.delete((request.params as any).id);
-        return reply.status(204).send();
+        return reply.status(NO_CONTENT).send();
       } catch (error) {
         logger.error(error, 'Delete presentation error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

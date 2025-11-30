@@ -5,8 +5,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('reports-routes');
+const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
 
 export async function reportsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
@@ -23,10 +26,10 @@ export async function reportsRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Dashboard')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'Dashboard')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const [mediaCount] = await db.select({ count: sql<number>`count(*)` }).from(schema.media);
         const [requestsOpen] = await db
@@ -60,7 +63,7 @@ export async function reportsRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Reports summary error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -77,10 +80,10 @@ export async function reportsRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Dashboard')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'Dashboard')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const now = new Date();
         const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -118,7 +121,7 @@ export async function reportsRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Reports trends error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

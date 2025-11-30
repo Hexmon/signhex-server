@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify, type JWTPayload as JoseJWTPayload } from 'jose';
 import { config as appConfig } from '@/config';
 import { randomUUID } from 'crypto';
+import { AuthError } from '@/auth/errors';
 
 export interface JWTPayload extends JoseJWTPayload {
   sub: string; // user ID
@@ -43,7 +44,7 @@ export async function verifyAccessToken(token: string): Promise<JWTPayload> {
     const verified = await jwtVerify(token, secret);
     return verified.payload as JWTPayload;
   } catch (error) {
-    throw new Error('Invalid or expired token');
+    throw new AuthError('Invalid or expired token');
   }
 }
 
@@ -59,4 +60,3 @@ export function extractTokenFromHeader(authHeader: string | undefined): string |
 
   return parts[1];
 }
-

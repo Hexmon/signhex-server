@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import { createTestServer, generateTestToken, testUser, closeTestServer } from '../test/helpers';
+import { HTTP_STATUS } from '@/http-status-codes';
 
 describe('Auth Routes', () => {
   let server: FastifyInstance;
@@ -24,7 +25,7 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
     });
 
     it('should return 401 for invalid credentials', async () => {
@@ -37,7 +38,7 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
 
     it('should return JWT token for valid credentials', async () => {
@@ -51,7 +52,7 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(HTTP_STATUS.OK);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty('access_token');
       expect(body).toHaveProperty('expires_in');
@@ -65,7 +66,7 @@ describe('Auth Routes', () => {
         url: '/v1/auth/me',
       });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
 
     it('should return 401 with invalid token', async () => {
@@ -77,7 +78,7 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
 
     it('should return current user with valid token', async () => {
@@ -90,7 +91,7 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(HTTP_STATUS.OK);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty('id');
       expect(body).toHaveProperty('email');
@@ -105,7 +106,7 @@ describe('Auth Routes', () => {
         url: '/v1/auth/logout',
       });
 
-      expect(response.statusCode).toBe(401);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
 
     it('should revoke token on logout', async () => {
@@ -120,7 +121,7 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(logoutResponse.statusCode).toBe(200);
+      expect(logoutResponse.statusCode).toBe(HTTP_STATUS.OK);
 
       // Try to use the same token again
       const meResponse = await server.inject({
@@ -131,7 +132,7 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(meResponse.statusCode).toBe(401);
+      expect(meResponse.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
     });
   });
 });

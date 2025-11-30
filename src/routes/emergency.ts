@@ -6,8 +6,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('emergency-routes');
+const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const triggerEmergencySchema = z.object({
   message: z.string().min(1).max(1000),
@@ -44,14 +47,14 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Emergency')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = triggerEmergencySchema.parse(request.body);
@@ -59,7 +62,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         // Check if there's already an active emergency
         const active = await emergencyRepo.getActive();
         if (active) {
-          return reply.status(409).send({ error: 'Emergency already active' });
+          return reply.status(CONFLICT).send({ error: 'Emergency already active' });
         }
 
         const emergency = await emergencyRepo.create({
@@ -84,7 +87,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           'Emergency triggered'
         );
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: emergency.id,
           triggered_by: emergency.triggered_by,
           message: emergency.message,
@@ -95,7 +98,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Trigger emergency error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -114,7 +117,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -140,7 +143,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get emergency status error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -159,20 +162,20 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('delete', 'Emergency')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const emergency = await emergencyRepo.clear((request.params as any).id, payload.sub);
 
         if (!emergency) {
-          return reply.status(404).send({ error: 'Emergency not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Emergency not found' });
         }
 
         io.emit('emergency:cleared', {
@@ -203,7 +206,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Clear emergency error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -222,14 +225,14 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('read', 'Emergency')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const page = (request.query as any).page ? parseInt((request.query as any).page as string) : 1;
@@ -255,7 +258,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List emergency history error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

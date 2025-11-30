@@ -5,8 +5,11 @@ import { defineAbilityFor } from '@/rbac';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('settings-routes');
+const { BAD_REQUEST, CREATED, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
 
 const upsertSettingSchema = z.object({
   key: z.string().min(1),
@@ -28,16 +31,16 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'OrgSettings')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'OrgSettings')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const items = await db.select().from(schema.settings);
         return reply.send({ items });
       } catch (error) {
         logger.error(error, 'List settings error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -54,10 +57,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'OrgSettings')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'OrgSettings')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const data = upsertSettingSchema.parse(request.body);
         const [record] = await db
@@ -68,10 +71,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
             set: { value: data.value, updated_at: new Date() },
           })
           .returning();
-        return reply.status(201).send(record);
+        return reply.status(CREATED).send(record);
       } catch (error) {
         logger.error(error, 'Upsert setting error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

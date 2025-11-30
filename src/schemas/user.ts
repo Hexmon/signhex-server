@@ -1,8 +1,19 @@
 import { z } from 'zod';
+import { validatePasswordStrength } from '@/auth/password';
 
 export const createUserSchema = z.object({
   email: z.string().email('Invalid email address'),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .refine((val) => {
+      try {
+        validatePasswordStrength(val);
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'Password must include upper, lower, number, and special character and meet length requirements'),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
   role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']).default('OPERATOR'),
@@ -44,4 +55,3 @@ export const listUsersQuerySchema = z.object({
 });
 
 export type ListUsersQuery = z.infer<typeof listUsersQuerySchema>;
-

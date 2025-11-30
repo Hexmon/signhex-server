@@ -4,8 +4,11 @@ import { createNotificationRepository } from '@/db/repositories/notification';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('notification-routes');
+const { BAD_REQUEST, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const listNotificationsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
@@ -30,7 +33,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
@@ -61,7 +64,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List notifications error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -80,19 +83,19 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
-          return reply.status(404).send({ error: 'Notification not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Notification not found' });
         }
 
         // Check ownership
         if (notification.user_id !== payload.sub) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         return reply.send({
@@ -107,7 +110,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get notification error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -126,19 +129,19 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
-          return reply.status(404).send({ error: 'Notification not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Notification not found' });
         }
 
         // Check ownership
         if (notification.user_id !== payload.sub) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const updated = await notifRepo.markAsRead((request.params as any).id);
@@ -155,7 +158,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Mark notification as read error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -174,7 +177,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
@@ -183,7 +186,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
         return reply.send({ success: true });
       } catch (error) {
         logger.error(error, 'Mark all notifications as read error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -202,26 +205,26 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
-          return reply.status(404).send({ error: 'Notification not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Notification not found' });
         }
 
         // Check ownership
         if (notification.user_id !== payload.sub) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         await notifRepo.delete((request.params as any).id);
-        return reply.status(204).send();
+        return reply.status(NO_CONTENT).send();
       } catch (error) {
         logger.error(error, 'Delete notification error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

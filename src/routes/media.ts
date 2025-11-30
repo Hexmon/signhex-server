@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import path from 'path';
 import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/schemas/media';
 import { createMediaRepository } from '@/db/repositories/media';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
@@ -8,8 +9,11 @@ import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { apiEndpoints, PENDINGSTATUS } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('media-routes');
+const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const completeUploadSchema = z.object({
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']).optional().default('READY'),
@@ -37,19 +41,20 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Media')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = presignUploadSchema.parse(request.body);
         const mediaId = randomUUID();
-        const objectKey = `${mediaId}/${data.filename}`;
+        const safeFilename = path.basename(data.filename);
+        const objectKey = `${mediaId}/${safeFilename}`;
         const bucket = 'media-source';
 
         const inferredType = data.content_type?.startsWith('video')
@@ -86,7 +91,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Presign upload error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -105,14 +110,14 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Media')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = createMediaSchema.parse(request.body);
@@ -123,7 +128,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           created_by: payload.sub,
         });
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: media.id,
           name: media.name,
           type: media.type,
@@ -134,7 +139,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Create media error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -153,7 +158,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -193,7 +198,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List media error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -212,14 +217,14 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         const media = await mediaRepo.findById((request.params as any).id);
         if (!media) {
-          return reply.status(404).send({ error: 'Media not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Media not found' });
         }
 
         return reply.send({
@@ -242,7 +247,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get media error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -261,23 +266,23 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
         if (!ability.can('update', 'Media')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = completeUploadSchema.parse(request.body);
         const media = await mediaRepo.findById((request.params as any).id);
         if (!media) {
-          return reply.status(404).send({ error: 'Media not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Media not found' });
         }
 
         if (!media.source_bucket || !media.source_object_key) {
-          return reply.status(400).send({ error: 'Media missing source object info' });
+          return reply.status(BAD_REQUEST).send({ error: 'Media missing source object info' });
         }
 
         let head: any;
@@ -285,7 +290,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           head = await headObject(media.source_bucket, media.source_object_key);
         } catch (err) {
           logger.error(err, 'Head object failed');
-          return reply.status(400).send({ error: 'Source object not found in storage' });
+          return reply.status(BAD_REQUEST).send({ error: 'Source object not found in storage' });
         }
 
         const updated = await mediaRepo.update(media.id, {
@@ -312,7 +317,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Complete upload error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

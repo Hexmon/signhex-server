@@ -5,8 +5,11 @@ import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
 import { putObject } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('device-telemetry-routes');
+const { BAD_REQUEST, CREATED, NOT_FOUND } = HTTP_STATUS;
 const HEARTBEAT_BUCKET = 'logs-heartbeats';
 const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
 
@@ -58,7 +61,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .where(eq(schema.screens.id, data.device_id));
 
         if (!screen) {
-          return reply.status(404).send({ error: 'Device not registered' });
+          return reply.status(NOT_FOUND).send({ error: 'Device not registered' });
         }
 
         const receivedAt = new Date();
@@ -131,7 +134,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Heartbeat error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -187,13 +190,13 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           'Proof of play received'
         );
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           success: true,
           timestamp: new Date().toISOString(),
         });
       } catch (error) {
         logger.error(error, 'Proof of play error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -227,14 +230,14 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           'Device screenshot uploaded'
         );
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           success: true,
           object_key: objectKey,
           timestamp: new Date().toISOString(),
         });
       } catch (error) {
         logger.error(error, 'Screenshot upload error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -286,7 +289,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get commands error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -316,7 +319,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .returning({ id: schema.deviceCommands.id });
 
         if (!updatedCommand) {
-          return reply.status(404).send({ error: 'Command not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Command not found' });
         }
 
         logger.info({ deviceId, commandId }, 'Command acknowledged');
@@ -327,7 +330,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Acknowledge command error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

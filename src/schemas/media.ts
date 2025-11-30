@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { config as appConfig } from '@/config';
 
 export const createMediaSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
@@ -7,10 +8,25 @@ export const createMediaSchema = z.object({
 
 export type CreateMediaRequest = z.infer<typeof createMediaSchema>;
 
+const allowedContentTypes = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'video/mp4',
+  'video/quicktime',
+  'application/pdf',
+] as const;
+
 export const presignUploadSchema = z.object({
-  filename: z.string().min(1),
-  content_type: z.string(),
-  size: z.number().positive(),
+  filename: z
+    .string()
+    .min(1)
+    .transform((val) => val.replace(/[^\\w.\\-]+/g, '_')),
+  content_type: z.enum(allowedContentTypes),
+  size: z
+    .number()
+    .positive()
+    .max(appConfig.MAX_UPLOAD_MB * 1024 * 1024, `File too large (max ${appConfig.MAX_UPLOAD_MB} MB)`),
 });
 
 export type PresignUploadRequest = z.infer<typeof presignUploadSchema>;
@@ -52,4 +68,3 @@ export const listMediaQuerySchema = z.object({
 });
 
 export type ListMediaQuery = z.infer<typeof listMediaQuerySchema>;
-

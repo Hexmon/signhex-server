@@ -5,8 +5,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('department-routes');
+const { CREATED, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const createDepartmentSchema = z.object({
   name: z.string().min(1).max(255),
@@ -35,20 +38,20 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Department')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = createDepartmentSchema.parse(request.body);
         const department = await deptRepo.create(data);
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: department.id,
           name: department.name,
           description: department.description,
@@ -57,7 +60,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Create department error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -76,7 +79,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -103,7 +106,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List departments error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -122,14 +125,14 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         const department = await deptRepo.findById((request.params as any).id);
         if (!department) {
-          return reply.status(404).send({ error: 'Department not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Department not found' });
         }
 
         return reply.send({
@@ -141,7 +144,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get department error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -160,21 +163,21 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('update', 'Department')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = createDepartmentSchema.partial().parse(request.body);
         const department = await deptRepo.update((request.params as any).id, data);
 
         if (!department) {
-          return reply.status(404).send({ error: 'Department not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Department not found' });
         }
 
         return reply.send({
@@ -186,7 +189,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Update department error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -205,23 +208,22 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('delete', 'Department')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         await deptRepo.delete((request.params as any).id);
-        return reply.status(204).send();
+        return reply.status(NO_CONTENT).send();
       } catch (error) {
         logger.error(error, 'Delete department error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
 }
-

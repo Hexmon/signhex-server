@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
+import fastifyCookie from '@fastify/cookie';
 import { config as appConfig } from '@/config';
 import { authRoutes } from '@/routes/auth';
 import { userRoutes } from '@/routes/users';
@@ -28,6 +29,7 @@ import { metricsRoutes } from '@/routes/metrics';
 import { reportsRoutes } from '@/routes/reports';
 import { userInviteRoutes } from '@/routes/users-invite';
 import { userActivateRoutes } from '@/routes/users-activate';
+import csrfProtectionPlugin from '@/middleware/csrf';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -52,13 +54,33 @@ export async function createServer() {
         imgSrc: ["'self'", 'data:', 'https:'],
       },
     },
+    frameguard: { action: 'deny' },
+    referrerPolicy: { policy: 'no-referrer' },
+    crossOriginResourcePolicy: { policy: 'same-site' },
   });
+
+  await fastify.register(fastifyCookie, {
+    secret: appConfig.JWT_SECRET,
+    hook: 'onRequest',
+  });
+
+  const allowedOrigins = [
+    'http://localhost:8080',
+    ...appConfig.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean),
+  ];
 
   // CORS
   await fastify.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.length === 0) return cb(new Error('CORS origin not allowed'), false);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(new Error('CORS origin not allowed'), false);
+    },
     credentials: true,
   });
+
+  await fastify.register(csrfProtectionPlugin);
 
   // Rate limiting (can be disabled or tuned via env)
   if (appConfig.RATE_LIMIT_ENABLED) {

@@ -8,8 +8,11 @@ import { createLogger } from '@/utils/logger';
 import { stringify } from 'csv-stringify/sync';
 import { getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('proof-of-play-routes');
+const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
 
 const listSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
@@ -50,10 +53,10 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'ProofOfPlay')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'ProofOfPlay')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const query = listSchema.parse(request.query);
         const page = query.page;
@@ -136,7 +139,7 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List proof-of-play error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -154,10 +157,10 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'ProofOfPlay')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'ProofOfPlay')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const query = listSchema.parse(request.query);
         const where = (buildConditions(query).length ? and(...buildConditions(query)) : undefined) as any;
@@ -185,7 +188,7 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
         return reply.send(csv);
       } catch (error) {
         logger.error(error, 'Export proof-of-play error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

@@ -10,6 +10,9 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createHash } from 'crypto';
 import { config as appConfig } from '@/config';
+import { HTTP_STATUS } from '@/http-status-codes';
+
+const { NOT_FOUND } = HTTP_STATUS;
 
 let s3Client: S3Client | null = null;
 
@@ -42,7 +45,7 @@ export async function createBucketIfNotExists(bucketName: string): Promise<void>
     await client.send(new HeadBucketCommand({ Bucket: bucketName }));
   } catch (error: any) {
     // If bucket doesn't exist (404), create it
-    if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+    if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === NOT_FOUND) {
       await client.send(new CreateBucketCommand({ Bucket: bucketName }));
     } else {
       // For other errors (like connection errors), throw them
@@ -133,4 +136,3 @@ export function computeSha256(data: Buffer | string): string {
   const buffer = typeof data === 'string' ? Buffer.from(data) : data;
   return createHash('sha256').update(buffer).digest('hex');
 }
-

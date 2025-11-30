@@ -25,6 +25,12 @@ const envSchema = z.object({
   RATE_LIMIT_ENABLED: z.enum(['true', 'false']).transform((v) => v === 'true').default('true'),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(1000),
   RATE_LIMIT_TIME_WINDOW: z.string().default('1 minute'),
+  CORS_ORIGINS: z.string().default(''),
+  CSRF_ENABLED: z.enum(['true', 'false']).transform((v) => v === 'true').default('true'),
+  PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).default(12),
+  LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  LOGIN_LOCKOUT_WINDOW_SECONDS: z.coerce.number().int().positive().default(15 * 60),
+  MAX_UPLOAD_MB: z.coerce.number().int().positive().default(200),
 });
 const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {

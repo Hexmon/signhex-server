@@ -5,8 +5,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('screen-routes');
+const { BAD_REQUEST, CREATED, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const createScreenSchema = z.object({
   name: z.string().min(1).max(255),
@@ -36,20 +39,20 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Screen')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = createScreenSchema.parse(request.body);
         const screen = await screenRepo.create(data);
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: screen.id,
           name: screen.name,
           location: screen.location,
@@ -60,7 +63,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Create screen error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -79,7 +82,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -109,7 +112,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List screens error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -128,14 +131,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         const screen = await screenRepo.findById((request.params as any).id);
         if (!screen) {
-          return reply.status(404).send({ error: 'Screen not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
         }
 
         return reply.send({
@@ -149,7 +152,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get screen error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -168,21 +171,21 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('update', 'Screen')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = createScreenSchema.partial().parse(request.body);
         const screen = await screenRepo.update((request.params as any).id, data);
 
         if (!screen) {
-          return reply.status(404).send({ error: 'Screen not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
         }
 
         return reply.send({
@@ -196,7 +199,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Update screen error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -215,21 +218,21 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('delete', 'Screen')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         await screenRepo.delete((request.params as any).id);
-        return reply.status(204).send();
+        return reply.status(NO_CONTENT).send();
       } catch (error) {
         logger.error(error, 'Delete screen error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

@@ -10,8 +10,11 @@ import { createUserRepository } from '@/db/repositories/user';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('request-routes');
+const { BAD_REQUEST, CREATED, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const createRequestSchema = z.object({
   title: z.string().min(1).max(255),
@@ -67,7 +70,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
@@ -79,7 +82,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
           created_by: payload.sub,
         });
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: req.id,
           title: req.title,
           description: req.description,
@@ -93,7 +96,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Create request error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -112,7 +115,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -145,7 +148,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List requests error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -164,14 +167,14 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         const req = await reqRepo.findById((request.params as any).id);
         if (!req) {
-          return reply.status(404).send({ error: 'Request not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Request not found' });
         }
 
         const attachments = await db
@@ -195,7 +198,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get request error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -214,7 +217,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -223,7 +226,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         const req = await reqRepo.update((request.params as any).id, data);
 
         if (!req) {
-          return reply.status(404).send({ error: 'Request not found' });
+          return reply.status(NOT_FOUND).send({ error: 'Request not found' });
         }
 
         return reply.send({
@@ -240,7 +243,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Update request error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -259,7 +262,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
@@ -275,7 +278,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         const author = await userRepo.findById(payload.sub);
         const attachmentUrls = await resolveAttachments(data.attachments);
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: message.id,
           request_id: message.request_id,
           user_id: message.author_id,
@@ -294,7 +297,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Add message error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -313,7 +316,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -374,7 +377,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List messages error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );

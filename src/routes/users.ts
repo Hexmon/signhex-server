@@ -6,8 +6,11 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('user-routes');
+const { BAD_REQUEST, CREATED, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 export async function userRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
@@ -26,14 +29,14 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'User')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = createUserSchema.parse(request.body);
@@ -48,7 +51,7 @@ export async function userRoutes(fastify: FastifyInstance) {
           department_id: data.department_id,
         });
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: user.id,
           email: user.email,
           first_name: user.first_name,
@@ -61,7 +64,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Create user error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -80,7 +83,7 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
@@ -114,7 +117,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List users error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -133,14 +136,14 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         await verifyAccessToken(token);
 
         const user = await userRepo.findById((request.params as any).id);
         if (!user) {
-          return reply.status(404).send({ error: 'User not found' });
+          return reply.status(NOT_FOUND).send({ error: 'User not found' });
         }
 
         return reply.send({
@@ -156,7 +159,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get user error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -175,21 +178,21 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('update', 'User')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         const data = updateUserSchema.parse(request.body);
         const user = await userRepo.update((request.params as any).id, data);
 
         if (!user) {
-          return reply.status(404).send({ error: 'User not found' });
+          return reply.status(NOT_FOUND).send({ error: 'User not found' });
         }
 
         return reply.send({
@@ -205,7 +208,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Update user error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -224,23 +227,22 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(401).send({ error: 'Missing authorization header' });
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('delete', 'User')) {
-          return reply.status(403).send({ error: 'Forbidden' });
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
         await userRepo.delete((request.params as any).id);
-        return reply.status(204).send({ message: "User Deleted Successfully" });
+        return reply.status(NO_CONTENT).send({ message: "User Deleted Successfully" });
       } catch (error) {
         logger.error(error, 'Delete user error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
 }
-

@@ -9,8 +9,11 @@ import { randomBytes } from 'crypto';
 import { createLogger } from '@/utils/logger';
 import { getDatabase, schema } from '@/db';
 import { apiEndpoints } from '@/config/apiEndpoints';
+import { HTTP_STATUS } from '@/http-status-codes';
+import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('users-invite-routes');
+const { CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
 const inviteSchema = z.object({
   email: z.string().email(),
@@ -34,10 +37,10 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('create', 'User')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('create', 'User')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const data = inviteSchema.parse(request.body);
         const tempPassword = randomBytes(6).toString('hex');
@@ -62,7 +65,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
           })
           .where(eq(schema.users.id, user.id));
 
-        return reply.status(201).send({
+        return reply.status(CREATED).send({
           id: user.id,
           email: user.email,
           role: user.role,
@@ -73,7 +76,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Invite user error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
@@ -90,10 +93,10 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(401).send({ error: 'Missing authorization header' });
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'User')) return reply.status(403).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'User')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
 
         const tempPassword = randomBytes(6).toString('hex');
         const inviteToken = randomBytes(16).toString('hex');
@@ -106,7 +109,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
             invite_expires_at: expires.toISOString(),
           },
         });
-        if (!user) return reply.status(404).send({ error: 'User not found' });
+        if (!user) return reply.status(NOT_FOUND).send({ error: 'User not found' });
 
         return reply.send({
           id: user.id,
@@ -115,7 +118,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Reset password error');
-        return reply.status(400).send({ error: 'Invalid request' });
+        return respondWithError(reply, error);
       }
     }
   );
