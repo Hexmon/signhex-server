@@ -7,7 +7,7 @@ import { getPresignedPutUrl, createBucketIfNotExists, headObject } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
-import { apiEndpoints } from '@/config/apiEndpoints';
+import { apiEndpoints, PENDINGSTATUS } from '@/config/apiEndpoints';
 
 const logger = createLogger('media-routes');
 
@@ -69,7 +69,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           id: mediaId,
           name: data.filename,
           type: inferredType as any,
-          status: 'PENDING',
+          status: PENDINGSTATUS,
           source_bucket: bucket,
           source_object_key: objectKey,
           source_content_type: data.content_type,
@@ -93,7 +93,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
   // Create media metadata
   fastify.post<{ Body: typeof createMediaSchema._type }>(
-    '/v1/media',
+    apiEndpoints.media.create,
     {
       schema: {
         description: 'Create media metadata',
@@ -141,7 +141,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
   // List media
   fastify.get<{ Querystring: typeof listMediaQuerySchema._type }>(
-    '/v1/media',
+    apiEndpoints.media.list,
     {
       schema: {
         description: 'List media with pagination and filtering',
@@ -200,7 +200,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
   // Get media by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/media/:id',
+    apiEndpoints.media.get,
     {
       schema: {
         description: 'Get media by ID',
@@ -249,7 +249,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
   // Finalize upload after client PUT
   fastify.post<{ Params: { id: string }; Body: typeof completeUploadSchema._type }>(
-    '/v1/media/:id/complete',
+    apiEndpoints.media.complete,
     {
       schema: {
         description: 'Finalize media upload and verify object',

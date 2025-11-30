@@ -1,5 +1,4 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { z } from 'zod';
 import { desc, eq, inArray } from 'drizzle-orm';
 import {
   createScheduleSchema,
@@ -7,6 +6,7 @@ import {
   listSchedulesQuerySchema,
   publishScheduleSchema,
 } from '@/schemas/schedule';
+import { apiEndpoints } from '@/config/apiEndpoints';
 import { createScheduleRepository } from '@/db/repositories/schedule';
 import { getDatabase, schema } from '@/db';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
@@ -41,7 +41,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
 
   // Create schedule
   fastify.post<{ Body: typeof createScheduleSchema._type }>(
-    '/v1/schedules',
+    apiEndpoints.schedules.create,
     {
       schema: {
         description: 'Create a new schedule',
@@ -92,7 +92,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
 
   // Publish status and history
   fastify.get<{ Params: { id: string } }>(
-    '/v1/schedules/:id/publishes',
+    apiEndpoints.schedules.publishes,
     {
       schema: {
         description: 'Get publish history and target status for a schedule',
@@ -141,7 +141,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
   );
 
   fastify.patch<{ Params: { publishId: string; targetId: string }; Body: { status: string; error?: string } }>(
-    '/v1/publishes/:publishId/targets/:targetId',
+    apiEndpoints.schedules.updatePublishTarget,
     {
       schema: {
         description: 'Update publish target status',
@@ -180,7 +180,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
 
   // List schedules
   fastify.get<{ Querystring: typeof listSchedulesQuerySchema._type }>(
-    '/v1/schedules',
+    apiEndpoints.schedules.list,
     {
       schema: {
         description: 'List schedules with pagination',
@@ -231,7 +231,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
 
   // Get schedule by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/schedules/:id',
+    apiEndpoints.schedules.get,
     {
       schema: {
         description: 'Get schedule by ID',
@@ -273,7 +273,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
 
   // Update schedule
   fastify.patch<{ Params: { id: string }; Body: typeof updateScheduleSchema._type }>(
-    '/v1/schedules/:id',
+    apiEndpoints.schedules.update,
     {
       schema: {
         description: 'Update schedule',
@@ -342,7 +342,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
 
   // Publish schedule
   fastify.post<{ Params: { id: string }; Body: typeof publishScheduleSchema._type }>(
-    '/v1/schedules/:id/publish',
+    apiEndpoints.schedules.publish,
     {
       schema: {
         description: 'Publish schedule to screens',
@@ -421,7 +421,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
 
   // Poll single publish
   fastify.get<{ Params: { id: string } }>(
-    '/v1/publishes/:id',
+    apiEndpoints.schedules.publishStatus,
     {
       schema: {
         description: 'Get publish record and target statuses',

@@ -7,6 +7,7 @@ import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { stringify } from 'csv-stringify/sync';
 import { getPresignedUrl } from '@/s3';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('proof-of-play-routes');
 
@@ -38,7 +39,7 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
   };
 
   fastify.get<{ Querystring: typeof listSchema._type }>(
-    '/v1/proof-of-play',
+    apiEndpoints.proofOfPlay.list,
     {
       schema: {
         description: 'List proof-of-play records',
@@ -142,7 +143,7 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
 
   // Export CSV
   fastify.get<{ Querystring: typeof listSchema._type }>(
-    '/v1/proof-of-play/export',
+    apiEndpoints.proofOfPlay.export,
     {
       schema: {
         description: 'Export proof-of-play records as CSV',

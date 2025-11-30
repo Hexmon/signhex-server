@@ -5,6 +5,7 @@ import { createEmergencyRepository } from '@/db/repositories/emergency';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('emergency-routes');
 
@@ -31,7 +32,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
   // Trigger emergency
   fastify.post<{ Body: typeof triggerEmergencySchema._type }>(
-    '/v1/emergency/trigger',
+    apiEndpoints.emergency.trigger,
     {
       schema: {
         description: 'Trigger emergency alert (admin/operator only)',
@@ -101,7 +102,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
   // Get emergency status
   fastify.get(
-    '/v1/emergency/status',
+    apiEndpoints.emergency.status,
     {
       schema: {
         description: 'Get current emergency status',
@@ -146,7 +147,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
   // Clear emergency
   fastify.post<{ Params: { id: string } }>(
-    '/v1/emergency/:id/clear',
+    apiEndpoints.emergency.clear,
     {
       schema: {
         description: 'Clear emergency alert (admin only)',
@@ -209,7 +210,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
   // List emergency history
   fastify.get<{ Querystring: { page?: number; limit?: number } }>(
-    '/v1/emergency/history',
+    apiEndpoints.emergency.history,
     {
       schema: {
         description: 'List emergency history (admin only)',

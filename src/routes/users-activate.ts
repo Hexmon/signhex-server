@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createUserRepository } from '@/db/repositories/user';
 import { hashPassword } from '@/auth/password';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('user-activate-route');
 
@@ -15,7 +16,7 @@ export async function userActivateRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
 
   fastify.post<{ Body: typeof activateSchema._type }>(
-    '/v1/users/activate',
+    apiEndpoints.userActivate.activate,
     {
       schema: {
         description: 'Activate invited user with token',

@@ -4,6 +4,7 @@ import { getDatabase, schema } from '@/db';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('reports-routes');
 
@@ -11,7 +12,7 @@ export async function reportsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
   fastify.get(
-    '/v1/reports/summary',
+    apiEndpoints.reports.summary,
     {
       schema: {
         description: 'Reports summary KPIs',
@@ -65,7 +66,7 @@ export async function reportsRoutes(fastify: FastifyInstance) {
   );
 
   fastify.get(
-    '/v1/reports/trends',
+    apiEndpoints.reports.trends,
     {
       schema: {
         description: 'Reports trends for dashboards',

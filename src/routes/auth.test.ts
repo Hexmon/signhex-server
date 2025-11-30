@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
-import { createTestServer, generateTestToken, testUser } from '../test/helpers';
+import { createTestServer, generateTestToken, testUser, closeTestServer } from '../test/helpers';
 
 describe('Auth Routes', () => {
   let server: FastifyInstance;
@@ -10,7 +10,7 @@ describe('Auth Routes', () => {
   });
 
   afterAll(async () => {
-    await server.close();
+    await closeTestServer(server);
   });
 
   describe('POST /v1/auth/login', () => {
@@ -135,4 +135,3 @@ describe('Auth Routes', () => {
     });
   });
 });
-

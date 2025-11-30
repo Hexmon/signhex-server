@@ -8,6 +8,7 @@ import { createDeviceCertificateRepository } from '@/db/repositories/device-cert
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('device-pairing-routes');
 
@@ -27,7 +28,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
   // Generate pairing code
   fastify.post<{ Body: typeof generatePairingCodeSchema._type }>(
-    '/v1/device-pairing/generate',
+    apiEndpoints.devicePairing.generate,
     {
       schema: {
         description: 'Generate pairing code for device (admin only)',
@@ -87,7 +88,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
   // Complete pairing (device endpoint - no auth required)
   fastify.post<{ Body: typeof completePairingSchema._type }>(
-    '/v1/device-pairing/complete',
+    apiEndpoints.devicePairing.complete,
     {
       schema: {
         description: 'Complete device pairing with CSR',
@@ -153,7 +154,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
   // List pairings
   fastify.get<{ Querystring: { page?: number; limit?: number } }>(
-    '/v1/device-pairing',
+    apiEndpoints.devicePairing.list,
     {
       schema: {
         description: 'List device pairings (admin only)',

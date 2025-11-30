@@ -4,6 +4,7 @@ import { createPresentationRepository } from '@/db/repositories/presentation';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('presentation-routes');
 
@@ -22,7 +23,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
 
   // Create presentation
   fastify.post<{ Body: typeof createPresentationSchema._type }>(
-    '/v1/presentations',
+    apiEndpoints.presentations.create,
     {
       schema: {
         description: 'Create a new presentation',
@@ -62,7 +63,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
 
   // List presentations
   fastify.get<{ Querystring: typeof listPresentationsQuerySchema._type }>(
-    '/v1/presentations',
+    apiEndpoints.presentations.list,
     {
       schema: {
         description: 'List presentations with pagination',
@@ -109,7 +110,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
 
   // Get presentation by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/presentations/:id',
+    apiEndpoints.presentations.get,
     {
       schema: {
         description: 'Get presentation by ID',
@@ -148,7 +149,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
 
   // Update presentation
   fastify.patch<{ Params: { id: string }; Body: Partial<typeof createPresentationSchema._type> }>(
-    '/v1/presentations/:id',
+    apiEndpoints.presentations.update,
     {
       schema: {
         description: 'Update presentation',
@@ -189,7 +190,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
 
   // Delete presentation
   fastify.delete<{ Params: { id: string } }>(
-    '/v1/presentations/:id',
+    apiEndpoints.presentations.delete,
     {
       schema: {
         description: 'Delete presentation',
@@ -215,4 +216,3 @@ export async function presentationRoutes(fastify: FastifyInstance) {
     }
   );
 }
-

@@ -4,6 +4,7 @@ import { createScreenRepository } from '@/db/repositories/screen';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('screen-routes');
 
@@ -23,7 +24,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
   // Create screen
   fastify.post<{ Body: typeof createScreenSchema._type }>(
-    '/v1/screens',
+    apiEndpoints.screens.create,
     {
       schema: {
         description: 'Create a new screen',
@@ -66,7 +67,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
   // List screens
   fastify.get<{ Querystring: typeof listScreensQuerySchema._type }>(
-    '/v1/screens',
+    apiEndpoints.screens.list,
     {
       schema: {
         description: 'List screens with pagination',
@@ -115,7 +116,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
   // Get screen by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/screens/:id',
+    apiEndpoints.screens.get,
     {
       schema: {
         description: 'Get screen by ID',
@@ -155,7 +156,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
   // Update screen
   fastify.patch<{ Params: { id: string }; Body: Partial<typeof createScreenSchema._type> }>(
-    '/v1/screens/:id',
+    apiEndpoints.screens.update,
     {
       schema: {
         description: 'Update screen',
@@ -202,7 +203,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
   // Delete screen
   fastify.delete<{ Params: { id: string } }>(
-    '/v1/screens/:id',
+    apiEndpoints.screens.delete,
     {
       schema: {
         description: 'Delete screen',
@@ -233,4 +234,3 @@ export async function screenRoutes(fastify: FastifyInstance) {
     }
   );
 }
-

@@ -4,6 +4,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createApiKeyRepository } from '@/db/repositories/api-key';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('api-keys-routes');
 
@@ -19,7 +20,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
 
   // Create
   fastify.post<{ Body: typeof createApiKeySchema._type }>(
-    '/v1/api-keys',
+    apiEndpoints.apiKeys.create,
     {
       schema: {
         description: 'Create API key (admin only)',
@@ -54,7 +55,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
 
   // List
   fastify.get(
-    '/v1/api-keys',
+    apiEndpoints.apiKeys.list,
     {
       schema: {
         description: 'List API keys (admin only)',
@@ -81,7 +82,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
 
   // Rotate
   fastify.post<{ Params: { id: string } }>(
-    '/v1/api-keys/:id/rotate',
+    apiEndpoints.apiKeys.rotate,
     {
       schema: {
         description: 'Rotate API key secret (admin only)',
@@ -109,7 +110,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
 
   // Revoke
   fastify.post<{ Params: { id: string } }>(
-    '/v1/api-keys/:id/revoke',
+    apiEndpoints.apiKeys.revoke,
     {
       schema: {
         description: 'Revoke API key (admin only)',

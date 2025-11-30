@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
 import { putObject } from '@/s3';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('device-telemetry-routes');
 const HEARTBEAT_BUCKET = 'logs-heartbeats';
@@ -41,7 +42,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
   // Device heartbeat (no auth required - mTLS authenticated)
   fastify.post<{ Body: typeof heartbeatSchema._type }>(
-    '/v1/device/heartbeat',
+    apiEndpoints.deviceTelemetry.heartbeat,
     {
       schema: {
         description: 'Device heartbeat (mTLS authenticated)',
@@ -137,7 +138,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
   // Proof of Play (PoP) report
   fastify.post<{ Body: typeof proofOfPlaySchema._type }>(
-    '/v1/device/proof-of-play',
+    apiEndpoints.deviceTelemetry.proofOfPlay,
     {
       schema: {
         description: 'Report proof of play (mTLS authenticated)',
@@ -199,7 +200,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
   // Device screenshot
   fastify.post<{ Body: typeof screenshotSchema._type }>(
-    '/v1/device/screenshot',
+    apiEndpoints.deviceTelemetry.screenshot,
     {
       schema: {
         description: 'Upload device screenshot (mTLS authenticated)',
@@ -240,7 +241,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
   // Get pending commands for device
   fastify.get<{ Params: { deviceId: string } }>(
-    '/v1/device/:deviceId/commands',
+    apiEndpoints.deviceTelemetry.commands,
     {
       schema: {
         description: 'Get pending commands for device (mTLS authenticated)',
@@ -292,7 +293,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
   // Acknowledge command
   fastify.post<{ Params: { deviceId: string; commandId: string } }>(
-    '/v1/device/:deviceId/commands/:commandId/ack',
+    apiEndpoints.deviceTelemetry.ackCommand,
     {
       schema: {
         description: 'Acknowledge command execution (mTLS authenticated)',

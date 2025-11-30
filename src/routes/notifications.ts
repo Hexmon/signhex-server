@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createNotificationRepository } from '@/db/repositories/notification';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('notification-routes');
 
@@ -17,7 +18,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
 
   // List notifications for current user
   fastify.get<{ Querystring: typeof listNotificationsQuerySchema._type }>(
-    '/v1/notifications',
+    apiEndpoints.notifications.list,
     {
       schema: {
         description: 'List notifications for current user',
@@ -67,7 +68,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
 
   // Get notification by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/notifications/:id',
+    apiEndpoints.notifications.get,
     {
       schema: {
         description: 'Get notification by ID',
@@ -113,7 +114,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
 
   // Mark notification as read
   fastify.post<{ Params: { id: string } }>(
-    '/v1/notifications/:id/read',
+    apiEndpoints.notifications.markRead,
     {
       schema: {
         description: 'Mark notification as read',
@@ -161,7 +162,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
 
   // Mark all notifications as read
   fastify.post(
-    '/v1/notifications/read-all',
+    apiEndpoints.notifications.markAllRead,
     {
       schema: {
         description: 'Mark all notifications as read',
@@ -189,7 +190,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
 
   // Delete notification
   fastify.delete<{ Params: { id: string } }>(
-    '/v1/notifications/:id',
+    apiEndpoints.notifications.delete,
     {
       schema: {
         description: 'Delete notification',
@@ -225,4 +226,3 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     }
   );
 }
-

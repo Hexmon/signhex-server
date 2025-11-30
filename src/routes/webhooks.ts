@@ -4,6 +4,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createWebhookRepository } from '@/db/repositories/webhook';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('webhook-routes');
 
@@ -19,7 +20,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   const repo = createWebhookRepository();
 
   fastify.post<{ Body: typeof webhookSchema._type }>(
-    '/v1/webhooks',
+    apiEndpoints.webhooks.create,
     {
       schema: {
         description: 'Create webhook (admin only)',
@@ -46,7 +47,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   );
 
   fastify.get(
-    '/v1/webhooks',
+    apiEndpoints.webhooks.list,
     {
       schema: {
         description: 'List webhooks (admin only)',
@@ -72,7 +73,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   );
 
   fastify.patch<{ Params: { id: string }; Body: Partial<typeof webhookSchema._type> }>(
-    '/v1/webhooks/:id',
+    apiEndpoints.webhooks.update,
     {
       schema: {
         description: 'Update webhook (admin only)',
@@ -99,7 +100,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   );
 
   fastify.delete<{ Params: { id: string } }>(
-    '/v1/webhooks/:id',
+    apiEndpoints.webhooks.delete,
     {
       schema: {
         description: 'Delete webhook (admin only)',
@@ -126,7 +127,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
 
   // Test fire (simple ping)
   fastify.post<{ Params: { id: string } }>(
-    '/v1/webhooks/:id/test',
+    apiEndpoints.webhooks.test,
     {
       schema: {
         description: 'Test webhook delivery (admin only)',

@@ -4,6 +4,7 @@ import { createAuditLogRepository } from '@/db/repositories/audit-log';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('audit-log-routes');
 
@@ -22,7 +23,7 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
 
   // List audit logs
   fastify.get<{ Querystring: typeof listAuditLogsQuerySchema._type }>(
-    '/v1/audit-logs',
+    apiEndpoints.auditLogs.list,
     {
       schema: {
         description: 'List audit logs (admin only)',
@@ -82,7 +83,7 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
 
   // Get audit log by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/audit-logs/:id',
+    apiEndpoints.auditLogs.get,
     {
       schema: {
         description: 'Get audit log by ID (admin only)',
@@ -127,4 +128,3 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
     }
   );
 }
-

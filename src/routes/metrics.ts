@@ -4,6 +4,7 @@ import { getDatabase, schema } from '@/db';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('metrics-routes');
 
@@ -11,7 +12,7 @@ export async function metricsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
   fastify.get(
-    '/v1/metrics/overview',
+    apiEndpoints.metrics.overview,
     {
       schema: {
         description: 'Dashboard metrics overview',

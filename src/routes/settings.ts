@@ -4,6 +4,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('settings-routes');
 
@@ -16,7 +17,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
   fastify.get(
-    '/v1/settings',
+    apiEndpoints.settings.list,
     {
       schema: {
         description: 'List org settings (admin only)',
@@ -42,7 +43,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post<{ Body: typeof upsertSettingSchema._type }>(
-    '/v1/settings',
+    apiEndpoints.settings.upsert,
     {
       schema: {
         description: 'Upsert org setting (admin only)',

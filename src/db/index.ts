@@ -7,6 +7,8 @@ let db: ReturnType<typeof drizzle> | null = null;
 let pool: Pool | null = null;
 
 export async function initializeDatabase(): Promise<void> {
+  if (db) return;
+
   const connectionString = appConfig.DATABASE_URL;
   if (!connectionString) {
     throw new Error('DATABASE_URL environment variable is not set');

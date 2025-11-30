@@ -4,6 +4,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createConversationRepository } from '@/db/repositories/conversation';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('conversation-routes');
 
@@ -20,7 +21,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
   const repo = createConversationRepository();
 
   fastify.post<{ Body: typeof startConversationSchema._type }>(
-    '/v1/conversations',
+    apiEndpoints.conversations.start,
     {
       schema: {
         description: 'Start or get a 1:1 conversation',
@@ -47,7 +48,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
   );
 
   fastify.get(
-    '/v1/conversations',
+    apiEndpoints.conversations.list,
     {
       schema: {
         description: 'List conversations for current user',
@@ -73,7 +74,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
   );
 
   fastify.get<{ Params: { id: string }; Querystring: { page?: number; limit?: number } }>(
-    '/v1/conversations/:id/messages',
+    apiEndpoints.conversations.listMessages,
     {
       schema: {
         description: 'List messages in a conversation',
@@ -101,7 +102,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post<{ Params: { id: string }; Body: typeof sendMessageSchema._type }>(
-    '/v1/conversations/:id/messages',
+    apiEndpoints.conversations.sendMessage,
     {
       schema: {
         description: 'Send message in a conversation',
@@ -128,7 +129,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post<{ Params: { id: string } }>(
-    '/v1/conversations/:id/read',
+    apiEndpoints.conversations.markRead,
     {
       schema: {
         description: 'Mark conversation as read',

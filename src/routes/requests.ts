@@ -9,6 +9,7 @@ import { createLogger } from '@/utils/logger';
 import { createUserRepository } from '@/db/repositories/user';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('request-routes');
 
@@ -54,7 +55,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
 
   // Create request
   fastify.post<{ Body: typeof createRequestSchema._type }>(
-    '/v1/requests',
+    apiEndpoints.requests.create,
     {
       schema: {
         description: 'Create a new request',
@@ -99,7 +100,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
 
   // List requests
   fastify.get<{ Querystring: typeof listRequestsQuerySchema._type }>(
-    '/v1/requests',
+    apiEndpoints.requests.list,
     {
       schema: {
         description: 'List requests with pagination',
@@ -151,7 +152,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
 
   // Get request by ID
   fastify.get<{ Params: { id: string } }>(
-    '/v1/requests/:id',
+    apiEndpoints.requests.get,
     {
       schema: {
         description: 'Get request by ID',
@@ -201,7 +202,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
 
   // Update request
   fastify.patch<{ Params: { id: string }; Body: Partial<typeof createRequestSchema._type> }>(
-    '/v1/requests/:id',
+    apiEndpoints.requests.update,
     {
       schema: {
         description: 'Update request',
@@ -246,7 +247,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
 
   // Add message to request
   fastify.post<{ Params: { id: string }; Body: typeof createMessageSchema._type }>(
-    '/v1/requests/:id/messages',
+    apiEndpoints.requests.addMessage,
     {
       schema: {
         description: 'Add message to request',
@@ -300,7 +301,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
 
   // List messages for request
   fastify.get<{ Params: { id: string }; Querystring: { page?: number; limit?: number } }>(
-    '/v1/requests/:id/messages',
+    apiEndpoints.requests.listMessages,
     {
       schema: {
         description: 'List messages for request',

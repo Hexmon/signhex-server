@@ -8,6 +8,7 @@ import { hashPassword } from '@/auth/password';
 import { randomBytes } from 'crypto';
 import { createLogger } from '@/utils/logger';
 import { getDatabase, schema } from '@/db';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('users-invite-routes');
 
@@ -22,7 +23,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
   fastify.post<{ Body: typeof inviteSchema._type }>(
-    '/v1/users/invite',
+    apiEndpoints.userInvite.invite,
     {
       schema: {
         description: 'Invite user (admin only)',
@@ -78,7 +79,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post<{ Params: { id: string } }>(
-    '/v1/users/:id/reset-password',
+    apiEndpoints.userInvite.resetPassword,
     {
       schema: {
         description: 'Reset user password (admin only)',

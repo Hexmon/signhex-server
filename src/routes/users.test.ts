@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
-import { createTestServer, generateTestToken, testUser } from '@/test/helpers';
+import { createTestServer, generateTestToken, testUser, closeTestServer } from '@/test/helpers';
 
 describe('User Routes', () => {
   let server: FastifyInstance;
@@ -12,7 +12,7 @@ describe('User Routes', () => {
   });
 
   afterAll(async () => {
-    await server.close();
+    await closeTestServer(server);
   });
 
   describe('POST /v1/users', () => {
@@ -33,6 +33,7 @@ describe('User Routes', () => {
     });
 
     it('should create user with valid admin token', async () => {
+      const uniqueEmail = `newuser+${Date.now()}@example.com`;
       const response = await server.inject({
         method: 'POST',
         url: '/v1/users',
@@ -40,7 +41,7 @@ describe('User Routes', () => {
           authorization: `Bearer ${adminToken}`,
         },
         payload: {
-          email: 'newuser@example.com',
+          email: uniqueEmail,
           password: 'Password123!',
           first_name: 'New',
           last_name: 'User',
@@ -130,7 +131,7 @@ describe('User Routes', () => {
     it('should return 404 for non-existent user', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/users/non-existent-id',
+        url: '/v1/users/00000000-0000-0000-0000-000000000099',
         headers: {
           authorization: `Bearer ${adminToken}`,
         },
@@ -154,4 +155,3 @@ describe('User Routes', () => {
     });
   });
 });
-

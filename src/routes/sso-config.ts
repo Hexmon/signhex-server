@@ -4,6 +4,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createSsoConfigRepository } from '@/db/repositories/sso-config';
 import { createLogger } from '@/utils/logger';
+import { apiEndpoints } from '@/config/apiEndpoints';
 
 const logger = createLogger('sso-config-routes');
 
@@ -24,7 +25,7 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
   const repo = createSsoConfigRepository();
 
   fastify.post<{ Body: typeof ssoSchema._type }>(
-    '/v1/sso-config',
+    apiEndpoints.ssoConfig.upsert,
     {
       schema: {
         description: 'Upsert SSO config (admin only)',
@@ -53,7 +54,7 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
   );
 
   fastify.get(
-    '/v1/sso-config',
+    apiEndpoints.ssoConfig.list,
     {
       schema: {
         description: 'List active SSO configs (admin only)',
@@ -79,7 +80,7 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post<{ Params: { id: string } }>(
-    '/v1/sso-config/:id/deactivate',
+    apiEndpoints.ssoConfig.deactivate,
     {
       schema: {
         description: 'Deactivate SSO config (admin only)',
