@@ -132,6 +132,10 @@ export const apiEndpoints = {
   reports: {
     summary: '/v1/reports/summary',
     trends: '/v1/reports/trends',
+    requestsByDepartment: '/v1/reports/requests-by-department',
+    offlineScreens: '/v1/reports/offline-screens',
+    storage: '/v1/reports/storage',
+    systemHealth: '/v1/reports/system-health',
   },
 };
 

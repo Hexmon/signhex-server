@@ -31,6 +31,7 @@ const envSchema = z.object({
   LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   LOGIN_LOCKOUT_WINDOW_SECONDS: z.coerce.number().int().positive().default(15 * 60),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(200),
+  STORAGE_QUOTA_BYTES: z.coerce.number().int().nonnegative().default(0),
 });
 const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
