@@ -38,6 +38,7 @@ export const apiEndpoints = {
     create: withBase('/media'),
     list: withBase('/media'),
     get: withBase('/media/:id'),
+    delete: withBase('/media/:id'),
     complete: withBase('/media/:id/complete'),
   },
   presentations: {
