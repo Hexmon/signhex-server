@@ -100,6 +100,8 @@ export const apiEndpoints = {
     generate: withBase('/device-pairing/generate'),
     complete: withBase('/device-pairing/complete'),
     list: withBase('/device-pairing'),
+    request: withBase('/device-pairing/request'),
+    confirm: withBase('/device-pairing/confirm'),
   },
   emergency: {
     trigger: withBase('/emergency/trigger'),

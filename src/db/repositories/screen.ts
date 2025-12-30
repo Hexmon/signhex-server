@@ -3,6 +3,7 @@ import { getDatabase, schema } from '@/db';
 
 export class ScreenRepository {
   async create(data: {
+    id?: string;
     name: string;
     location?: string;
   }) {
@@ -74,4 +75,3 @@ export class ScreenRepository {
 export function createScreenRepository(): ScreenRepository {
   return new ScreenRepository();
 }
-

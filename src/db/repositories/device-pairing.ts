@@ -3,7 +3,7 @@ import { getDatabase, schema } from '@/db';
 
 export class DevicePairingRepository {
   async create(data: {
-    device_id: string;
+    device_id?: string | null;
     pairing_code: string;
     expires_at: Date;
   }) {
@@ -86,4 +86,3 @@ export class DevicePairingRepository {
 export function createDevicePairingRepository(): DevicePairingRepository {
   return new DevicePairingRepository();
 }
-
