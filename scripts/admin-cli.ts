@@ -1,12 +1,22 @@
 // !/usr/bin/env node
 
 import { program } from 'commander';
-import { getDatabase, schema } from '@/db';
+import { eq, lt } from 'drizzle-orm';
+import { initializeDatabase, getDatabase, closeDatabase, schema } from '@/db';
 import { hashPassword } from '@/auth/password';
 import { randomUUID } from 'crypto';
 import { createLogger } from '@/utils/logger';
 
 const logger = createLogger('admin-cli');
+
+async function getDb() {
+  await initializeDatabase();
+  return getDatabase();
+}
+
+program.hook('postAction', async () => {
+  await closeDatabase().catch(() => {});
+});
 
 program.name('hexmon-admin').description('Hexmon Signage Admin CLI').version('1.0.0');
 
@@ -20,7 +30,7 @@ program
   .option('-l, --last-name <name>', 'Last name')
   .action(async (options) => {
     try {
-      const db = getDatabase();
+      const db = await getDb();
 
       const email = options.email || (await prompt('Email: '));
       const password = options.password || (await prompt('Password: ', true));
@@ -58,7 +68,7 @@ program
   .option('-r, --role <role>', 'Filter by role')
   .action(async (options) => {
     try {
-      const db = getDatabase();
+      const db = await getDb();
 
       let query = db.select().from(schema.users);
 
@@ -91,7 +101,7 @@ program
   .option('-p, --password <password>', 'New password')
   .action(async (options) => {
     try {
-      const db = getDatabase();
+      const db = await getDb();
 
       const email = options.email || (await prompt('Email: '));
       const password = options.password || (await prompt('New password: ', true));
@@ -123,7 +133,7 @@ program
   .option('-e, --email <email>', 'User email')
   .action(async (options) => {
     try {
-      const db = getDatabase();
+      const db = await getDb();
 
       const email = options.email || (await prompt('Email: '));
 
@@ -151,7 +161,7 @@ program
   .description('Clean up expired sessions')
   .action(async () => {
     try {
-      const db = getDatabase();
+      const db = await getDb();
 
       const result = await db
         .delete(schema.sessions)
@@ -196,7 +206,3 @@ async function prompt(question: string, hidden = false): Promise<string> {
 }
 
 program.parse(process.argv);
-
-// Import eq and lt from drizzle-orm
-import { eq, lt } from 'drizzle-orm';
-

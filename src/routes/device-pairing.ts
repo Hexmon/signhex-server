@@ -107,6 +107,10 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         if (!pairing) {
           return reply.status(NOT_FOUND).send({ error: 'Invalid or expired pairing code' });
         }
+        if (!pairing.device_id) {
+          return reply.status(BAD_REQUEST).send({ error: 'Pairing is missing a device id' });
+        }
+        const deviceId = pairing.device_id;
 
         const csr = data.csr.trim();
         if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
@@ -122,7 +126,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         const fingerprint = createHash('sha256').update(certificatePem).digest('hex');
 
         await certificateRepo.create({
-          device_id: pairing.device_id,
+          device_id: deviceId,
           certificate: certificatePem,
           private_key: '',
           fingerprint,
@@ -133,7 +137,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
         logger.info(
           {
-            deviceId: pairing.device_id,
+            deviceId,
             pairingId: pairing.id,
             fingerprint,
           },
@@ -143,7 +147,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           success: true,
           message: 'Device pairing completed. Certificate issued.',
-          device_id: pairing.device_id,
+          device_id: deviceId,
           certificate: certificatePem,
           fingerprint,
           expires_at: expiresAt.toISOString(),

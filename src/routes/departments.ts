@@ -9,7 +9,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('department-routes');
-const { CREATED, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 
 const createDepartmentSchema = z.object({
   name: z.string().min(1).max(255),
@@ -218,8 +218,14 @@ export async function departmentRoutes(fastify: FastifyInstance) {
           return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
-        await deptRepo.delete((request.params as any).id);
-        return reply.status(NO_CONTENT).send();
+        const departmentId = (request.params as any).id;
+        const exists = await deptRepo.findById(departmentId);
+        if (!exists) {
+          return reply.status(NOT_FOUND).send({ error: 'Department not found' });
+        }
+
+        await deptRepo.delete(departmentId);
+        return reply.status(OK).send({ message: 'Department deleted successfully', id: departmentId });
       } catch (error) {
         logger.error(error, 'Delete department error');
         return respondWithError(reply, error);

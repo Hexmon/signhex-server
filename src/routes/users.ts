@@ -10,7 +10,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 
 const logger = createLogger('user-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 
 export async function userRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
@@ -237,8 +237,14 @@ export async function userRoutes(fastify: FastifyInstance) {
           return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
         }
 
-        await userRepo.delete((request.params as any).id);
-        return reply.status(NO_CONTENT).send({ message: "User Deleted Successfully" });
+        const userId = (request.params as any).id;
+        const user = await userRepo.findById(userId);
+        if (!user) {
+          return reply.status(NOT_FOUND).send({ error: 'User not found' });
+        }
+
+        await userRepo.delete(userId);
+        return reply.status(OK).send({ message: 'User deleted successfully', id: userId });
       } catch (error) {
         logger.error(error, 'Delete user error');
         return respondWithError(reply, error);

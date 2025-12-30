@@ -16,11 +16,11 @@ describe('User Routes', () => {
     await closeTestServer(server);
   });
 
-  describe('POST /v1/users', () => {
+  describe('POST /api/v1/users', () => {
     it('should return 401 without authorization', async () => {
       const response = await server.inject({
         method: 'POST',
-        url: '/v1/users',
+        url: '/api/v1/users',
         payload: {
           email: 'newuser@example.com',
           password: 'Password123!',
@@ -37,7 +37,7 @@ describe('User Routes', () => {
       const uniqueEmail = `newuser+${Date.now()}@example.com`;
       const response = await server.inject({
         method: 'POST',
-        url: '/v1/users',
+        url: '/api/v1/users',
         headers: {
           authorization: `Bearer ${adminToken}`,
         },
@@ -60,7 +60,7 @@ describe('User Routes', () => {
     it('should return 400 for invalid email', async () => {
       const response = await server.inject({
         method: 'POST',
-        url: '/v1/users',
+        url: '/api/v1/users',
         headers: {
           authorization: `Bearer ${adminToken}`,
         },
@@ -77,11 +77,11 @@ describe('User Routes', () => {
     });
   });
 
-  describe('GET /v1/users', () => {
+  describe('GET /api/v1/users', () => {
     it('should return 401 without authorization', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/users',
+        url: '/api/v1/users',
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
@@ -90,7 +90,7 @@ describe('User Routes', () => {
     it('should list users with valid token', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/users',
+        url: '/api/v1/users',
         headers: {
           authorization: `Bearer ${adminToken}`,
         },
@@ -106,7 +106,7 @@ describe('User Routes', () => {
     it('should support pagination', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/users?page=1&limit=10',
+        url: '/api/v1/users?page=1&limit=10',
         headers: {
           authorization: `Bearer ${adminToken}`,
         },
@@ -119,11 +119,11 @@ describe('User Routes', () => {
     });
   });
 
-  describe('GET /v1/users/:id', () => {
+  describe('GET /api/v1/users/:id', () => {
     it('should return 401 without authorization', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: `/v1/users/${testUser.id}`,
+        url: `/api/v1/users/${testUser.id}`,
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
@@ -132,7 +132,7 @@ describe('User Routes', () => {
     it('should return 404 for non-existent user', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/users/00000000-0000-0000-0000-000000000099',
+        url: '/api/v1/users/00000000-0000-0000-0000-000000000099',
         headers: {
           authorization: `Bearer ${adminToken}`,
         },
@@ -144,7 +144,7 @@ describe('User Routes', () => {
     it('should get user by ID', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: `/v1/users/${testUser.id}`,
+        url: `/api/v1/users/${testUser.id}`,
         headers: {
           authorization: `Bearer ${adminToken}`,
         },

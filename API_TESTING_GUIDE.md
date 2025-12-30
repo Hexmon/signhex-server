@@ -18,7 +18,7 @@ npm run dev
 
 ### 2. Access Points
 
-- **API**: http://localhost:3000
+- **API**: http://localhost:3000/api/v1
 - **Swagger UI**: http://localhost:3000/docs
 - **Health Check**: http://localhost:3000/health
 - **MinIO Console**: http://localhost:9001 (minioadmin/minioadmin)
@@ -30,7 +30,7 @@ npm run dev
 
 ```bash
 # Login with default admin user
-curl -X POST http://localhost:3000/v1/auth/login \
+curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@hexmon.local",
@@ -55,7 +55,7 @@ export TOKEN="your_access_token_here"
 
 ```bash
 # Get current user info
-curl -X GET http://localhost:3000/v1/auth/me \
+curl -X GET http://localhost:3000/api/v1/auth/me \
   -H "Authorization: Bearer $TOKEN"
 
 # Response:
@@ -74,7 +74,7 @@ curl -X GET http://localhost:3000/v1/auth/me \
 ### Create User
 
 ```bash
-curl -X POST http://localhost:3000/v1/users \
+curl -X POST http://localhost:3000/api/v1/users \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -88,21 +88,21 @@ curl -X POST http://localhost:3000/v1/users \
 ### List Users
 
 ```bash
-curl -X GET "http://localhost:3000/v1/users?page=1&limit=20" \
+curl -X GET "http://localhost:3000/api/v1/users?page=1&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get User by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/users/{user-id} \
+curl -X GET http://localhost:3000/api/v1/users/{user-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Update User
 
 ```bash
-curl -X PATCH http://localhost:3000/v1/users/{user-id} \
+curl -X PATCH http://localhost:3000/api/v1/users/{user-id} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -114,7 +114,7 @@ curl -X PATCH http://localhost:3000/v1/users/{user-id} \
 ### Delete User
 
 ```bash
-curl -X DELETE http://localhost:3000/v1/users/{user-id} \
+curl -X DELETE http://localhost:3000/api/v1/users/{user-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -123,7 +123,7 @@ curl -X DELETE http://localhost:3000/v1/users/{user-id} \
 ### Create Department
 
 ```bash
-curl -X POST http://localhost:3000/v1/departments \
+curl -X POST http://localhost:3000/api/v1/departments \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -135,21 +135,21 @@ curl -X POST http://localhost:3000/v1/departments \
 ### List Departments
 
 ```bash
-curl -X GET "http://localhost:3000/v1/departments?page=1&limit=20" \
+curl -X GET "http://localhost:3000/api/v1/departments?page=1&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Department by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/departments/{dept-id} \
+curl -X GET http://localhost:3000/api/v1/departments/{dept-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Update Department
 
 ```bash
-curl -X PATCH http://localhost:3000/v1/departments/{dept-id} \
+curl -X PATCH http://localhost:3000/api/v1/departments/{dept-id} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -160,7 +160,7 @@ curl -X PATCH http://localhost:3000/v1/departments/{dept-id} \
 ### Delete Department
 
 ```bash
-curl -X DELETE http://localhost:3000/v1/departments/{dept-id} \
+curl -X DELETE http://localhost:3000/api/v1/departments/{dept-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -169,7 +169,7 @@ curl -X DELETE http://localhost:3000/v1/departments/{dept-id} \
 ### Get Presigned Upload URL
 
 ```bash
-curl -X POST http://localhost:3000/v1/media/presign-upload \
+curl -X POST http://localhost:3000/api/v1/media/presign-upload \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -198,7 +198,7 @@ curl -X PUT "http://localhost:9000/media-source/..." \
 ### Create Media Record
 
 ```bash
-curl -X POST http://localhost:3000/v1/media \
+curl -X POST http://localhost:3000/api/v1/media \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -215,14 +215,14 @@ curl -X POST http://localhost:3000/v1/media \
 ### List Media
 
 ```bash
-curl -X GET "http://localhost:3000/v1/media?page=1&limit=20&type=VIDEO" \
+curl -X GET "http://localhost:3000/api/v1/media?page=1&limit=20&type=VIDEO" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Media by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/media/{media-id} \
+curl -X GET http://localhost:3000/api/v1/media/{media-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -231,7 +231,7 @@ curl -X GET http://localhost:3000/v1/media/{media-id} \
 ### Create Schedule
 
 ```bash
-curl -X POST http://localhost:3000/v1/schedules \
+curl -X POST http://localhost:3000/api/v1/schedules \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -246,21 +246,21 @@ curl -X POST http://localhost:3000/v1/schedules \
 ### List Schedules
 
 ```bash
-curl -X GET "http://localhost:3000/v1/schedules?page=1&limit=20" \
+curl -X GET "http://localhost:3000/api/v1/schedules?page=1&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Schedule by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/schedules/{schedule-id} \
+curl -X GET http://localhost:3000/api/v1/schedules/{schedule-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Update Schedule
 
 ```bash
-curl -X PATCH http://localhost:3000/v1/schedules/{schedule-id} \
+curl -X PATCH http://localhost:3000/api/v1/schedules/{schedule-id} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -271,7 +271,7 @@ curl -X PATCH http://localhost:3000/v1/schedules/{schedule-id} \
 ### Publish Schedule
 
 ```bash
-curl -X POST http://localhost:3000/v1/schedules/{schedule-id}/publish \
+curl -X POST http://localhost:3000/api/v1/schedules/{schedule-id}/publish \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -284,7 +284,7 @@ curl -X POST http://localhost:3000/v1/schedules/{schedule-id}/publish \
 ### Create Screen
 
 ```bash
-curl -X POST http://localhost:3000/v1/screens \
+curl -X POST http://localhost:3000/api/v1/screens \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -298,21 +298,21 @@ curl -X POST http://localhost:3000/v1/screens \
 ### List Screens
 
 ```bash
-curl -X GET "http://localhost:3000/v1/screens?page=1&limit=20&status=ACTIVE" \
+curl -X GET "http://localhost:3000/api/v1/screens?page=1&limit=20&status=ACTIVE" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Screen by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/screens/{screen-id} \
+curl -X GET http://localhost:3000/api/v1/screens/{screen-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Update Screen
 
 ```bash
-curl -X PATCH http://localhost:3000/v1/screens/{screen-id} \
+curl -X PATCH http://localhost:3000/api/v1/screens/{screen-id} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -324,7 +324,7 @@ curl -X PATCH http://localhost:3000/v1/screens/{screen-id} \
 ### Delete Screen
 
 ```bash
-curl -X DELETE http://localhost:3000/v1/screens/{screen-id} \
+curl -X DELETE http://localhost:3000/api/v1/screens/{screen-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -333,7 +333,7 @@ curl -X DELETE http://localhost:3000/v1/screens/{screen-id} \
 ### Create Request
 
 ```bash
-curl -X POST http://localhost:3000/v1/requests \
+curl -X POST http://localhost:3000/api/v1/requests \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -346,21 +346,21 @@ curl -X POST http://localhost:3000/v1/requests \
 ### List Requests
 
 ```bash
-curl -X GET "http://localhost:3000/v1/requests?page=1&limit=20&status=OPEN" \
+curl -X GET "http://localhost:3000/api/v1/requests?page=1&limit=20&status=OPEN" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Request by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/requests/{request-id} \
+curl -X GET http://localhost:3000/api/v1/requests/{request-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Update Request
 
 ```bash
-curl -X PATCH http://localhost:3000/v1/requests/{request-id} \
+curl -X PATCH http://localhost:3000/api/v1/requests/{request-id} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -372,7 +372,7 @@ curl -X PATCH http://localhost:3000/v1/requests/{request-id} \
 ### Add Message to Request
 
 ```bash
-curl -X POST http://localhost:3000/v1/requests/{request-id}/messages \
+curl -X POST http://localhost:3000/api/v1/requests/{request-id}/messages \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -383,7 +383,7 @@ curl -X POST http://localhost:3000/v1/requests/{request-id}/messages \
 ### List Messages for Request
 
 ```bash
-curl -X GET "http://localhost:3000/v1/requests/{request-id}/messages?page=1&limit=50" \
+curl -X GET "http://localhost:3000/api/v1/requests/{request-id}/messages?page=1&limit=50" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -392,7 +392,7 @@ curl -X GET "http://localhost:3000/v1/requests/{request-id}/messages?page=1&limi
 ### Trigger Emergency
 
 ```bash
-curl -X POST http://localhost:3000/v1/emergency/trigger \
+curl -X POST http://localhost:3000/api/v1/emergency/trigger \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -404,21 +404,21 @@ curl -X POST http://localhost:3000/v1/emergency/trigger \
 ### Get Emergency Status
 
 ```bash
-curl -X GET http://localhost:3000/v1/emergency/status \
+curl -X GET http://localhost:3000/api/v1/emergency/status \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Clear Emergency
 
 ```bash
-curl -X POST http://localhost:3000/v1/emergency/{emergency-id}/clear \
+curl -X POST http://localhost:3000/api/v1/emergency/{emergency-id}/clear \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### List Emergency History
 
 ```bash
-curl -X GET "http://localhost:3000/v1/emergency/history?page=1&limit=20" \
+curl -X GET "http://localhost:3000/api/v1/emergency/history?page=1&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -427,35 +427,35 @@ curl -X GET "http://localhost:3000/v1/emergency/history?page=1&limit=20" \
 ### List Notifications
 
 ```bash
-curl -X GET "http://localhost:3000/v1/notifications?page=1&limit=20&read=false" \
+curl -X GET "http://localhost:3000/api/v1/notifications?page=1&limit=20&read=false" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Notification by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/notifications/{notification-id} \
+curl -X GET http://localhost:3000/api/v1/notifications/{notification-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Mark Notification as Read
 
 ```bash
-curl -X POST http://localhost:3000/v1/notifications/{notification-id}/read \
+curl -X POST http://localhost:3000/api/v1/notifications/{notification-id}/read \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Mark All Notifications as Read
 
 ```bash
-curl -X POST http://localhost:3000/v1/notifications/read-all \
+curl -X POST http://localhost:3000/api/v1/notifications/read-all \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Delete Notification
 
 ```bash
-curl -X DELETE http://localhost:3000/v1/notifications/{notification-id} \
+curl -X DELETE http://localhost:3000/api/v1/notifications/{notification-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -464,14 +464,14 @@ curl -X DELETE http://localhost:3000/v1/notifications/{notification-id} \
 ### List Audit Logs
 
 ```bash
-curl -X GET "http://localhost:3000/v1/audit-logs?page=1&limit=20&resource_type=USER" \
+curl -X GET "http://localhost:3000/api/v1/audit-logs?page=1&limit=20&resource_type=USER" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Audit Log by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/audit-logs/{log-id} \
+curl -X GET http://localhost:3000/api/v1/audit-logs/{log-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -480,7 +480,7 @@ curl -X GET http://localhost:3000/v1/audit-logs/{log-id} \
 ### Create Presentation
 
 ```bash
-curl -X POST http://localhost:3000/v1/presentations \
+curl -X POST http://localhost:3000/api/v1/presentations \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -492,21 +492,21 @@ curl -X POST http://localhost:3000/v1/presentations \
 ### List Presentations
 
 ```bash
-curl -X GET "http://localhost:3000/v1/presentations?page=1&limit=20" \
+curl -X GET "http://localhost:3000/api/v1/presentations?page=1&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Get Presentation by ID
 
 ```bash
-curl -X GET http://localhost:3000/v1/presentations/{presentation-id} \
+curl -X GET http://localhost:3000/api/v1/presentations/{presentation-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Update Presentation
 
 ```bash
-curl -X PATCH http://localhost:3000/v1/presentations/{presentation-id} \
+curl -X PATCH http://localhost:3000/api/v1/presentations/{presentation-id} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -517,7 +517,7 @@ curl -X PATCH http://localhost:3000/v1/presentations/{presentation-id} \
 ### Delete Presentation
 
 ```bash
-curl -X DELETE http://localhost:3000/v1/presentations/{presentation-id} \
+curl -X DELETE http://localhost:3000/api/v1/presentations/{presentation-id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -525,7 +525,7 @@ curl -X DELETE http://localhost:3000/v1/presentations/{presentation-id} \
 
 ```bash
 # 1. Login
-TOKEN=$(curl -s -X POST http://localhost:3000/v1/auth/login \
+TOKEN=$(curl -s -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@hexmon.local",
@@ -533,13 +533,13 @@ TOKEN=$(curl -s -X POST http://localhost:3000/v1/auth/login \
   }' | jq -r '.access_token')
 
 # 2. Create a department
-DEPT=$(curl -s -X POST http://localhost:3000/v1/departments \
+DEPT=$(curl -s -X POST http://localhost:3000/api/v1/departments \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "Marketing"}' | jq -r '.id')
 
 # 3. Create a user
-USER=$(curl -s -X POST http://localhost:3000/v1/users \
+USER=$(curl -s -X POST http://localhost:3000/api/v1/users \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -550,13 +550,13 @@ USER=$(curl -s -X POST http://localhost:3000/v1/users \
   }' | jq -r '.id')
 
 # 4. Create a screen
-SCREEN=$(curl -s -X POST http://localhost:3000/v1/screens \
+SCREEN=$(curl -s -X POST http://localhost:3000/api/v1/screens \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "Lobby Screen"}' | jq -r '.id')
 
 # 5. Create a schedule
-SCHEDULE=$(curl -s -X POST http://localhost:3000/v1/schedules \
+SCHEDULE=$(curl -s -X POST http://localhost:3000/api/v1/schedules \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -565,7 +565,7 @@ SCHEDULE=$(curl -s -X POST http://localhost:3000/v1/schedules \
   }' | jq -r '.id')
 
 # 6. Publish schedule to screen
-curl -X POST http://localhost:3000/v1/schedules/$SCHEDULE/publish \
+curl -X POST http://localhost:3000/api/v1/schedules/$SCHEDULE/publish \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"screen_ids\": [\"$SCREEN\"]}"
@@ -614,7 +614,7 @@ Example error response:
 ### Generate Pairing Code
 
 ```bash
-curl -X POST http://localhost:3000/v1/device-pairing/generate \
+curl -X POST http://localhost:3000/api/v1/device-pairing/generate \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -634,7 +634,7 @@ curl -X POST http://localhost:3000/v1/device-pairing/generate \
 ### Complete Device Pairing
 
 ```bash
-curl -X POST http://localhost:3000/v1/device-pairing/complete \
+curl -X POST http://localhost:3000/api/v1/device-pairing/complete \
   -H "Content-Type: application/json" \
   -d '{
     "pairing_code": "A1B2C3",
@@ -652,7 +652,7 @@ curl -X POST http://localhost:3000/v1/device-pairing/complete \
 ### List Pairings
 
 ```bash
-curl -X GET "http://localhost:3000/v1/device-pairing?page=1&limit=20" \
+curl -X GET "http://localhost:3000/api/v1/device-pairing?page=1&limit=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -661,7 +661,7 @@ curl -X GET "http://localhost:3000/v1/device-pairing?page=1&limit=20" \
 ### Device Heartbeat (mTLS)
 
 ```bash
-curl -X POST http://localhost:3000/v1/device/heartbeat \
+curl -X POST http://localhost:3000/api/v1/device/heartbeat \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": "device-001",
@@ -685,7 +685,7 @@ curl -X POST http://localhost:3000/v1/device/heartbeat \
 ### Proof of Play Report
 
 ```bash
-curl -X POST http://localhost:3000/v1/device/proof-of-play \
+curl -X POST http://localhost:3000/api/v1/device/proof-of-play \
   -H "Content-Type: application/json" \
   -d '{
     "device_id": "device-001",
@@ -710,7 +710,7 @@ curl -X POST http://localhost:3000/v1/device/proof-of-play \
 # First, encode image to base64
 BASE64_IMAGE=$(base64 -w 0 screenshot.png)
 
-curl -X POST http://localhost:3000/v1/device/screenshot \
+curl -X POST http://localhost:3000/api/v1/device/screenshot \
   -H "Content-Type: application/json" \
   -d "{
     \"device_id\": \"device-001\",
@@ -729,13 +729,13 @@ curl -X POST http://localhost:3000/v1/device/screenshot \
 ### Get Pending Commands
 
 ```bash
-curl -X GET http://localhost:3000/v1/device/device-001/commands
+curl -X GET http://localhost:3000/api/v1/device/device-001/commands
 ```
 
 ### Acknowledge Command
 
 ```bash
-curl -X POST http://localhost:3000/v1/device/device-001/commands/cmd-1/ack
+curl -X POST http://localhost:3000/api/v1/device/device-001/commands/cmd-1/ack
 ```
 
 ## Next Steps
@@ -744,4 +744,3 @@ curl -X POST http://localhost:3000/v1/device/device-001/commands/cmd-1/ack
 - Add FFmpeg integration for media processing
 - Implement mTLS certificate signing
 - Add comprehensive test coverage
-

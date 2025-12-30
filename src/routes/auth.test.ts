@@ -14,11 +14,11 @@ describe('Auth Routes', () => {
     await closeTestServer(server);
   });
 
-  describe('POST /v1/auth/login', () => {
+  describe('POST /api/v1/auth/login', () => {
     it('should return 400 for invalid email', async () => {
       const response = await server.inject({
         method: 'POST',
-        url: '/v1/auth/login',
+        url: '/api/v1/auth/login',
         payload: {
           email: 'invalid-email',
           password: 'password123',
@@ -31,7 +31,7 @@ describe('Auth Routes', () => {
     it('should return 401 for invalid credentials', async () => {
       const response = await server.inject({
         method: 'POST',
-        url: '/v1/auth/login',
+        url: '/api/v1/auth/login',
         payload: {
           email: 'nonexistent@example.com',
           password: 'wrongpassword',
@@ -45,7 +45,7 @@ describe('Auth Routes', () => {
       // This test assumes a test user exists in the database
       const response = await server.inject({
         method: 'POST',
-        url: '/v1/auth/login',
+        url: '/api/v1/auth/login',
         payload: {
           email: testUser.email,
           password: testUser.password,
@@ -59,11 +59,11 @@ describe('Auth Routes', () => {
     });
   });
 
-  describe('GET /v1/auth/me', () => {
+  describe('GET /api/v1/auth/me', () => {
     it('should return 401 without authorization header', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/auth/me',
+        url: '/api/v1/auth/me',
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
@@ -72,7 +72,7 @@ describe('Auth Routes', () => {
     it('should return 401 with invalid token', async () => {
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/auth/me',
+        url: '/api/v1/auth/me',
         headers: {
           authorization: 'Bearer invalid-token',
         },
@@ -85,7 +85,7 @@ describe('Auth Routes', () => {
       const token = await generateTestToken(testUser.id);
       const response = await server.inject({
         method: 'GET',
-        url: '/v1/auth/me',
+        url: '/api/v1/auth/me',
         headers: {
           authorization: `Bearer ${token}`,
         },
@@ -99,11 +99,11 @@ describe('Auth Routes', () => {
     });
   });
 
-  describe('POST /v1/auth/logout', () => {
+  describe('POST /api/v1/auth/logout', () => {
     it('should return 401 without authorization header', async () => {
       const response = await server.inject({
         method: 'POST',
-        url: '/v1/auth/logout',
+        url: '/api/v1/auth/logout',
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
@@ -115,7 +115,7 @@ describe('Auth Routes', () => {
       // First logout
       const logoutResponse = await server.inject({
         method: 'POST',
-        url: '/v1/auth/logout',
+        url: '/api/v1/auth/logout',
         headers: {
           authorization: `Bearer ${token}`,
         },
@@ -126,7 +126,7 @@ describe('Auth Routes', () => {
       // Try to use the same token again
       const meResponse = await server.inject({
         method: 'GET',
-        url: '/v1/auth/me',
+        url: '/api/v1/auth/me',
         headers: {
           authorization: `Bearer ${token}`,
         },

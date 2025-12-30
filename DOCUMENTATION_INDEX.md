@@ -252,7 +252,7 @@ npm start                   # Start production server
 
 ### Most Common URLs
 
-- **API:** http://localhost:3000
+- **API:** http://localhost:3000/api/v1
 - **API Docs:** http://localhost:3000/docs
 - **Health Check:** http://localhost:3000/health
 - **MinIO Console:** http://localhost:9001
@@ -406,4 +406,3 @@ We hope this documentation helps you build amazing digital signage experiences. 
 **Document Version:** 1.0.0  
 **Last Updated:** 2025-11-05  
 **Maintained By:** Hexmon Team
-

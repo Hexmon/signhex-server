@@ -107,7 +107,7 @@ npm run dev
 
 Once the server is running:
 
-- **API Base URL:** http://localhost:3000
+- **API Base URL:** http://localhost:3000/api/v1
 - **API Documentation (Swagger):** http://localhost:3000/docs
 - **Health Check:** http://localhost:3000/health
 - **MinIO Console:** http://localhost:9001 (minioadmin / minioadmin)
@@ -119,7 +119,7 @@ Once the server is running:
 ### Option 1: Using Swagger UI
 
 1. Open http://localhost:3000/docs
-2. Click on `POST /api/auth/login`
+2. Click on `POST /api/v1/auth/login`
 3. Click "Try it out"
 4. Enter:
    ```json
@@ -138,14 +138,14 @@ Once the server is running:
 
 ```bash
 # Login
-curl -X POST http://localhost:3000/api/auth/login \
+curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@hexmon.local","password":"ChangeMe123!"}'
 
 # Copy the token from the response
 
 # Get your profile
-curl http://localhost:3000/api/auth/me \
+curl http://localhost:3000/api/v1/auth/me \
   -H "Authorization: Bearer <your-token>"
 ```
 
@@ -252,7 +252,7 @@ Now that your development environment is set up:
 
 1. ✅ **Change the admin password** (important!)
    - Login at http://localhost:3000/docs
-   - Use the `PUT /api/auth/password` endpoint
+   - Use the `PUT /api/v1/auth/password` endpoint
 
 2. ✅ **Explore the API**
    - Check out http://localhost:3000/docs
@@ -384,52 +384,52 @@ server/
 ## API Endpoints Overview
 
 ### Authentication
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login and get JWT token
-- `POST /api/auth/logout` - Logout (invalidate token)
-- `GET /api/auth/me` - Get current user profile
-- `PUT /api/auth/password` - Change password
+- `POST /api/v1/auth/register` - Register new user
+- `POST /api/v1/auth/login` - Login and get JWT token
+- `POST /api/v1/auth/logout` - Logout (invalidate token)
+- `GET /api/v1/auth/me` - Get current user profile
+- `PUT /api/v1/auth/password` - Change password
 
 ### Users
-- `GET /api/users` - List users
-- `GET /api/users/:id` - Get user by ID
-- `PUT /api/users/:id` - Update user
-- `DELETE /api/users/:id` - Delete user
+- `GET /api/v1/users` - List users
+- `GET /api/v1/users/:id` - Get user by ID
+- `PUT /api/v1/users/:id` - Update user
+- `DELETE /api/v1/users/:id` - Delete user
 
 ### Organizations
-- `GET /api/organizations` - List organizations
-- `POST /api/organizations` - Create organization
-- `GET /api/organizations/:id` - Get organization
-- `PUT /api/organizations/:id` - Update organization
-- `DELETE /api/organizations/:id` - Delete organization
+- `GET /api/v1/organizations` - List organizations
+- `POST /api/v1/organizations` - Create organization
+- `GET /api/v1/organizations/:id` - Get organization
+- `PUT /api/v1/organizations/:id` - Update organization
+- `DELETE /api/v1/organizations/:id` - Delete organization
 
 ### Devices
-- `GET /api/devices` - List devices
-- `POST /api/devices` - Register device
-- `GET /api/devices/:id` - Get device
-- `PUT /api/devices/:id` - Update device
-- `DELETE /api/devices/:id` - Delete device
+- `GET /api/v1/devices` - List devices
+- `POST /api/v1/devices` - Register device
+- `GET /api/v1/devices/:id` - Get device
+- `PUT /api/v1/devices/:id` - Update device
+- `DELETE /api/v1/devices/:id` - Delete device
 
 ### Media
-- `GET /api/media` - List media files
-- `POST /api/media` - Upload media
-- `GET /api/media/:id` - Get media details
-- `PUT /api/media/:id` - Update media
-- `DELETE /api/media/:id` - Delete media
+- `GET /api/v1/media` - List media files
+- `POST /api/v1/media` - Upload media
+- `GET /api/v1/media/:id` - Get media details
+- `PUT /api/v1/media/:id` - Update media
+- `DELETE /api/v1/media/:id` - Delete media
 
 ### Playlists
-- `GET /api/playlists` - List playlists
-- `POST /api/playlists` - Create playlist
-- `GET /api/playlists/:id` - Get playlist
-- `PUT /api/playlists/:id` - Update playlist
-- `DELETE /api/playlists/:id` - Delete playlist
+- `GET /api/v1/playlists` - List playlists
+- `POST /api/v1/playlists` - Create playlist
+- `GET /api/v1/playlists/:id` - Get playlist
+- `PUT /api/v1/playlists/:id` - Update playlist
+- `DELETE /api/v1/playlists/:id` - Delete playlist
 
 ### Schedules
-- `GET /api/schedules` - List schedules
-- `POST /api/schedules` - Create schedule
-- `GET /api/schedules/:id` - Get schedule
-- `PUT /api/schedules/:id` - Update schedule
-- `DELETE /api/schedules/:id` - Delete schedule
+- `GET /api/v1/schedules` - List schedules
+- `POST /api/v1/schedules` - Create schedule
+- `GET /api/v1/schedules/:id` - Get schedule
+- `PUT /api/v1/schedules/:id` - Update schedule
+- `DELETE /api/v1/schedules/:id` - Delete schedule
 
 **For complete API documentation, visit:** http://localhost:3000/docs
 
@@ -474,4 +474,3 @@ You're all set! Your Hexmon Signage Backend is now running.
 **Document Version:** 1.0.0  
 **Last Updated:** 2025-11-05  
 **For detailed instructions:** [SETUP_GUIDE.md](./SETUP_GUIDE.md)
-

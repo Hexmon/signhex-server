@@ -520,7 +520,7 @@ npm run dev
 
 **The server is now running!**
 
-- **API Base URL:** http://localhost:3000
+- **API Base URL:** http://localhost:3000/api/v1
 - **Swagger Documentation:** http://localhost:3000/docs
 - **Health Check:** http://localhost:3000/health
 
@@ -563,7 +563,7 @@ You'll see the Swagger UI with all available API endpoints:
 
 ```bash
 # Login and get token
-curl -X POST http://localhost:3000/api/auth/login \
+curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@hexmon.local","password":"ChangeMe123!"}'
 
@@ -571,7 +571,7 @@ curl -X POST http://localhost:3000/api/auth/login \
 # Copy the token and use it in subsequent requests
 
 # Example: Get current user profile
-curl http://localhost:3000/api/auth/me \
+curl http://localhost:3000/api/v1/auth/me \
   -H "Authorization: Bearer <your-token>"
 ```
 
@@ -1106,7 +1106,7 @@ curl http://localhost:3000/health
 #### Login Test
 
 ```bash
-curl -X POST http://localhost:3000/api/auth/login \
+curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@hexmon.local","password":"ChangeMe123!"}'
 ```
@@ -1127,7 +1127,7 @@ curl -X POST http://localhost:3000/api/auth/login \
 
 ```bash
 # Replace <TOKEN> with the token from login response
-curl http://localhost:3000/api/auth/me \
+curl http://localhost:3000/api/v1/auth/me \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
@@ -1734,4 +1734,3 @@ You've successfully set up the Hexmon Signage Backend!
 **Document Version:** 1.0.0  
 **Last Updated:** 2025-11-05  
 **Maintained By:** Hexmon Team
-
