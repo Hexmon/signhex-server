@@ -26,14 +26,15 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     const now = new Date();
     const startAt = new Date(start);
     const endAt = new Date(end);
+    const bufferMs = 60_000; // allow slight clock drift when defaulting to "now"
 
     if (isNaN(startAt.getTime()) || isNaN(endAt.getTime())) {
       throw new Error('Invalid date format');
     }
-    if (startAt < now) {
+    if (startAt.getTime() < now.getTime() - bufferMs) {
       throw new Error('start_at cannot be in the past');
     }
-    if (endAt < now) {
+    if (endAt.getTime() < now.getTime() - bufferMs) {
       throw new Error('end_at cannot be in the past');
     }
     if (startAt >= endAt) {
@@ -67,7 +68,10 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const data = createScheduleSchema.parse(request.body);
-        const { startAt, endAt } = validateStartEnd(data.start_at, data.end_at);
+        const startIso = data.start_at ?? new Date().toISOString();
+        const endIso =
+          data.end_at ?? new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
+        const { startAt, endAt } = validateStartEnd(startIso, endIso);
         const schedule = await scheduleRepo.create({
           ...data,
           start_at: startAt,

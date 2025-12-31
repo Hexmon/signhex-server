@@ -3,8 +3,8 @@ import { z } from 'zod';
 export const createScheduleSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().optional(),
-  start_at: z.string().datetime(),
-  end_at: z.string().datetime(),
+  start_at: z.string().datetime().optional(),
+  end_at: z.string().datetime().optional(),
 });
 
 export type CreateScheduleRequest = z.infer<typeof createScheduleSchema>;
