@@ -22,6 +22,7 @@ export const requestStatusEnum = pgEnum('request_status', [
   'REJECTED',
   'COMPLETED',
 ]);
+export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', ['PENDING', 'APPROVED', 'REJECTED']);
 export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
 export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
@@ -126,12 +127,14 @@ export const presentations = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
     description: text('description'),
+    layout_id: uuid('layout_id'),
     created_by: uuid('created_by').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => ({
     createdByIdx: index('presentations_created_by_idx').on(table.created_by),
+    layoutIdx: index('presentations_layout_id_idx').on(table.layout_id),
   })
 );
 
@@ -148,6 +151,25 @@ export const presentationItems = pgTable(
   },
   (table) => ({
     presentationIdIdx: index('presentation_items_presentation_id_idx').on(table.presentation_id),
+  })
+);
+
+// Presentation slot items table (layout-based playlists)
+export const presentationSlotItems = pgTable(
+  'presentation_slot_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    presentation_id: uuid('presentation_id').notNull(),
+    slot_id: varchar('slot_id', { length: 255 }).notNull(),
+    media_id: uuid('media_id').notNull(),
+    order: integer('order').notNull().default(0),
+    duration_seconds: integer('duration_seconds'),
+    fit_mode: varchar('fit_mode', { length: 50 }),
+    audio_enabled: boolean('audio_enabled').default(false),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    presentationSlotIdx: index('presentation_slot_items_presentation_id_idx').on(table.presentation_id),
   })
 );
 
@@ -183,6 +205,8 @@ export const scheduleItems = pgTable(
     start_at: timestamp('start_at').notNull(),
     end_at: timestamp('end_at').notNull(),
     priority: integer('priority').notNull().default(0),
+    screen_ids: jsonb('screen_ids').$type<string[]>().notNull().default([] as string[]),
+    screen_group_ids: jsonb('screen_group_ids').$type<string[]>().notNull().default([] as string[]),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => ({
@@ -206,6 +230,7 @@ export const scheduleSnapshots = pgTable(
   })
 );
 
+// Schedule requests (approval workflow for publishes)
 // Publishes (schedule publication events)
 export const publishes = pgTable(
   'publishes',
@@ -228,13 +253,22 @@ export const screens = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
     location: varchar('location', { length: 255 }),
+    aspect_ratio: varchar('aspect_ratio', { length: 50 }),
+    width: integer('width'),
+    height: integer('height'),
+    orientation: varchar('orientation', { length: 50 }),
+    device_info: jsonb('device_info'),
     status: screenStatusEnum('status').notNull().default('OFFLINE'),
     last_heartbeat_at: timestamp('last_heartbeat_at'),
+    current_schedule_id: uuid('current_schedule_id'),
+    current_media_id: uuid('current_media_id'),
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => ({
     statusIdx: index('screens_status_idx').on(table.status),
+    currentScheduleIdx: index('screens_current_schedule_idx').on(table.current_schedule_id),
+    currentMediaIdx: index('screens_current_media_idx').on(table.current_media_id),
   })
 );
 
@@ -248,6 +282,46 @@ export const screenGroups = pgTable(
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
   }
+);
+
+// Layouts (screen mosaics)
+export const layouts = pgTable(
+  'layouts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    description: text('description'),
+    aspect_ratio: varchar('aspect_ratio', { length: 50 }).notNull(),
+    spec: jsonb('spec').notNull(), // normalized slots: [{id,x,y,w,h,z,fit,audio_enabled}]
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    aspectIdx: index('layouts_aspect_ratio_idx').on(table.aspect_ratio),
+  })
+);
+
+// Schedule requests (draft/approval)
+export const scheduleRequests = pgTable(
+  'schedule_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    schedule_id: uuid('schedule_id').notNull(),
+    schedule_payload: jsonb('schedule_payload').notNull(),
+    status: scheduleRequestStatusEnum('status').notNull().default('PENDING'),
+    review_notes: text('review_notes'),
+    notes: text('notes'),
+    requested_by: uuid('requested_by').notNull(),
+    reviewed_by: uuid('reviewed_by'),
+    reviewed_at: timestamp('reviewed_at'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    statusIdx: index('schedule_requests_status_idx').on(table.status),
+    scheduleIdx: index('schedule_requests_schedule_id_idx').on(table.schedule_id),
+    requesterIdx: index('schedule_requests_requested_by_idx').on(table.requested_by),
+  })
 );
 
 // Screen group members table
@@ -669,6 +743,13 @@ export const devicePairings = pgTable('device_pairings', {
   used: boolean('used').notNull().default(false),
   used_at: timestamp('used_at'),
   expires_at: timestamp('expires_at').notNull(),
+  width: integer('width'),
+  height: integer('height'),
+  aspect_ratio: varchar('aspect_ratio', { length: 50 }),
+  orientation: varchar('orientation', { length: 50 }),
+  model: varchar('model', { length: 255 }),
+  codecs: varchar('codecs', { length: 255 }).array(),
+  device_info: jsonb('device_info'),
   created_at: timestamp('created_at').notNull().defaultNow(),
 });
 

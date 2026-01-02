@@ -57,7 +57,7 @@ npm run seed
 npm run dev
 ```
 
-The API will be available at `http://localhost:3000`
+The API will be available at `http://localhost:3000/api/v1`
 Swagger UI: `http://localhost:3000/docs`
 
 ## Docker Compose
@@ -100,24 +100,24 @@ scripts/
 
 ### Authentication
 
-- `POST /v1/auth/login` - Login with email/password
-- `POST /v1/auth/logout` - Logout and revoke token
-- `GET /v1/auth/me` - Get current user
+- `POST /api/v1/auth/login` - Login with email/password
+- `POST /api/v1/auth/logout` - Logout and revoke token
+- `GET /api/v1/auth/me` - Get current user
 
 ### Users
 
-- `POST /v1/users` - Create user (admin only)
-- `GET /v1/users` - List users
-- `GET /v1/users/:id` - Get user by ID
-- `PATCH /v1/users/:id` - Update user (admin only)
-- `DELETE /v1/users/:id` - Delete user (admin only)
+- `POST /api/v1/users` - Create user (admin only)
+- `GET /api/v1/users` - List users
+- `GET /api/v1/users/:id` - Get user by ID
+- `PATCH /api/v1/users/:id` - Update user (admin only)
+- `DELETE /api/v1/users/:id` - Delete user (admin only)
 
 ### Media
 
-- `POST /v1/media/presign-upload` - Get presigned upload URL
-- `POST /v1/media` - Create media metadata
-- `GET /v1/media` - List media
-- `GET /v1/media/:id` - Get media by ID
+- `POST /api/v1/media/presign-upload` - Get presigned upload URL
+- `POST /api/v1/media` - Create media metadata
+- `GET /api/v1/media` - List media
+- `GET /api/v1/media/:id` - Get media by ID
 
 ## Environment Variables
 

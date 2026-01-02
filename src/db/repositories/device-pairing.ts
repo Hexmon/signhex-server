@@ -3,9 +3,16 @@ import { getDatabase, schema } from '@/db';
 
 export class DevicePairingRepository {
   async create(data: {
-    device_id: string;
+    device_id?: string | null;
     pairing_code: string;
     expires_at: Date;
+    width?: number | null;
+    height?: number | null;
+    aspect_ratio?: string | null;
+    orientation?: string | null;
+    model?: string | null;
+    codecs?: string[] | null;
+    device_info?: Record<string, any> | null;
   }) {
     const db = getDatabase();
     const result = await db.insert(schema.devicePairings).values(data).returning();
@@ -86,4 +93,3 @@ export class DevicePairingRepository {
 export function createDevicePairingRepository(): DevicePairingRepository {
   return new DevicePairingRepository();
 }
-

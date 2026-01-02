@@ -29,7 +29,8 @@ export async function userActivateRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const data = activateSchema.parse(request.body);
-        const user = await userRepo.findByInviteToken(data.token);
+        const token = data.token.trim().toLowerCase();
+        const user = await userRepo.findByInviteToken(token);
         if (!user) return reply.status(NOT_FOUND).send({ error: 'Invalid or expired token' });
 
         const now = new Date();
@@ -42,7 +43,13 @@ export async function userActivateRoutes(fastify: FastifyInstance) {
         const passwordHash = await hashPassword(data.password);
         const updated = await userRepo.update(user.id, {
           password_hash: passwordHash,
-          ext: { ...user.ext, invite_token: null, invite_expires_at: null },
+          ext: {
+            ...user.ext,
+            invite_token: null,
+            invite_expires_at: null,
+            invite_status: 'ACTIVATED',
+            activated_at: new Date().toISOString(),
+          },
           is_active: true,
         });
         return reply.send({ success: true, user_id: updated!.id });

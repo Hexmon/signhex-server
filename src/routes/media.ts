@@ -4,16 +4,19 @@ import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/
 import { createMediaRepository } from '@/db/repositories/media';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
-import { getPresignedPutUrl, createBucketIfNotExists, headObject } from '@/s3';
+import { getPresignedPutUrl, createBucketIfNotExists, headObject, getPresignedUrl } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { apiEndpoints, PENDINGSTATUS } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { deleteObject } from '@/s3';
+import { getDatabase, schema } from '@/db';
+import { eq, inArray } from 'drizzle-orm';
 
 const logger = createLogger('media-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 
 const completeUploadSchema = z.object({
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']).optional().default('READY'),
@@ -26,6 +29,29 @@ const completeUploadSchema = z.object({
 
 export async function mediaRoutes(fastify: FastifyInstance) {
   const mediaRepo = createMediaRepository();
+  const db = getDatabase();
+
+  const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
+    try {
+      if (media.ready_object_id) {
+        const obj = readyMap?.get(media.ready_object_id) ||
+          (await db
+            .select()
+            .from(schema.storageObjects)
+            .where(eq(schema.storageObjects.id, media.ready_object_id)))[0];
+        if (obj) {
+          return await getPresignedUrl(obj.bucket, obj.object_key, 3600);
+        }
+      }
+
+      if (media.source_bucket && media.source_object_key) {
+        return await getPresignedUrl(media.source_bucket, media.source_object_key, 3600);
+      }
+    } catch (err) {
+      logger.warn(err, 'Failed to generate media URL');
+    }
+    return null;
+  };
 
   // Presign upload URL
   fastify.post<{ Body: typeof presignUploadSchema._type }>(
@@ -171,25 +197,39 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           status: query.status,
         });
 
+        const readyIds = result.items.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
+        const readyObjects = readyIds.length
+          ? await db.select().from(schema.storageObjects).where(inArray(schema.storageObjects.id, readyIds as any))
+          : [];
+        const readyMap = new Map(readyObjects.map((o: any) => [o.id, o]));
+
+        const items = await Promise.all(
+          result.items.map(async (m) => {
+            const media_url = await resolveMediaUrl(m, readyMap);
+            return {
+              id: m.id,
+              name: m.name,
+              type: m.type,
+              status: m.status,
+              source_bucket: m.source_bucket,
+              source_object_key: m.source_object_key,
+              source_content_type: m.source_content_type,
+              source_size: m.source_size,
+              ready_object_id: m.ready_object_id,
+              thumbnail_object_id: m.thumbnail_object_id,
+              duration_seconds: m.duration_seconds,
+              width: m.width,
+              height: m.height,
+              created_by: m.created_by,
+              created_at: m.created_at.toISOString(),
+              updated_at: m.updated_at.toISOString(),
+              media_url,
+            };
+          })
+        );
+
         return reply.send({
-          items: result.items.map((m) => ({
-            id: m.id,
-            name: m.name,
-            type: m.type,
-            status: m.status,
-            source_bucket: m.source_bucket,
-            source_object_key: m.source_object_key,
-            source_content_type: m.source_content_type,
-            source_size: m.source_size,
-            ready_object_id: m.ready_object_id,
-            thumbnail_object_id: m.thumbnail_object_id,
-            duration_seconds: m.duration_seconds,
-            width: m.width,
-            height: m.height,
-            created_by: m.created_by,
-            created_at: m.created_at.toISOString(),
-            updated_at: m.updated_at.toISOString(),
-          })),
+          items,
           pagination: {
             page: result.page,
             limit: result.limit,
@@ -222,10 +262,13 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
 
-        const media = await mediaRepo.findById((request.params as any).id);
+        const mediaId = (request.params as any).id;
+        const media = await mediaRepo.findById(mediaId);
         if (!media) {
           return reply.status(NOT_FOUND).send({ error: 'Media not found' });
         }
+
+        const media_url = await resolveMediaUrl(media);
 
         return reply.send({
           id: media.id,
@@ -244,6 +287,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           created_by: media.created_by,
           created_at: media.created_at.toISOString(),
           updated_at: media.updated_at.toISOString(),
+          media_url,
         });
       } catch (error) {
         logger.error(error, 'Get media error');
@@ -317,6 +361,117 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Complete upload error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Delete media (soft by default, hard with ?hard=true)
+  fastify.delete<{ Params: { id: string }; Querystring: { hard?: string } }>(
+    apiEndpoints.media.delete,
+    {
+      schema: {
+        description: 'Delete media (soft delete by default, hard delete with ?hard=true)',
+        tags: ['Media'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        }
+
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('delete', 'Media')) {
+          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        }
+
+        const media = await mediaRepo.findById((request.params as any).id);
+        if (!media) {
+          return reply.status(NOT_FOUND).send({ error: 'Media not found' });
+        }
+
+        const hardDelete =
+          typeof (request.query as any).hard === 'string' &&
+          ((request.query as any).hard as string).toLowerCase() === 'true';
+
+        const db = getDatabase();
+        const storageObjects: { bucket: string; key: string; id?: string }[] = [];
+        const deletedObjects: { bucket: string; key: string; success: boolean; error?: string }[] = [];
+
+        if (media.source_bucket && media.source_object_key) {
+          storageObjects.push({ bucket: media.source_bucket, key: media.source_object_key });
+        }
+
+        if (media.ready_object_id) {
+          const [obj] = await db
+            .select()
+            .from(schema.storageObjects)
+            .where(eq(schema.storageObjects.id, media.ready_object_id));
+          if (obj) storageObjects.push({ bucket: obj.bucket, key: obj.object_key, id: obj.id });
+        }
+
+        if (media.thumbnail_object_id) {
+          const [obj] = await db
+            .select()
+            .from(schema.storageObjects)
+            .where(eq(schema.storageObjects.id, media.thumbnail_object_id));
+          if (obj) storageObjects.push({ bucket: obj.bucket, key: obj.object_key, id: obj.id });
+        }
+
+        for (const obj of storageObjects) {
+          try {
+            await deleteObject(obj.bucket, obj.key);
+            deletedObjects.push({ bucket: obj.bucket, key: obj.key, success: true });
+          } catch (err) {
+            logger.warn(err, 'Failed to delete media object from storage');
+            deletedObjects.push({
+              bucket: obj.bucket,
+              key: obj.key,
+              success: false,
+              error: (err as Error).message,
+            });
+          }
+        }
+
+        // Remove storage object rows for ready/thumbnail if present
+        for (const obj of storageObjects) {
+          if (obj.id) {
+            try {
+              await db.delete(schema.storageObjects).where(eq(schema.storageObjects.id, obj.id));
+            } catch (err) {
+              logger.warn(err, 'Failed to delete storage object row');
+            }
+          }
+        }
+
+        if (hardDelete) {
+          await mediaRepo.delete(media.id);
+          return reply.status(OK).send({
+            message: 'Media hard deleted (DB row removed, storage cleaned where possible)',
+            id: media.id,
+            storage_deleted: deletedObjects,
+          });
+        }
+
+        await mediaRepo.update(media.id, {
+          status: 'FAILED',
+          source_bucket: null as any,
+          source_object_key: null as any,
+          ready_object_id: null as any,
+          thumbnail_object_id: null as any,
+        });
+
+        return reply.status(OK).send({
+          message: 'Media soft deleted (DB retained, storage cleaned where possible)',
+          id: media.id,
+          storage_deleted: deletedObjects,
+        });
+      } catch (error) {
+        logger.error(error, 'Delete media error');
         return respondWithError(reply, error);
       }
     }

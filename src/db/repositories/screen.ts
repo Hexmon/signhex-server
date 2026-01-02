@@ -3,8 +3,14 @@ import { getDatabase, schema } from '@/db';
 
 export class ScreenRepository {
   async create(data: {
+    id?: string;
     name: string;
     location?: string;
+    aspect_ratio?: string | null;
+    width?: number | null;
+    height?: number | null;
+    orientation?: string | null;
+    device_info?: Record<string, any> | null;
   }) {
     const db = getDatabase();
     const result = await db.insert(schema.screens).values(data).returning();
@@ -74,4 +80,3 @@ export class ScreenRepository {
 export function createScreenRepository(): ScreenRepository {
   return new ScreenRepository();
 }
-

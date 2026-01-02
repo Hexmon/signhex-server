@@ -3,8 +3,8 @@ import { z } from 'zod';
 export const createScheduleSchema = z.object({
   name: z.string().min(1).max(255),
   description: z.string().optional(),
-  start_at: z.string().datetime(),
-  end_at: z.string().datetime(),
+  start_at: z.string().datetime().optional(),
+  end_at: z.string().datetime().optional(),
 });
 
 export type CreateScheduleRequest = z.infer<typeof createScheduleSchema>;
@@ -24,6 +24,8 @@ export const createScheduleItemSchema = z.object({
   start_at: z.string().datetime(),
   end_at: z.string().datetime(),
   priority: z.number().int().default(0),
+  screen_ids: z.array(z.string().uuid()).default([]),
+  screen_group_ids: z.array(z.string().uuid()).default([]),
 });
 
 export type CreateScheduleItemRequest = z.infer<typeof createScheduleItemSchema>;
@@ -31,6 +33,8 @@ export type CreateScheduleItemRequest = z.infer<typeof createScheduleItemSchema>
 export const publishScheduleSchema = z.object({
   screen_ids: z.array(z.string().uuid()).optional(),
   screen_group_ids: z.array(z.string().uuid()).optional(),
+  notes: z.string().optional(),
+  schedule_request_id: z.string().uuid().optional(),
 });
 
 export type PublishScheduleRequest = z.infer<typeof publishScheduleSchema>;

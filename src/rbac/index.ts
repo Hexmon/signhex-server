@@ -8,9 +8,12 @@ export type Subject =
   | 'User'
   | 'Department'
   | 'Media'
+  | 'Layout'
   | 'Presentation'
   | 'Schedule'
+  | 'ScheduleRequest'
   | 'Screen'
+  | 'ScreenGroup'
   | 'Request'
   | 'Notification'
   | 'AuditLog'
@@ -30,6 +33,7 @@ export interface SubjectFields {
   User: { department_id?: string };
   Request: { created_by?: string };
   Notification: { user_id?: string };
+  ScheduleRequest: { requested_by?: string };
 }
 
 export type AppAbility = MongoAbility<[Action, Subject]>;
@@ -49,6 +53,14 @@ export function defineAbilityFor(role: Role, userId: string, departmentId?: stri
     can('update', 'Schedule');
     can('create', 'Media');
     can('update', 'Media');
+    can('create', 'Layout');
+    can('update', 'Layout');
+    can('create', 'ScreenGroup');
+    can('update', 'ScreenGroup');
+    can('read', 'ScreenGroup');
+    can('create', 'ScheduleRequest');
+    can('read', 'ScheduleRequest', { requested_by: userId } as any);
+    can('update', 'ScheduleRequest', { requested_by: userId } as any);
     can('create', 'Presentation');
     can('update', 'Presentation');
     can('read', 'AuditLog');
@@ -63,6 +75,9 @@ export function defineAbilityFor(role: Role, userId: string, departmentId?: stri
     can('update', 'Request', { created_by: userId } as any);
     can('read', 'Notification', { user_id: userId } as any);
     can('update', 'Notification', { user_id: userId } as any);
+    can('create', 'ScheduleRequest');
+    can('read', 'ScheduleRequest', { requested_by: userId } as any);
+    can('update', 'ScheduleRequest', { requested_by: userId } as any);
     can('read', 'Conversation');
   }
 

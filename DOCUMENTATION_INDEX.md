@@ -74,47 +74,6 @@ This project includes comprehensive documentation to help you get started, devel
 
 ---
 
-## 🔧 Maintenance & Operations
-
-### For DevOps and System Administrators
-
-5. **[FIXES_APPLIED.md](./FIXES_APPLIED.md)** 🔨
-   - **Purpose:** Recent bug fixes and improvements
-   - **Audience:** Developers and maintainers
-   - **Content:**
-     - pg-boss scheduling error fix
-     - nodemon integration
-     - MaxListenersExceededWarning fix
-     - MinIO bucket creation fix
-     - Testing results
-     - Known issues
-   - **When to use:** You want to know what was recently fixed
-   - **Last Updated:** 2025-11-05
-
-6. **[COMPREHENSIVE_CHECK_REPORT.md](./COMPREHENSIVE_CHECK_REPORT.md)** ✅
-   - **Purpose:** Complete project status report
-   - **Audience:** Project managers and developers
-   - **Content:**
-     - Task status review
-     - Development server status
-     - Issues identified and resolved
-     - Remaining blockers
-     - Verification results
-   - **When to use:** You want to know the current project status
-
-7. **[PROJECT_STATUS_DASHBOARD.md](./PROJECT_STATUS_DASHBOARD.md)** 📊
-   - **Purpose:** Visual project status dashboard
-   - **Audience:** Project managers and stakeholders
-   - **Content:**
-     - Overall project health
-     - Completed features
-     - Pending tasks
-     - Known issues
-     - Metrics and statistics
-   - **When to use:** You need a quick visual overview
-
----
-
 ## 📋 Reference Documentation
 
 ### Technical References
@@ -293,7 +252,7 @@ npm start                   # Start production server
 
 ### Most Common URLs
 
-- **API:** http://localhost:3000
+- **API:** http://localhost:3000/api/v1
 - **API Docs:** http://localhost:3000/docs
 - **Health Check:** http://localhost:3000/health
 - **MinIO Console:** http://localhost:9001
@@ -447,4 +406,3 @@ We hope this documentation helps you build amazing digital signage experiences. 
 **Document Version:** 1.0.0  
 **Last Updated:** 2025-11-05  
 **Maintained By:** Hexmon Team
-
