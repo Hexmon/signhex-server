@@ -1,15 +1,17 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, desc, inArray } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
-import { putObject } from '@/s3';
+import { putObject, getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
+import { defineAbilityFor } from '@/rbac';
 
 const logger = createLogger('device-telemetry-routes');
-const { BAD_REQUEST, CREATED, NOT_FOUND } = HTTP_STATUS;
+const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 const HEARTBEAT_BUCKET = 'logs-heartbeats';
 const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
 
@@ -40,8 +42,232 @@ const screenshotSchema = z.object({
   image_data: z.string(), // base64 encoded
 });
 
+const createCommandSchema = z.object({
+  type: z.enum(['REBOOT', 'REFRESH', 'TEST_PATTERN']),
+  payload: z.record(z.any()).optional(),
+});
+
+const snapshotQuerySchema = z.object({
+  include_urls: z.string().optional(),
+});
+
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
+
+  const authenticateDeviceSnapshot = async (request: FastifyRequest, deviceId: string) => {
+    const certSerial =
+      (request.headers['x-device-serial'] as string) ||
+      (request.headers['x-device-cert'] as string) ||
+      (request.headers['x-device-cert-serial'] as string);
+
+    if (certSerial) {
+      const [cert] = await db
+        .select()
+        .from(schema.deviceCertificates)
+        .where(
+          and(
+            eq(schema.deviceCertificates.screen_id, deviceId),
+            eq(schema.deviceCertificates.serial, certSerial),
+            eq(schema.deviceCertificates.is_revoked, false)
+          )
+        );
+      if (cert) return { ok: true, type: 'device' as const };
+      return { ok: false, status: UNAUTHORIZED, error: 'Invalid or revoked device certificate' };
+    }
+
+    const token = extractTokenFromHeader(request.headers.authorization);
+    if (!token) return { ok: false, status: UNAUTHORIZED, error: 'Missing authorization header' };
+    try {
+      const payload = await verifyAccessToken(token);
+      const ability = defineAbilityFor(payload.role as any, payload.sub);
+      if (!ability.can('read', 'Screen')) {
+        return { ok: false, status: FORBIDDEN, error: 'Forbidden' };
+      }
+      return { ok: true, type: 'user' as const };
+    } catch (err) {
+      logger.error(err, 'Device snapshot auth error');
+      return { ok: false, status: UNAUTHORIZED, error: 'Invalid token' };
+    }
+  };
+  const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
+    const rows = await db
+      .select({ group_id: schema.screenGroupMembers.group_id })
+      .from(schema.screenGroupMembers)
+      .where(eq(schema.screenGroupMembers.screen_id, screenId));
+    return rows.map((r) => r.group_id);
+  };
+
+  const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
+    return items.filter((i) => {
+      const itemScreens = (i.screen_ids || []) as string[];
+      const itemGroups = (i.screen_group_ids || []) as string[];
+      const hasTargets = (itemScreens && itemScreens.length > 0) || (itemGroups && itemGroups.length > 0);
+      if (!hasTargets) return true;
+      if (itemScreens.includes(screenId)) return true;
+      return itemGroups.some((gid) => groupIds.includes(gid));
+    });
+  };
+
+  // Latest publish snapshot for device (no auth; assume mTLS/device auth upstream)
+  fastify.get<{ Params: { deviceId: string }; Querystring: typeof snapshotQuerySchema._type }>(
+    apiEndpoints.deviceTelemetry.snapshot,
+    {
+      schema: {
+        description: 'Get latest publish snapshot targeting this device',
+        tags: ['Device Telemetry'],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const deviceId = (request.params as any).deviceId;
+        const auth = await authenticateDeviceSnapshot(request, deviceId);
+        if (!auth.ok) {
+          const status = (auth as any).status || UNAUTHORIZED;
+          return reply.status(status).send({ error: auth.error });
+        }
+        const query = snapshotQuerySchema.parse(request.query);
+        const includeUrls = query.include_urls?.toLowerCase() === 'true';
+
+        const [latest] = await db
+          .select({
+            publish_id: schema.publishes.id,
+            schedule_id: schema.publishes.schedule_id,
+            snapshot_id: schema.publishes.snapshot_id,
+            published_at: schema.publishes.published_at,
+            payload: schema.scheduleSnapshots.payload,
+          })
+          .from(schema.publishTargets)
+          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
+          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
+          .where(eq(schema.publishTargets.screen_id, deviceId))
+          .orderBy(desc(schema.publishes.published_at))
+          .limit(1);
+
+        if (!latest) {
+          return reply.status(NOT_FOUND).send({ error: 'No publish found for this device' });
+        }
+
+        const rawPayload = (latest.payload as any) || {};
+        const schedule = rawPayload.schedule || {};
+        const groupIds = await getGroupIdsForScreen(deviceId);
+        const filteredItems = filterItemsForScreen(schedule.items || [], deviceId, groupIds);
+        const filteredSnapshot = {
+          ...rawPayload,
+          schedule: { ...schedule, items: filteredItems },
+        };
+
+        let mediaUrls: Record<string, string | null> | undefined;
+        if (includeUrls) {
+          const scheduleItems: any[] = filteredItems;
+          const mediaIds = new Set<string>();
+
+          const collectMediaIds = (obj: any) => {
+            if (!obj) return;
+            if (obj.media_id) mediaIds.add(obj.media_id);
+            if (Array.isArray(obj.items)) obj.items.forEach(collectMediaIds);
+            if (Array.isArray(obj.slots)) obj.slots.forEach(collectMediaIds);
+          };
+
+          scheduleItems.forEach((it) => collectMediaIds(it.presentation));
+
+          const ids = Array.from(mediaIds);
+          if (ids.length > 0) {
+            const medias = await db.select().from(schema.media).where(inArray(schema.media.id, ids as any));
+            const readyIds = medias.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
+            const storageRows = readyIds.length
+              ? await db.select().from(schema.storageObjects).where(inArray(schema.storageObjects.id, readyIds as any))
+              : [];
+            const storageMap = new Map(storageRows.map((s: any) => [s.id, s]));
+
+            mediaUrls = {};
+            for (const m of medias as any[]) {
+              try {
+                if (m.ready_object_id) {
+                  const stor = storageMap.get(m.ready_object_id);
+                  if (stor) {
+                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, 3600);
+                    continue;
+                  }
+                }
+                if (m.source_bucket && m.source_object_key) {
+                  mediaUrls[m.id] = await getPresignedUrl(m.source_bucket, m.source_object_key, 3600);
+                } else {
+                  mediaUrls[m.id] = null;
+                }
+              } catch {
+                mediaUrls[m.id] = null;
+              }
+            }
+          }
+        }
+
+        return reply.send({
+          device_id: deviceId,
+          publish: {
+            publish_id: latest.publish_id,
+            schedule_id: latest.schedule_id,
+            snapshot_id: latest.snapshot_id,
+            published_at: latest.published_at.toISOString?.() ?? latest.published_at,
+          },
+          snapshot: filteredSnapshot,
+          media_urls: mediaUrls,
+        });
+      } catch (error) {
+        logger.error(error, 'Get device snapshot error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Create command for device (admin)
+  fastify.post<{ Params: { deviceId: string }; Body: typeof createCommandSchema._type }>(
+    apiEndpoints.deviceTelemetry.commands,
+    {
+      schema: {
+        description: 'Create a device command (admin only)',
+        tags: ['Device Telemetry'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const data = createCommandSchema.parse(request.body);
+        const screenId = (request.params as any).deviceId;
+
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId));
+        if (!screen) return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+
+        const [command] = await db
+          .insert(schema.deviceCommands)
+          .values({
+            screen_id: screenId,
+            type: data.type as any,
+            payload: data.payload,
+            status: 'PENDING',
+            created_by: payload.sub,
+          })
+          .returning();
+
+        return reply.status(CREATED).send({
+          id: command.id,
+          screen_id: command.screen_id,
+          type: command.type,
+          payload: command.payload,
+          status: command.status,
+          created_at: command.created_at?.toISOString?.() ?? command.created_at,
+        });
+      } catch (error) {
+        logger.error(error, 'Create device command error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
 
   // Device heartbeat (no auth required - mTLS authenticated)
   fastify.post<{ Body: typeof heartbeatSchema._type }>(
@@ -95,6 +321,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .set({
             status: screenStatus as any,
             last_heartbeat_at: receivedAt,
+            current_schedule_id: data.current_schedule_id ?? null,
+            current_media_id: data.current_media_id ?? null,
             updated_at: receivedAt,
           })
           .where(eq(schema.screens.id, data.device_id));

@@ -29,6 +29,13 @@ const completePairingSchema = z.object({
 const requestPairingSchema = z.object({
   device_label: z.string().optional(),
   expires_in: z.number().int().positive().default(600), // 10 minutes
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  aspect_ratio: z.string().optional(),
+  orientation: z.enum(['portrait', 'landscape']).optional(),
+  model: z.string().optional(),
+  codecs: z.array(z.string()).optional(),
+  device_info: z.record(z.any()).optional(),
 });
 
 const confirmPairingSchema = z.object({
@@ -123,6 +130,13 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           device_id: deviceId,
           pairing_code: pairingCode,
           expires_at: expiresAt,
+          width: data.width,
+          height: data.height,
+          aspect_ratio: data.aspect_ratio,
+          orientation: data.orientation,
+          model: data.model,
+          codecs: data.codecs,
+          device_info: data.device_info,
         });
 
         logger.info(
@@ -138,6 +152,15 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           expires_in: data.expires_in,
           connected: true,
           observed_ip: request.ip,
+          specs: {
+            width: pairing.width ?? null,
+            height: pairing.height ?? null,
+            aspect_ratio: pairing.aspect_ratio ?? null,
+            orientation: pairing.orientation ?? null,
+            model: pairing.model ?? null,
+            codecs: pairing.codecs ?? null,
+            device_info: pairing.device_info ?? null,
+          },
         });
       } catch (error) {
         logger.error(error, 'Device pairing request error');
@@ -260,6 +283,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           id: pairing.device_id,
           name: data.name,
           location: data.location,
+          aspect_ratio: (pairing as any).aspect_ratio ?? null,
+          width: (pairing as any).width ?? null,
+          height: (pairing as any).height ?? null,
+          orientation: (pairing as any).orientation ?? null,
+          device_info: (pairing as any).device_info ?? {
+            model: (pairing as any).model ?? null,
+            codecs: (pairing as any).codecs ?? null,
+          },
         });
 
         await pairingRepo.markAsUsed(pairing.id);
@@ -273,6 +304,11 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
             name: screen.name,
             location: screen.location,
             status: screen.status,
+            aspect_ratio: (screen as any).aspect_ratio ?? null,
+            width: (screen as any).width ?? null,
+            height: (screen as any).height ?? null,
+            orientation: (screen as any).orientation ?? null,
+            device_info: (screen as any).device_info ?? null,
             created_at: screen.created_at.toISOString(),
             updated_at: screen.updated_at.toISOString(),
           },
@@ -322,6 +358,15 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
             used_at: p.used_at?.toISOString() || null,
             expires_at: p.expires_at.toISOString(),
             created_at: p.created_at.toISOString(),
+            specs: {
+              width: (p as any).width ?? null,
+              height: (p as any).height ?? null,
+              aspect_ratio: (p as any).aspect_ratio ?? null,
+              orientation: (p as any).orientation ?? null,
+              model: (p as any).model ?? null,
+              codecs: (p as any).codecs ?? null,
+              device_info: (p as any).device_info ?? null,
+            },
           })),
           pagination: {
             page: result.page,

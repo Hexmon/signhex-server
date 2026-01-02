@@ -6,6 +6,13 @@ export class DevicePairingRepository {
     device_id?: string | null;
     pairing_code: string;
     expires_at: Date;
+    width?: number | null;
+    height?: number | null;
+    aspect_ratio?: string | null;
+    orientation?: string | null;
+    model?: string | null;
+    codecs?: string[] | null;
+    device_info?: Record<string, any> | null;
   }) {
     const db = getDatabase();
     const result = await db.insert(schema.devicePairings).values(data).returning();

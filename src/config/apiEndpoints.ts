@@ -47,6 +47,10 @@ export const apiEndpoints = {
     get: withBase('/presentations/:id'),
     update: withBase('/presentations/:id'),
     delete: withBase('/presentations/:id'),
+    items: withBase('/presentations/:id/items'),
+    item: withBase('/presentations/:id/items/:itemId'),
+    slotItems: withBase('/presentations/:id/slots'),
+    slotItem: withBase('/presentations/:id/slots/:slotItemId'),
   },
   schedules: {
     create: withBase('/schedules'),
@@ -57,13 +61,44 @@ export const apiEndpoints = {
     publishes: withBase('/schedules/:id/publishes'),
     updatePublishTarget: withBase('/publishes/:publishId/targets/:targetId'),
     publishStatus: withBase('/publishes/:id'),
+    items: withBase('/schedules/:id/items'),
+    item: withBase('/schedules/:id/items/:itemId'),
+  },
+  scheduleRequests: {
+    create: withBase('/schedule-requests'),
+    list: withBase('/schedule-requests'),
+    get: withBase('/schedule-requests/:id'),
+    update: withBase('/schedule-requests/:id'),
+    approve: withBase('/schedule-requests/:id/approve'),
+    reject: withBase('/schedule-requests/:id/reject'),
+    publish: withBase('/schedule-requests/:id/publish'),
   },
   screens: {
     create: withBase('/screens'),
     list: withBase('/screens'),
+    overview: withBase('/screens/overview'),
     get: withBase('/screens/:id'),
     update: withBase('/screens/:id'),
     delete: withBase('/screens/:id'),
+    status: withBase('/screens/:id/status'),
+    nowPlaying: withBase('/screens/:id/now-playing'),
+    availability: withBase('/screens/:id/availability'),
+    snapshot: withBase('/screens/:id/snapshot'),
+  },
+  screenGroups: {
+    create: withBase('/screen-groups'),
+    list: withBase('/screen-groups'),
+    get: withBase('/screen-groups/:id'),
+    availability: withBase('/screen-groups/:id/availability'),
+    update: withBase('/screen-groups/:id'),
+    delete: withBase('/screen-groups/:id'),
+  },
+  layouts: {
+    create: withBase('/layouts'),
+    list: withBase('/layouts'),
+    get: withBase('/layouts/:id'),
+    update: withBase('/layouts/:id'),
+    delete: withBase('/layouts/:id'),
   },
   requests: {
     create: withBase('/requests'),
@@ -96,6 +131,7 @@ export const apiEndpoints = {
     screenshot: withBase('/device/screenshot'),
     commands: withBase('/device/:deviceId/commands'),
     ackCommand: withBase('/device/:deviceId/commands/:commandId/ack'),
+    snapshot: withBase('/device/:deviceId/snapshot'),
   },
   devicePairing: {
     generate: withBase('/device-pairing/generate'),
@@ -147,6 +183,9 @@ export const apiEndpoints = {
     offlineScreens: withBase('/reports/offline-screens'),
     storage: withBase('/reports/storage'),
     systemHealth: withBase('/reports/system-health'),
+  },
+  screenGroupNowPlaying: {
+    get: withBase('/screen-groups/:id/now-playing'),
   },
 };
 

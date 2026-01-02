@@ -29,6 +29,9 @@ import { metricsRoutes } from '@/routes/metrics';
 import { reportsRoutes } from '@/routes/reports';
 import { userInviteRoutes } from '@/routes/users-invite';
 import { userActivateRoutes } from '@/routes/users-activate';
+import { layoutRoutes } from '@/routes/layouts';
+import { screenGroupRoutes } from '@/routes/screen-groups';
+import { scheduleRequestRoutes } from '@/routes/schedule-requests';
 import csrfProtectionPlugin from '@/middleware/csrf';
 
 export async function createServer() {
@@ -119,7 +122,7 @@ export async function createServer() {
   });
 
   // Health check
-  fastify.get('/health', async () => {
+  fastify.get('/api/v1/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
   });
 
@@ -147,6 +150,9 @@ export async function createServer() {
   await fastify.register(reportsRoutes);
   await fastify.register(userInviteRoutes);
   await fastify.register(userActivateRoutes);
+  await fastify.register(layoutRoutes);
+  await fastify.register(screenGroupRoutes);
+  await fastify.register(scheduleRequestRoutes);
 
   return fastify;
 }

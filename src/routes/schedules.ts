@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { desc, eq, inArray, and } from 'drizzle-orm';
 import {
   createScheduleSchema,
   updateScheduleSchema,
@@ -8,18 +8,33 @@ import {
 } from '@/schemas/schedule';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { createScheduleRepository } from '@/db/repositories/schedule';
+import { createScheduleItemRepository } from '@/db/repositories/schedule-item';
+import { createPresentationRepository } from '@/db/repositories/presentation';
 import { getDatabase, schema } from '@/db';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { createLogger } from '@/utils/logger';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { publishScheduleSnapshot, resolvePresentations } from '@/routes/schedule-publish-helper';
+import z from 'zod';
 
 const logger = createLogger('schedule-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
 
+const scheduleItemSchema = z.object({
+  presentation_id: z.string().uuid(),
+  start_at: z.string().datetime(),
+  end_at: z.string().datetime(),
+  priority: z.number().int().default(0),
+  screen_ids: z.array(z.string().uuid()).default([]),
+  screen_group_ids: z.array(z.string().uuid()).default([]),
+});
+
 export async function scheduleRoutes(fastify: FastifyInstance) {
   const scheduleRepo = createScheduleRepository();
+  const scheduleItemRepo = createScheduleItemRepository();
+  const presentationRepo = createPresentationRepository();
   const db = getDatabase();
 
   const validateStartEnd = (start: string, end: string) => {
@@ -42,6 +57,37 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     }
     return { startAt, endAt };
   };
+
+  const targetsIntersect = (
+    existing: { screen_ids?: string[]; screen_group_ids?: string[] },
+    incoming: { screen_ids?: string[]; screen_group_ids?: string[] }
+  ) => {
+    const existingScreens = existing.screen_ids || [];
+    const existingGroups = existing.screen_group_ids || [];
+    const incomingScreens = incoming.screen_ids || [];
+    const incomingGroups = incoming.screen_group_ids || [];
+
+    const existingHasTargets = existingScreens.length > 0 || existingGroups.length > 0;
+    const incomingHasTargets = incomingScreens.length > 0 || incomingGroups.length > 0;
+
+    if (!existingHasTargets && !incomingHasTargets) return true; // both global
+    if (!existingHasTargets) return true; // existing applies to all
+    if (!incomingHasTargets) return true; // new applies to all
+
+    const screenOverlap = existingScreens.some((sid) => incomingScreens.includes(sid));
+    const groupOverlap = existingGroups.some((gid) => incomingGroups.includes(gid));
+    return screenOverlap || groupOverlap;
+  };
+
+  const hasOverlap = (items: any[], startAt: Date, endAt: Date, incomingTargets: { screen_ids?: string[]; screen_group_ids?: string[] }) => {
+    return items.some((i) => {
+      const existingStart = new Date(i.start_at);
+      const existingEnd = new Date(i.end_at);
+      if (!targetsIntersect(i, incomingTargets)) return false;
+      return startAt < existingEnd && endAt > existingStart;
+    });
+  };
+
 
   // Create schedule
   fastify.post<{ Body: typeof createScheduleSchema._type }>(
@@ -278,6 +324,232 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // List schedule items (with resolved presentations/media for preview)
+  fastify.get<{ Params: { id: string } }>(
+    apiEndpoints.schedules.items,
+    {
+      schema: {
+        description: 'List schedule items (presentation slots)',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('read', 'Schedule')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const schedule = await scheduleRepo.findById((request.params as any).id);
+        if (!schedule) return reply.status(NOT_FOUND).send({ error: 'Schedule not found' });
+
+        const items = await scheduleItemRepo.listBySchedule(schedule.id);
+        const presMap = await resolvePresentations(items.map((i: any) => i.presentation_id));
+
+        return reply.send({
+          items: items.map((i: any) => {
+            const pres = presMap.get(i.presentation_id);
+            return {
+              id: i.id,
+              presentation_id: i.presentation_id,
+              start_at: i.start_at.toISOString?.() ?? i.start_at,
+              end_at: i.end_at.toISOString?.() ?? i.end_at,
+              priority: i.priority,
+              screen_ids: i.screen_ids || [],
+              screen_group_ids: i.screen_group_ids || [],
+              created_at: i.created_at.toISOString?.() ?? i.created_at,
+              presentation: pres
+                ? {
+                    id: pres.id,
+                    name: pres.name,
+                    description: pres.description,
+                    layout: pres.layout
+                      ? {
+                          id: pres.layout.id,
+                          name: pres.layout.name,
+                          description: pres.layout.description,
+                          aspect_ratio: pres.layout.aspect_ratio,
+                          spec: pres.layout.spec,
+                        }
+                      : null,
+                    items: (pres.items || []).map((pi: any) => ({
+                      id: pi.id,
+                      media_id: pi.media_id,
+                      order: pi.order,
+                      duration_seconds: pi.duration_seconds,
+                      media: pi.media
+                        ? {
+                            id: pi.media.id,
+                            name: pi.media.name,
+                            type: pi.media.type,
+                            status: pi.media.status,
+                            source_bucket: pi.media.source_bucket,
+                            source_object_key: pi.media.source_object_key,
+                            ready_object_id: pi.media.ready_object_id,
+                            thumbnail_object_id: pi.media.thumbnail_object_id,
+                          }
+                        : null,
+                    })),
+                    slots: (pres.slots || []).map((si: any) => ({
+                      id: si.id,
+                      slot_id: si.slot_id,
+                      media_id: si.media_id,
+                      order: si.order,
+                      duration_seconds: si.duration_seconds,
+                      fit_mode: si.fit_mode,
+                      audio_enabled: si.audio_enabled,
+                      media: si.media
+                        ? {
+                            id: si.media.id,
+                            name: si.media.name,
+                            type: si.media.type,
+                            status: si.media.status,
+                            source_bucket: si.media.source_bucket,
+                            source_object_key: si.media.source_object_key,
+                            ready_object_id: si.media.ready_object_id,
+                            thumbnail_object_id: si.media.thumbnail_object_id,
+                          }
+                        : null,
+                    })),
+                  }
+                : null,
+            };
+          }),
+        });
+      } catch (error) {
+        logger.error(error, 'List schedule items error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Add schedule item
+  fastify.post<{ Params: { id: string }; Body: typeof scheduleItemSchema._type }>(
+    apiEndpoints.schedules.items,
+    {
+      schema: {
+        description: 'Add a presentation to a schedule time window',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Schedule')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const schedule = await scheduleRepo.findById((request.params as any).id);
+        if (!schedule) return reply.status(NOT_FOUND).send({ error: 'Schedule not found' });
+
+        const data = scheduleItemSchema.parse(request.body);
+        const pres = await presentationRepo.findById(data.presentation_id);
+        if (!pres) return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+
+        const { startAt, endAt } = validateStartEnd(data.start_at, data.end_at);
+
+        const uniqueScreenIds = Array.from(new Set(data.screen_ids || []));
+        if (uniqueScreenIds.length) {
+          const screens = await db
+            .select({ id: schema.screens.id })
+            .from(schema.screens)
+            .where(inArray(schema.screens.id, uniqueScreenIds as any));
+          if (screens.length !== uniqueScreenIds.length) {
+            return reply.status(BAD_REQUEST).send({ error: 'One or more screen_ids are invalid' });
+          }
+        }
+
+        const uniqueGroupIds = Array.from(new Set(data.screen_group_ids || []));
+        if (uniqueGroupIds.length) {
+          const groups = await db
+            .select({ id: schema.screenGroups.id })
+            .from(schema.screenGroups)
+            .where(inArray(schema.screenGroups.id, uniqueGroupIds as any));
+          if (groups.length !== uniqueGroupIds.length) {
+            return reply.status(BAD_REQUEST).send({ error: 'One or more screen_group_ids are invalid' });
+          }
+        }
+
+        if (startAt < new Date(schedule.start_at) || endAt > new Date(schedule.end_at)) {
+          return reply
+            .status(BAD_REQUEST)
+            .send({ error: 'Item window must be within the schedule start/end window' });
+        }
+
+        const existing = await scheduleItemRepo.listBySchedule(schedule.id);
+        if (hasOverlap(existing, startAt, endAt, { screen_ids: uniqueScreenIds, screen_group_ids: uniqueGroupIds })) {
+          return reply.status(BAD_REQUEST).send({ error: 'Schedule item overlaps with an existing item for the same targets' });
+        }
+
+        const item = await scheduleItemRepo.create({
+          schedule_id: schedule.id,
+          presentation_id: data.presentation_id,
+          start_at: startAt,
+          end_at: endAt,
+          priority: data.priority ?? 0,
+          screen_ids: uniqueScreenIds,
+          screen_group_ids: uniqueGroupIds,
+        });
+
+        return reply.status(CREATED).send({
+          id: item.id,
+          schedule_id: schedule.id,
+          presentation_id: item.presentation_id,
+          start_at: item.start_at.toISOString?.() ?? item.start_at,
+          end_at: item.end_at.toISOString?.() ?? item.end_at,
+          priority: item.priority,
+          screen_ids: item.screen_ids || [],
+          screen_group_ids: item.screen_group_ids || [],
+        });
+      } catch (error) {
+        logger.error(error, 'Add schedule item error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Delete schedule item
+  fastify.delete<{ Params: { id: string; itemId: string } }>(
+    apiEndpoints.schedules.item,
+    {
+      schema: {
+        description: 'Delete a schedule item',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Schedule')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const schedule = await scheduleRepo.findById((request.params as any).id);
+        if (!schedule) return reply.status(NOT_FOUND).send({ error: 'Schedule not found' });
+
+        const [item] = await db
+          .select()
+          .from(schema.scheduleItems)
+          .where(
+            and(eq(schema.scheduleItems.id, (request.params as any).itemId), eq(schema.scheduleItems.schedule_id, schedule.id))
+          );
+        if (!item) return reply.status(NOT_FOUND).send({ error: 'Schedule item not found' });
+
+        await scheduleItemRepo.delete(item.id);
+        return reply.status(204).send();
+      } catch (error) {
+        logger.error(error, 'Delete schedule item error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
   // Update schedule
   fastify.patch<{ Params: { id: string }; Body: typeof updateScheduleSchema._type }>(
     apiEndpoints.schedules.update,
@@ -372,52 +644,69 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const data = publishScheduleSchema.parse(request.body);
+        const uniqueScreens = Array.from(new Set(data.screen_ids || []));
+        if (uniqueScreens.length) {
+          const screens = await db
+            .select({ id: schema.screens.id })
+            .from(schema.screens)
+            .where(inArray(schema.screens.id, uniqueScreens as any));
+          if (screens.length !== uniqueScreens.length) {
+            return reply.status(BAD_REQUEST).send({ error: 'One or more screen_ids are invalid' });
+          }
+        }
 
-        // Create snapshot (minimal payload for now)
-        const [snapshot] = await db
-          .insert(schema.scheduleSnapshots)
-          .values({
-            schedule_id: (request.params as any).id,
-            payload: {
-              schedule_id: (request.params as any).id,
-              screen_ids: data.screen_ids || [],
-              screen_group_ids: data.screen_group_ids || [],
-              published_at: new Date().toISOString(),
-            },
-          })
-          .returning();
+        const uniqueGroups = Array.from(new Set(data.screen_group_ids || []));
+        if (uniqueGroups.length) {
+          const groups = await db
+            .select({ id: schema.screenGroups.id })
+            .from(schema.screenGroups)
+            .where(inArray(schema.screenGroups.id, uniqueGroups as any));
+          if (groups.length !== uniqueGroups.length) {
+            return reply.status(BAD_REQUEST).send({ error: 'One or more screen_group_ids are invalid' });
+          }
+        }
 
-        const [publish] = await db
-          .insert(schema.publishes)
-          .values({
-            schedule_id: (request.params as any).id,
-            snapshot_id: snapshot.id,
-            published_by: payload.sub,
-          })
-          .returning();
+        let scheduleRequest: any = null;
+        if ((data as any).schedule_request_id) {
+          const [req] = await db
+            .select()
+            .from(schema.scheduleRequests)
+            .where(eq(schema.scheduleRequests.id, (data as any).schedule_request_id));
+          if (!req) return reply.status(NOT_FOUND).send({ error: 'Schedule request not found' });
+          if (req.schedule_id && req.schedule_id !== (request.params as any).id) {
+            return reply.status(BAD_REQUEST).send({ error: 'Schedule request does not match this schedule' });
+          }
+          if (req.status !== 'APPROVED') {
+            return reply.status(BAD_REQUEST).send({ error: 'Schedule request must be APPROVED before publish' });
+          }
+          scheduleRequest = req;
+        }
 
-        const targets: { screen_id?: string; screen_group_id?: string }[] = [];
-        (data.screen_ids || []).forEach((sid) => targets.push({ screen_id: sid }));
-        (data.screen_group_ids || []).forEach((gid) => targets.push({ screen_group_id: gid }));
+        const publishResult = await publishScheduleSnapshot({
+          scheduleId: (request.params as any).id,
+          screenIds: uniqueScreens,
+          screenGroupIds: uniqueGroups,
+          publishedBy: payload.sub,
+          notes: (data as any).notes,
+          db,
+          scheduleRepo,
+          scheduleItemRepo,
+        });
 
-        if (targets.length > 0) {
+        if (scheduleRequest) {
           await db
-            .insert(schema.publishTargets)
-            .values(
-              targets.map((t) => ({
-                publish_id: publish.id,
-                screen_id: t.screen_id,
-                screen_group_id: t.screen_group_id,
-              }))
-            );
+            .update(schema.scheduleRequests)
+            .set({ updated_at: new Date() })
+            .where(eq(schema.scheduleRequests.id, scheduleRequest.id));
         }
 
         return reply.send({
           message: 'Schedule published successfully',
           schedule_id: (request.params as any).id,
-          publish_id: publish.id,
-          snapshot_id: snapshot.id,
-          targets: targets.length,
+          publish_id: publishResult.publish.id,
+          snapshot_id: publishResult.snapshot.id,
+          targets: publishResult.targets.length,
+          resolved_screen_ids: publishResult.resolvedScreenIds,
         });
       } catch (error) {
         logger.error(error, 'Publish schedule error');

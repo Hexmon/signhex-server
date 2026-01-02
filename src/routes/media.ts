@@ -4,7 +4,7 @@ import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/
 import { createMediaRepository } from '@/db/repositories/media';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
-import { getPresignedPutUrl, createBucketIfNotExists, headObject } from '@/s3';
+import { getPresignedPutUrl, createBucketIfNotExists, headObject, getPresignedUrl } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
@@ -13,7 +13,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { deleteObject } from '@/s3';
 import { getDatabase, schema } from '@/db';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 const logger = createLogger('media-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -29,6 +29,29 @@ const completeUploadSchema = z.object({
 
 export async function mediaRoutes(fastify: FastifyInstance) {
   const mediaRepo = createMediaRepository();
+  const db = getDatabase();
+
+  const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
+    try {
+      if (media.ready_object_id) {
+        const obj = readyMap?.get(media.ready_object_id) ||
+          (await db
+            .select()
+            .from(schema.storageObjects)
+            .where(eq(schema.storageObjects.id, media.ready_object_id)))[0];
+        if (obj) {
+          return await getPresignedUrl(obj.bucket, obj.object_key, 3600);
+        }
+      }
+
+      if (media.source_bucket && media.source_object_key) {
+        return await getPresignedUrl(media.source_bucket, media.source_object_key, 3600);
+      }
+    } catch (err) {
+      logger.warn(err, 'Failed to generate media URL');
+    }
+    return null;
+  };
 
   // Presign upload URL
   fastify.post<{ Body: typeof presignUploadSchema._type }>(
@@ -174,25 +197,39 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           status: query.status,
         });
 
+        const readyIds = result.items.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
+        const readyObjects = readyIds.length
+          ? await db.select().from(schema.storageObjects).where(inArray(schema.storageObjects.id, readyIds as any))
+          : [];
+        const readyMap = new Map(readyObjects.map((o: any) => [o.id, o]));
+
+        const items = await Promise.all(
+          result.items.map(async (m) => {
+            const media_url = await resolveMediaUrl(m, readyMap);
+            return {
+              id: m.id,
+              name: m.name,
+              type: m.type,
+              status: m.status,
+              source_bucket: m.source_bucket,
+              source_object_key: m.source_object_key,
+              source_content_type: m.source_content_type,
+              source_size: m.source_size,
+              ready_object_id: m.ready_object_id,
+              thumbnail_object_id: m.thumbnail_object_id,
+              duration_seconds: m.duration_seconds,
+              width: m.width,
+              height: m.height,
+              created_by: m.created_by,
+              created_at: m.created_at.toISOString(),
+              updated_at: m.updated_at.toISOString(),
+              media_url,
+            };
+          })
+        );
+
         return reply.send({
-          items: result.items.map((m) => ({
-            id: m.id,
-            name: m.name,
-            type: m.type,
-            status: m.status,
-            source_bucket: m.source_bucket,
-            source_object_key: m.source_object_key,
-            source_content_type: m.source_content_type,
-            source_size: m.source_size,
-            ready_object_id: m.ready_object_id,
-            thumbnail_object_id: m.thumbnail_object_id,
-            duration_seconds: m.duration_seconds,
-            width: m.width,
-            height: m.height,
-            created_by: m.created_by,
-            created_at: m.created_at.toISOString(),
-            updated_at: m.updated_at.toISOString(),
-          })),
+          items,
           pagination: {
             page: result.page,
             limit: result.limit,
@@ -231,6 +268,8 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           return reply.status(NOT_FOUND).send({ error: 'Media not found' });
         }
 
+        const media_url = await resolveMediaUrl(media);
+
         return reply.send({
           id: media.id,
           name: media.name,
@@ -248,6 +287,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           created_by: media.created_by,
           created_at: media.created_at.toISOString(),
           updated_at: media.updated_at.toISOString(),
+          media_url,
         });
       } catch (error) {
         logger.error(error, 'Get media error');

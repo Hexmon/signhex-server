@@ -15,6 +15,11 @@ const allowedContentTypes = [
   'video/mp4',
   'video/quicktime',
   'application/pdf',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/csv',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ] as const;
 
 export const presignUploadSchema = z.object({
