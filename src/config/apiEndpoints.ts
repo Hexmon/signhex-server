@@ -88,6 +88,7 @@ export const apiEndpoints = {
   screenGroups: {
     create: withBase('/screen-groups'),
     list: withBase('/screen-groups'),
+    availableScreens: withBase('/screen-groups/available-screens'),
     get: withBase('/screen-groups/:id'),
     availability: withBase('/screen-groups/:id/availability'),
     update: withBase('/screen-groups/:id'),
