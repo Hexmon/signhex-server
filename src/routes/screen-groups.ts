@@ -24,6 +24,12 @@ const listGroupsQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(20),
 });
 
+const availableScreensQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  group_id: z.string().uuid().optional(),
+});
+
 export async function screenGroupRoutes(fastify: FastifyInstance) {
   const repo = createScreenGroupRepository();
   const db = getDatabase();
@@ -199,6 +205,74 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Group availability error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // List screens that are not members of any group (optionally allow existing members of a group)
+  fastify.get<{ Querystring: typeof availableScreensQuerySchema._type }>(
+    apiEndpoints.screenGroups.availableScreens,
+    {
+      schema: {
+        description: 'List screens that are not assigned to a group (includes current group members if group_id is provided)',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('read', 'ScreenGroup')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const query = availableScreensQuerySchema.parse(request.query);
+
+        const [screens, memberships] = await Promise.all([
+          db.select().from(schema.screens).orderBy(desc(schema.screens.created_at)),
+          db.select().from(schema.screenGroupMembers),
+        ]);
+
+        const memberMap = memberships.reduce((acc: Map<string, Set<string>>, row: any) => {
+          const list = acc.get(row.screen_id) || new Set<string>();
+          list.add(row.group_id);
+          acc.set(row.screen_id, list);
+          return acc;
+        }, new Map());
+
+        const available = screens.filter((s: any) => {
+          const groups = memberMap.get(s.id);
+          if (!groups || groups.size === 0) return true;
+          if (query.group_id) {
+            // Allow screens already in this group (useful when editing)
+            return [...groups].every((gid) => gid === query.group_id);
+          }
+          return false;
+        });
+
+        const start = (query.page - 1) * query.limit;
+        const paged = available.slice(start, start + query.limit);
+
+        return reply.send({
+          items: paged.map((s: any) => ({
+            id: s.id,
+            name: s.name,
+            location: (s as any).location ?? null,
+            status: s.status,
+            last_heartbeat_at: s.last_heartbeat_at?.toISOString?.() ?? s.last_heartbeat_at,
+            created_at: s.created_at.toISOString(),
+            updated_at: s.updated_at.toISOString(),
+          })),
+          pagination: {
+            page: query.page,
+            limit: query.limit,
+            total: available.length,
+          },
+        });
+      } catch (error) {
+        logger.error(error, 'List available screens for groups error');
         return respondWithError(reply, error);
       }
     }
