@@ -185,7 +185,7 @@ async function main() {
   await ensureBuckets();
 
   // Health
-  await runTest('Health', 'Check API health', 'GET', '/health');
+  await runTest('Health', 'Check API health', 'GET', '/api/v1/health');
 
   // Auth: login
   const loginRes = await runTest('Auth: login', 'Authenticate admin user', 'POST', apiEndpoints.auth.login, {
