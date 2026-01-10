@@ -8,8 +8,8 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
-import { eq, desc, inArray, and, isNull } from 'drizzle-orm';
-import { getPresignedUrl } from '@/s3';
+import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
+import { getPresignedUrl, getObject } from '@/s3';
 
 const logger = createLogger('screen-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -25,6 +25,15 @@ const listScreensQuerySchema = z.object({
   status: z.enum(['ACTIVE', 'INACTIVE', 'OFFLINE']).optional(),
 });
 
+const listHeartbeatsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  start_at: z.string().datetime().optional(),
+  end_at: z.string().datetime().optional(),
+  status: z.enum(['ONLINE', 'OFFLINE', 'ERROR']).optional(),
+  include_payload: z.enum(['true', 'false']).optional(),
+});
+
 export async function screenRoutes(fastify: FastifyInstance) {
   const screenRepo = createScreenRepository();
   const db = getDatabase();
@@ -35,6 +44,16 @@ export async function screenRoutes(fastify: FastifyInstance) {
       .from(schema.screenGroupMembers)
       .where(eq(schema.screenGroupMembers.screen_id, screenId));
     return members.map((m) => m.group_id);
+  };
+
+  const fetchHeartbeatPayload = async (bucket?: string | null, objectKey?: string | null) => {
+    if (!bucket || !objectKey) return null;
+    try {
+      const data = await getObject(bucket, objectKey);
+      return JSON.parse(data.toString('utf8'));
+    } catch {
+      return null;
+    }
   };
 
   const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
@@ -442,6 +461,25 @@ export async function screenRoutes(fastify: FastifyInstance) {
           return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
         }
 
+        const [latestHeartbeat] = await db
+          .select({
+            id: schema.heartbeats.id,
+            status: schema.heartbeats.status,
+            created_at: schema.heartbeats.created_at,
+            bucket: schema.storageObjects.bucket,
+            object_key: schema.storageObjects.object_key,
+          })
+          .from(schema.heartbeats)
+          .leftJoin(schema.storageObjects, eq(schema.heartbeats.storage_object_id, schema.storageObjects.id))
+          .where(eq(schema.heartbeats.screen_id, screen.id))
+          .orderBy(desc(schema.heartbeats.created_at))
+          .limit(1);
+
+        const heartbeatPayload = await fetchHeartbeatPayload(
+          (latestHeartbeat as any)?.bucket,
+          (latestHeartbeat as any)?.object_key
+        );
+
         return reply.send({
           id: screen.id,
           name: screen.name,
@@ -450,9 +488,108 @@ export async function screenRoutes(fastify: FastifyInstance) {
           current_schedule_id: (screen as any).current_schedule_id ?? null,
           current_media_id: (screen as any).current_media_id ?? null,
           updated_at: screen.updated_at.toISOString(),
+          latest_heartbeat: latestHeartbeat
+            ? {
+                id: latestHeartbeat.id,
+                status: latestHeartbeat.status ?? null,
+                created_at: latestHeartbeat.created_at?.toISOString?.() ?? latestHeartbeat.created_at,
+                payload: heartbeatPayload,
+              }
+            : null,
         });
       } catch (error) {
         logger.error(error, 'Get screen status error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Heartbeat history for a screen
+  fastify.get<{ Params: { id: string }; Querystring: typeof listHeartbeatsQuerySchema._type }>(
+    apiEndpoints.screens.heartbeats,
+    {
+      schema: {
+        description: 'List heartbeat history for a screen',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        }
+
+        await verifyAccessToken(token);
+
+        const screenId = (request.params as any).id;
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        }
+
+        const query = listHeartbeatsQuerySchema.parse(request.query);
+        if (query.start_at && query.end_at) {
+          const startAt = new Date(query.start_at);
+          const endAt = new Date(query.end_at);
+          if (startAt > endAt) {
+            return reply.status(BAD_REQUEST).send({ error: 'start_at must be before end_at' });
+          }
+        }
+
+        const includePayload = query.include_payload === 'true';
+        const conditions = [eq(schema.heartbeats.screen_id, screenId)];
+        if (query.start_at) conditions.push(gte(schema.heartbeats.created_at, new Date(query.start_at)));
+        if (query.end_at) conditions.push(lte(schema.heartbeats.created_at, new Date(query.end_at)));
+        if (query.status) conditions.push(eq(schema.heartbeats.status, query.status));
+
+        const [{ count }] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.heartbeats)
+          .where(and(...conditions));
+
+        const page = query.page;
+        const limit = query.limit;
+        const offset = (page - 1) * limit;
+
+        const rows = await db
+          .select({
+            id: schema.heartbeats.id,
+            status: schema.heartbeats.status,
+            created_at: schema.heartbeats.created_at,
+            storage_object_id: schema.heartbeats.storage_object_id,
+            bucket: schema.storageObjects.bucket,
+            object_key: schema.storageObjects.object_key,
+          })
+          .from(schema.heartbeats)
+          .leftJoin(schema.storageObjects, eq(schema.heartbeats.storage_object_id, schema.storageObjects.id))
+          .where(and(...conditions))
+          .orderBy(desc(schema.heartbeats.created_at))
+          .limit(limit)
+          .offset(offset);
+
+        const items = await Promise.all(
+          rows.map(async (row) => ({
+            id: row.id,
+            status: row.status ?? null,
+            created_at: row.created_at?.toISOString?.() ?? row.created_at,
+            storage_object_id: row.storage_object_id ?? null,
+            payload: includePayload ? await fetchHeartbeatPayload(row.bucket, row.object_key) : null,
+          }))
+        );
+
+        return reply.send({
+          screen_id: screenId,
+          items,
+          pagination: {
+            page,
+            limit,
+            total: Number(count || 0),
+          },
+        });
+      } catch (error) {
+        logger.error(error, 'List screen heartbeats error');
         return respondWithError(reply, error);
       }
     }

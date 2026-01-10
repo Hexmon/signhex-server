@@ -81,6 +81,7 @@ export const apiEndpoints = {
     update: withBase('/screens/:id'),
     delete: withBase('/screens/:id'),
     status: withBase('/screens/:id/status'),
+    heartbeats: withBase('/screens/:id/heartbeats'),
     nowPlaying: withBase('/screens/:id/now-playing'),
     availability: withBase('/screens/:id/availability'),
     snapshot: withBase('/screens/:id/snapshot'),

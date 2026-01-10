@@ -223,6 +223,7 @@ Use this to predefine emergency templates and trigger them to selected screens/g
 ## Screen Status & Commands
 
 - **Screen status**: `GET /api/v1/screens/:id/status` (auth) returns status, last heartbeat, and `current_schedule_id/current_media_id` as reported by device heartbeats.  
+- **Heartbeat history**: `GET /api/v1/screens/:id/heartbeats?page=&limit=&start_at=&end_at=&status=&include_payload=true` (auth) returns paginated heartbeat history with optional filters; set `include_payload=true` to include the stored heartbeat JSON.  
 - **Now playing**: `GET /api/v1/screens/:id/now-playing` returns active schedule items from the latest publish for that screen.  
 - **Device commands**:  
   - Create (admin): `POST /api/v1/device/:deviceId/commands` with `{ "type": "REBOOT|REFRESH|TEST_PATTERN", "payload": { ... } }`.  

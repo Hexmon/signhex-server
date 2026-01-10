@@ -381,6 +381,7 @@ export const heartbeats = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     screen_id: uuid('screen_id').notNull(),
+    status: varchar('status', { length: 20 }),
     storage_object_id: uuid('storage_object_id'),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },

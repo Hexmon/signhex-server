@@ -24,6 +24,57 @@ const heartbeatSchema = z.object({
   temperature: z.number().optional(),
   current_schedule_id: z.string().optional(),
   current_media_id: z.string().optional(),
+  memory_total_mb: z.number().nonnegative().optional(),
+  memory_used_mb: z.number().nonnegative().optional(),
+  memory_free_mb: z.number().nonnegative().optional(),
+  swap_total_mb: z.number().nonnegative().optional(),
+  swap_used_mb: z.number().nonnegative().optional(),
+  cpu_cores: z.number().int().positive().optional(),
+  cpu_load_1m: z.number().nonnegative().optional(),
+  cpu_load_5m: z.number().nonnegative().optional(),
+  cpu_load_15m: z.number().nonnegative().optional(),
+  cpu_temp_c: z.number().optional(),
+  gpu_usage: z.number().nonnegative().optional(),
+  gpu_temp_c: z.number().optional(),
+  disk_total_gb: z.number().nonnegative().optional(),
+  disk_used_gb: z.number().nonnegative().optional(),
+  disk_free_gb: z.number().nonnegative().optional(),
+  disk_usage_percent: z.number().nonnegative().optional(),
+  network_ip: z.string().optional(),
+  network_interface: z.string().optional(),
+  network_rtt_ms: z.number().nonnegative().optional(),
+  network_packet_loss_percent: z.number().nonnegative().optional(),
+  network_up_mbps: z.number().nonnegative().optional(),
+  network_down_mbps: z.number().nonnegative().optional(),
+  display_count: z.number().int().nonnegative().optional(),
+  displays: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        width: z.number().int().positive(),
+        height: z.number().int().positive(),
+        refresh_rate_hz: z.number().positive().optional(),
+        orientation: z.enum(['portrait', 'landscape']).optional(),
+        connected: z.boolean().optional(),
+        model: z.string().optional(),
+      })
+    )
+    .optional(),
+  audio_output: z.string().optional(),
+  volume: z.number().nonnegative().optional(),
+  muted: z.boolean().optional(),
+  app_version: z.string().optional(),
+  os_version: z.string().optional(),
+  hostname: z.string().optional(),
+  device_model: z.string().optional(),
+  device_serial: z.string().optional(),
+  player_uptime_seconds: z.number().int().nonnegative().optional(),
+  last_error: z.string().optional(),
+  crash_count: z.number().int().nonnegative().optional(),
+  battery_percent: z.number().nonnegative().optional(),
+  is_charging: z.boolean().optional(),
+  power_source: z.enum(['AC', 'BATTERY', 'USB', 'UNKNOWN']).optional(),
+  metrics: z.record(z.any()).optional(),
 });
 
 const proofOfPlaySchema = z.object({
@@ -383,6 +434,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         await db.insert(schema.heartbeats).values({
           screen_id: data.device_id,
+          status: data.status,
           storage_object_id: storageObject?.id,
           created_at: receivedAt,
         });
