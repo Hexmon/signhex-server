@@ -1,4 +1,4 @@
-import { and, eq, desc, inArray } from 'drizzle-orm';
+import { and, eq, desc, inArray, isNull } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { getDatabase, schema } from '@/db';
@@ -97,6 +97,68 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     return rows.map((r) => r.group_id);
   };
 
+  const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
+    if (!mediaId) return null;
+    const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+    if (!media) return null;
+    try {
+      if ((media as any).ready_object_id) {
+        const [stor] = await db
+          .select()
+          .from(schema.storageObjects)
+          .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
+        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
+      }
+      if ((media as any).source_bucket && (media as any).source_object_key) {
+        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
+    const [emergency] = await db
+      .select()
+      .from(schema.emergencies)
+      .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
+      .orderBy(desc(schema.emergencies.created_at))
+      .limit(1);
+    if (!emergency) return null;
+
+    const emergencyScreenIds = ((emergency as any).screen_ids || []) as string[];
+    const emergencyGroupIds = ((emergency as any).screen_group_ids || []) as string[];
+    const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
+    const targetAll = (emergency as any).target_all === true || !hasTargets;
+
+    if (!targetAll) {
+      if (emergencyScreenIds.includes(screenId)) {
+        // ok
+      } else {
+        const groupIds = await getGroupIdsForScreen(screenId);
+        const groupMatch = emergencyGroupIds.some((gid) => groupIds.includes(gid));
+        if (!groupMatch) return null;
+      }
+    }
+
+    const mediaUrl = includeUrls ? await resolveEmergencyMediaUrl((emergency as any).media_id) : null;
+    return {
+      id: emergency.id,
+      emergency_type_id: (emergency as any).emergency_type_id ?? null,
+      triggered_by: emergency.triggered_by,
+      message: emergency.message,
+      severity: emergency.priority,
+      media_id: (emergency as any).media_id ?? null,
+      media_url: mediaUrl,
+      screen_ids: emergencyScreenIds,
+      screen_group_ids: emergencyGroupIds,
+      target_all: (emergency as any).target_all ?? false,
+      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
+      cleared_at: emergency.cleared_at?.toISOString?.() ?? emergency.cleared_at,
+    };
+  };
+
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
     return items.filter((i) => {
       const itemScreens = (i.screen_ids || []) as string[];
@@ -128,6 +190,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
 
+        const emergency = await getActiveEmergencyForScreen(deviceId, includeUrls);
+
         const [latest] = await db
           .select({
             publish_id: schema.publishes.id,
@@ -144,6 +208,15 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .limit(1);
 
         if (!latest) {
+          if (emergency) {
+            return reply.send({
+              device_id: deviceId,
+              publish: null,
+              snapshot: null,
+              media_urls: undefined,
+              emergency,
+            });
+          }
           return reply.status(NOT_FOUND).send({ error: 'No publish found for this device' });
         }
 
@@ -211,6 +284,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           },
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
+          emergency,
         });
       } catch (error) {
         logger.error(error, 'Get device snapshot error');

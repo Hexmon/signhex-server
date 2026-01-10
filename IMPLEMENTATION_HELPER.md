@@ -184,6 +184,42 @@ Detailed steps and which API to call:
    - `GET /api/v1/device/:deviceId/snapshot?include_urls=true`
    - or `GET /api/v1/screens/:id/snapshot?include_urls=true`
 
+## Emergency Types & Emergency Trigger (Admin Only)
+
+Use this to predefine emergency templates and trigger them to selected screens/groups or all screens. Emergency playback is full-screen media (no layout).
+
+- **Emergency types CRUD** (admin):
+  - Create: `POST /api/v1/emergency-types` with `{ name, description?, message, severity, media_id? }`
+  - List: `GET /api/v1/emergency-types?page=&limit=`
+  - Get: `GET /api/v1/emergency-types/:id`
+  - Update: `PATCH /api/v1/emergency-types/:id` (same fields; `media_id` can be set or cleared)
+  - Delete: `DELETE /api/v1/emergency-types/:id`
+
+- **Trigger emergency** (admin):
+  - `POST /api/v1/emergency/trigger`
+  - Body example:
+    ```json
+    {
+      "emergency_type_id": "<uuid>",
+      "screen_ids": ["<screen-id>"],
+      "screen_group_ids": ["<group-id>"],
+      "target_all": false
+    }
+    ```
+  - Targets:
+    - If `target_all` is true, it applies to all screens.
+    - If both `screen_ids` and `screen_group_ids` are empty and `target_all` is not set, it defaults to all.
+
+- **Emergency status/clear/history** (admin):
+  - Status: `GET /api/v1/emergency/status`
+  - Clear: `POST /api/v1/emergency/:id/clear`
+  - History: `GET /api/v1/emergency/history?page=&limit=`
+
+- **Device behavior (pause schedule + show emergency)**:
+  - Snapshot endpoints now include an `emergency` object when active.
+  - Devices should pause normal schedule playback while `emergency` is present and render the emergency media full-screen.
+  - Use `include_urls=true` to receive `emergency.media_url`.
+
 ## Screen Status & Commands
 
 - **Screen status**: `GET /api/v1/screens/:id/status` (auth) returns status, last heartbeat, and `current_schedule_id/current_media_id` as reported by device heartbeats.  

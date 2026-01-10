@@ -147,6 +147,13 @@ export const apiEndpoints = {
     clear: withBase('/emergency/:id/clear'),
     history: withBase('/emergency/history'),
   },
+  emergencyTypes: {
+    create: withBase('/emergency-types'),
+    list: withBase('/emergency-types'),
+    get: withBase('/emergency-types/:id'),
+    update: withBase('/emergency-types/:id'),
+    delete: withBase('/emergency-types/:id'),
+  },
   webhooks: {
     create: withBase('/webhooks'),
     list: withBase('/webhooks'),

@@ -19,6 +19,7 @@ export type Subject =
   | 'AuditLog'
   | 'DevicePairing'
   | 'Emergency'
+  | 'EmergencyType'
   | 'ApiKey'
   | 'Webhook'
   | 'SsoConfig'
