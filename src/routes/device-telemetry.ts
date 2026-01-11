@@ -94,7 +94,7 @@ const screenshotSchema = z.object({
 });
 
 const createCommandSchema = z.object({
-  type: z.enum(['REBOOT', 'REFRESH', 'TEST_PATTERN']),
+  type: z.enum(['REBOOT', 'REFRESH', 'TEST_PATTERN', 'TAKE_SCREENSHOT', 'SET_SCREENSHOT_INTERVAL']),
   payload: z.record(z.any()).optional(),
 });
 

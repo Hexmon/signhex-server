@@ -224,7 +224,11 @@ Use this to predefine emergency templates and trigger them to selected screens/g
 
 - **Screen status**: `GET /api/v1/screens/:id/status` (auth) returns status, last heartbeat, and `current_schedule_id/current_media_id` as reported by device heartbeats.  
 - **Heartbeat history**: `GET /api/v1/screens/:id/heartbeats?page=&limit=&start_at=&end_at=&status=&include_payload=true` (auth) returns paginated heartbeat history with optional filters; set `include_payload=true` to include the stored heartbeat JSON.  
+- **Screenshot interval (screen)**: `POST /api/v1/screens/:id/screenshot-settings` with `{ "interval_seconds": 60, "enabled": true }` (auth). Sends a device command to apply the interval.  
+- **Screenshot interval (group)**: `POST /api/v1/screen-groups/:id/screenshot-settings` with `{ "interval_seconds": 60, "enabled": true }` (auth). Applies to all screens in the group and sends commands.  
+- **Trigger screenshot (screen)**: `POST /api/v1/screens/:id/screenshot` (auth) sends a `TAKE_SCREENSHOT` command.  
+- **Trigger screenshot (group)**: `POST /api/v1/screen-groups/:id/screenshot` (auth) sends `TAKE_SCREENSHOT` to all group members.  
 - **Now playing**: `GET /api/v1/screens/:id/now-playing` returns active schedule items from the latest publish for that screen.  
 - **Device commands**:  
-  - Create (admin): `POST /api/v1/device/:deviceId/commands` with `{ "type": "REBOOT|REFRESH|TEST_PATTERN", "payload": { ... } }`.  
+  - Create (admin): `POST /api/v1/device/:deviceId/commands` with `{ "type": "REBOOT|REFRESH|TEST_PATTERN|TAKE_SCREENSHOT|SET_SCREENSHOT_INTERVAL", "payload": { ... } }`.  
   - Devices poll `GET /api/v1/device/:deviceId/commands` and `POST /api/v1/device/:deviceId/commands/:commandId/ack` to acknowledge.

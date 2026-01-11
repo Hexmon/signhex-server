@@ -34,6 +34,15 @@ const listHeartbeatsQuerySchema = z.object({
   include_payload: z.enum(['true', 'false']).optional(),
 });
 
+const screenshotSettingsSchema = z.object({
+  interval_seconds: z.number().int().positive().max(86400).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const screenshotTriggerSchema = z.object({
+  reason: z.string().optional(),
+});
+
 export async function screenRoutes(fastify: FastifyInstance) {
   const screenRepo = createScreenRepository();
   const db = getDatabase();
@@ -590,6 +599,120 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List screen heartbeats error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Set screenshot interval for a screen
+  fastify.post<{ Params: { id: string }; Body: typeof screenshotSettingsSchema._type }>(
+    apiEndpoints.screens.screenshotSettings,
+    {
+      schema: {
+        description: 'Set screenshot interval for a screen',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        }
+
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const screenId = (request.params as any).id;
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        }
+
+        const data = screenshotSettingsSchema.parse(request.body);
+        const enabled = typeof data.enabled === 'boolean' ? data.enabled : true;
+        const intervalSeconds = typeof data.interval_seconds === 'number' ? data.interval_seconds : null;
+        if (enabled && !intervalSeconds) {
+          return reply.status(BAD_REQUEST).send({ error: 'interval_seconds is required when enabled' });
+        }
+
+        const updated = await screenRepo.update(screenId, {
+          screenshot_interval_seconds: intervalSeconds,
+          screenshot_enabled: enabled,
+        } as any);
+
+        const [command] = await db
+          .insert(schema.deviceCommands)
+          .values({
+            screen_id: screenId,
+            type: 'SET_SCREENSHOT_INTERVAL',
+            payload: { interval_seconds: intervalSeconds, enabled },
+            status: 'PENDING',
+            created_by: payload.sub,
+          })
+          .returning({ id: schema.deviceCommands.id });
+
+        return reply.send({
+          screen_id: screenId,
+          screenshot_enabled: (updated as any)?.screenshot_enabled ?? enabled,
+          screenshot_interval_seconds: (updated as any)?.screenshot_interval_seconds ?? intervalSeconds,
+          command_id: command?.id ?? null,
+        });
+      } catch (error) {
+        logger.error(error, 'Set screenshot interval error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Trigger screenshot for a screen
+  fastify.post<{ Params: { id: string }; Body: typeof screenshotTriggerSchema._type }>(
+    apiEndpoints.screens.screenshot,
+    {
+      schema: {
+        description: 'Trigger screenshot capture for a screen',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        }
+
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const screenId = (request.params as any).id;
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        }
+
+        const data = screenshotTriggerSchema.parse(request.body);
+
+        const [command] = await db
+          .insert(schema.deviceCommands)
+          .values({
+            screen_id: screenId,
+            type: 'TAKE_SCREENSHOT',
+            payload: { reason: data.reason ?? null },
+            status: 'PENDING',
+            created_by: payload.sub,
+          })
+          .returning({ id: schema.deviceCommands.id });
+
+        return reply.send({
+          screen_id: screenId,
+          command_id: command?.id ?? null,
+        });
+      } catch (error) {
+        logger.error(error, 'Trigger screenshot error');
         return respondWithError(reply, error);
       }
     }

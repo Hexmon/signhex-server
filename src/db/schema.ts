@@ -26,7 +26,7 @@ export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', ['PEN
 export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
 export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
-export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN']);
+export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN', 'TAKE_SCREENSHOT', 'SET_SCREENSHOT_INTERVAL']);
 export const commandStatusEnum = pgEnum('command_status', ['PENDING', 'SENT', 'ACKNOWLEDGED', 'COMPLETED', 'FAILED']);
 
 // Users table
@@ -262,6 +262,8 @@ export const screens = pgTable(
     last_heartbeat_at: timestamp('last_heartbeat_at'),
     current_schedule_id: uuid('current_schedule_id'),
     current_media_id: uuid('current_media_id'),
+    screenshot_interval_seconds: integer('screenshot_interval_seconds'),
+    screenshot_enabled: boolean('screenshot_enabled').notNull().default(false),
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
   },

@@ -78,6 +78,9 @@ function buildSlotTimelines(snapshot: any): Record<string, TimelineItem[]> {
 2. Also poll commands:
    - `GET /api/v1/device/:deviceId/commands` to retrieve queued commands.
    - Execute (e.g., `REFRESH` triggers immediate snapshot refetch).
+   - New commands:
+     - `TAKE_SCREENSHOT`: capture and upload via `POST /api/v1/device/screenshot`.
+     - `SET_SCREENSHOT_INTERVAL`: update local screenshot timer (payload: `{ interval_seconds, enabled }`).
    - Acknowledge via `POST /api/v1/device/:deviceId/commands/:commandId/ack`.
 
 ## Validity & targeting
