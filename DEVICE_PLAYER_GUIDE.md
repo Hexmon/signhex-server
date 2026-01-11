@@ -68,11 +68,19 @@ function buildSlotTimelines(snapshot: any): Record<string, TimelineItem[]> {
 2. Respect `duration_seconds` inside the item to advance within a presentation list when needed.
 3. On change of active item or completion, post PoP/heartbeat if required by the device app.
 
+## Emergency override
+- If `snapshot` response includes `emergency`, pause normal playback and render the emergency media full-screen.
+- Use `include_urls=true` to get `emergency.media_url`.
+- Resume normal playback only after `emergency` is cleared (no emergency in snapshot).
+
 ## Refresh strategy
 1. Poll snapshot endpoint periodically (e.g., every 30–60s) with `If-None-Match` or timestamp caching; if `published_at` changes, rebuild timelines.
 2. Also poll commands:
    - `GET /api/v1/device/:deviceId/commands` to retrieve queued commands.
    - Execute (e.g., `REFRESH` triggers immediate snapshot refetch).
+   - New commands:
+     - `TAKE_SCREENSHOT`: capture and upload via `POST /api/v1/device/screenshot`.
+     - `SET_SCREENSHOT_INTERVAL`: update local screenshot timer (payload: `{ interval_seconds, enabled }`).
    - Acknowledge via `POST /api/v1/device/:deviceId/commands/:commandId/ack`.
 
 ## Validity & targeting

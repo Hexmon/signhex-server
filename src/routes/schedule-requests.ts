@@ -32,7 +32,7 @@ const updateRequestSchema = z.object({
 const listRequestQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
-  status: z.string().optional(),
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED']).optional(),
 });
 
 export async function scheduleRequestRoutes(fastify: FastifyInstance) {

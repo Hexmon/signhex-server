@@ -1,4 +1,4 @@
-import { and, eq, desc, inArray } from 'drizzle-orm';
+import { and, eq, desc, inArray, isNull } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { getDatabase, schema } from '@/db';
@@ -24,6 +24,57 @@ const heartbeatSchema = z.object({
   temperature: z.number().optional(),
   current_schedule_id: z.string().optional(),
   current_media_id: z.string().optional(),
+  memory_total_mb: z.number().nonnegative().optional(),
+  memory_used_mb: z.number().nonnegative().optional(),
+  memory_free_mb: z.number().nonnegative().optional(),
+  swap_total_mb: z.number().nonnegative().optional(),
+  swap_used_mb: z.number().nonnegative().optional(),
+  cpu_cores: z.number().int().positive().optional(),
+  cpu_load_1m: z.number().nonnegative().optional(),
+  cpu_load_5m: z.number().nonnegative().optional(),
+  cpu_load_15m: z.number().nonnegative().optional(),
+  cpu_temp_c: z.number().optional(),
+  gpu_usage: z.number().nonnegative().optional(),
+  gpu_temp_c: z.number().optional(),
+  disk_total_gb: z.number().nonnegative().optional(),
+  disk_used_gb: z.number().nonnegative().optional(),
+  disk_free_gb: z.number().nonnegative().optional(),
+  disk_usage_percent: z.number().nonnegative().optional(),
+  network_ip: z.string().optional(),
+  network_interface: z.string().optional(),
+  network_rtt_ms: z.number().nonnegative().optional(),
+  network_packet_loss_percent: z.number().nonnegative().optional(),
+  network_up_mbps: z.number().nonnegative().optional(),
+  network_down_mbps: z.number().nonnegative().optional(),
+  display_count: z.number().int().nonnegative().optional(),
+  displays: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        width: z.number().int().positive(),
+        height: z.number().int().positive(),
+        refresh_rate_hz: z.number().positive().optional(),
+        orientation: z.enum(['portrait', 'landscape']).optional(),
+        connected: z.boolean().optional(),
+        model: z.string().optional(),
+      })
+    )
+    .optional(),
+  audio_output: z.string().optional(),
+  volume: z.number().nonnegative().optional(),
+  muted: z.boolean().optional(),
+  app_version: z.string().optional(),
+  os_version: z.string().optional(),
+  hostname: z.string().optional(),
+  device_model: z.string().optional(),
+  device_serial: z.string().optional(),
+  player_uptime_seconds: z.number().int().nonnegative().optional(),
+  last_error: z.string().optional(),
+  crash_count: z.number().int().nonnegative().optional(),
+  battery_percent: z.number().nonnegative().optional(),
+  is_charging: z.boolean().optional(),
+  power_source: z.enum(['AC', 'BATTERY', 'USB', 'UNKNOWN']).optional(),
+  metrics: z.record(z.any()).optional(),
 });
 
 const proofOfPlaySchema = z.object({
@@ -43,7 +94,7 @@ const screenshotSchema = z.object({
 });
 
 const createCommandSchema = z.object({
-  type: z.enum(['REBOOT', 'REFRESH', 'TEST_PATTERN']),
+  type: z.enum(['REBOOT', 'REFRESH', 'TEST_PATTERN', 'TAKE_SCREENSHOT', 'SET_SCREENSHOT_INTERVAL']),
   payload: z.record(z.any()).optional(),
 });
 
@@ -97,6 +148,68 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     return rows.map((r) => r.group_id);
   };
 
+  const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
+    if (!mediaId) return null;
+    const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+    if (!media) return null;
+    try {
+      if ((media as any).ready_object_id) {
+        const [stor] = await db
+          .select()
+          .from(schema.storageObjects)
+          .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
+        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
+      }
+      if ((media as any).source_bucket && (media as any).source_object_key) {
+        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
+    const [emergency] = await db
+      .select()
+      .from(schema.emergencies)
+      .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
+      .orderBy(desc(schema.emergencies.created_at))
+      .limit(1);
+    if (!emergency) return null;
+
+    const emergencyScreenIds = ((emergency as any).screen_ids || []) as string[];
+    const emergencyGroupIds = ((emergency as any).screen_group_ids || []) as string[];
+    const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
+    const targetAll = (emergency as any).target_all === true || !hasTargets;
+
+    if (!targetAll) {
+      if (emergencyScreenIds.includes(screenId)) {
+        // ok
+      } else {
+        const groupIds = await getGroupIdsForScreen(screenId);
+        const groupMatch = emergencyGroupIds.some((gid) => groupIds.includes(gid));
+        if (!groupMatch) return null;
+      }
+    }
+
+    const mediaUrl = includeUrls ? await resolveEmergencyMediaUrl((emergency as any).media_id) : null;
+    return {
+      id: emergency.id,
+      emergency_type_id: (emergency as any).emergency_type_id ?? null,
+      triggered_by: emergency.triggered_by,
+      message: emergency.message,
+      severity: emergency.priority,
+      media_id: (emergency as any).media_id ?? null,
+      media_url: mediaUrl,
+      screen_ids: emergencyScreenIds,
+      screen_group_ids: emergencyGroupIds,
+      target_all: (emergency as any).target_all ?? false,
+      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
+      cleared_at: emergency.cleared_at?.toISOString?.() ?? emergency.cleared_at,
+    };
+  };
+
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
     return items.filter((i) => {
       const itemScreens = (i.screen_ids || []) as string[];
@@ -128,6 +241,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
 
+        const emergency = await getActiveEmergencyForScreen(deviceId, includeUrls);
+
         const [latest] = await db
           .select({
             publish_id: schema.publishes.id,
@@ -144,6 +259,15 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .limit(1);
 
         if (!latest) {
+          if (emergency) {
+            return reply.send({
+              device_id: deviceId,
+              publish: null,
+              snapshot: null,
+              media_urls: undefined,
+              emergency,
+            });
+          }
           return reply.status(NOT_FOUND).send({ error: 'No publish found for this device' });
         }
 
@@ -211,6 +335,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           },
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
+          emergency,
         });
       } catch (error) {
         logger.error(error, 'Get device snapshot error');
@@ -309,6 +434,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         await db.insert(schema.heartbeats).values({
           screen_id: data.device_id,
+          status: data.status,
           storage_object_id: storageObject?.id,
           created_at: receivedAt,
         });

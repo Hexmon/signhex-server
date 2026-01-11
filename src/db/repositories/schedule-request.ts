@@ -1,6 +1,8 @@
 import { eq, and, desc } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
+type ScheduleRequestStatus = (typeof schema.scheduleRequestStatusEnum.enumValues)[number];
+
 export class ScheduleRequestRepository {
   async create(data: {
     schedule_id: string;
@@ -27,7 +29,7 @@ export class ScheduleRequestRepository {
     return req || null;
   }
 
-  async list(options: { page?: number; limit?: number; status?: string; requested_by?: string }) {
+  async list(options: { page?: number; limit?: number; status?: ScheduleRequestStatus; requested_by?: string }) {
     const db = getDatabase();
     const page = options.page || 1;
     const limit = options.limit || 20;
@@ -48,7 +50,7 @@ export class ScheduleRequestRepository {
     return { items, total: total.length, page, limit };
   }
 
-  async updateStatus(id: string, status: string, reviewed_by: string, review_notes?: string) {
+  async updateStatus(id: string, status: ScheduleRequestStatus, reviewed_by: string, review_notes?: string) {
     const db = getDatabase();
     const [req] = await db
       .update(schema.scheduleRequests)

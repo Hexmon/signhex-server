@@ -26,7 +26,7 @@ export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', ['PEN
 export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
 export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
-export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN']);
+export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN', 'TAKE_SCREENSHOT', 'SET_SCREENSHOT_INTERVAL']);
 export const commandStatusEnum = pgEnum('command_status', ['PENDING', 'SENT', 'ACKNOWLEDGED', 'COMPLETED', 'FAILED']);
 
 // Users table
@@ -262,6 +262,8 @@ export const screens = pgTable(
     last_heartbeat_at: timestamp('last_heartbeat_at'),
     current_schedule_id: uuid('current_schedule_id'),
     current_media_id: uuid('current_media_id'),
+    screenshot_interval_seconds: integer('screenshot_interval_seconds'),
+    screenshot_enabled: boolean('screenshot_enabled').notNull().default(false),
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
   },
@@ -381,6 +383,7 @@ export const heartbeats = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     screen_id: uuid('screen_id').notNull(),
+    status: varchar('status', { length: 20 }),
     storage_object_id: uuid('storage_object_id'),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
@@ -588,6 +591,25 @@ export const emergencyStatus = pgTable('emergency_status', {
   updated_at: timestamp('updated_at').notNull().defaultNow(),
 });
 
+// Emergency types (admin-defined templates)
+export const emergencyTypes = pgTable(
+  'emergency_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    description: text('description'),
+    message: text('message').notNull(),
+    severity: varchar('severity', { length: 20 }).notNull().default('HIGH'),
+    media_id: uuid('media_id'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    nameIdx: uniqueIndex('emergency_types_name_idx').on(table.name),
+    severityIdx: index('emergency_types_severity_idx').on(table.severity),
+  })
+);
+
 // Settings
 export const settings = pgTable('settings', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -756,8 +778,13 @@ export const devicePairings = pgTable('device_pairings', {
 // Emergencies (for backward compatibility with repositories)
 export const emergencies = pgTable('emergencies', {
   id: uuid('id').primaryKey().defaultRandom(),
+  emergency_type_id: uuid('emergency_type_id'),
   message: text('message').notNull(),
   priority: varchar('priority', { length: 20 }).notNull().default('HIGH'),
+  media_id: uuid('media_id'),
+  screen_ids: jsonb('screen_ids').$type<string[]>().notNull().default([] as string[]),
+  screen_group_ids: jsonb('screen_group_ids').$type<string[]>().notNull().default([] as string[]),
+  target_all: boolean('target_all').notNull().default(false),
   is_active: boolean('is_active').notNull().default(true),
   triggered_by: uuid('triggered_by'),
   triggered_at: timestamp('triggered_at').notNull().defaultNow(),

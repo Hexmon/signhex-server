@@ -8,8 +8,8 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
-import { eq, desc, inArray } from 'drizzle-orm';
-import { getPresignedUrl } from '@/s3';
+import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
+import { getPresignedUrl, getObject } from '@/s3';
 
 const logger = createLogger('screen-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -25,6 +25,24 @@ const listScreensQuerySchema = z.object({
   status: z.enum(['ACTIVE', 'INACTIVE', 'OFFLINE']).optional(),
 });
 
+const listHeartbeatsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  start_at: z.string().datetime().optional(),
+  end_at: z.string().datetime().optional(),
+  status: z.enum(['ONLINE', 'OFFLINE', 'ERROR']).optional(),
+  include_payload: z.enum(['true', 'false']).optional(),
+});
+
+const screenshotSettingsSchema = z.object({
+  interval_seconds: z.number().int().positive().max(86400).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const screenshotTriggerSchema = z.object({
+  reason: z.string().optional(),
+});
+
 export async function screenRoutes(fastify: FastifyInstance) {
   const screenRepo = createScreenRepository();
   const db = getDatabase();
@@ -35,6 +53,78 @@ export async function screenRoutes(fastify: FastifyInstance) {
       .from(schema.screenGroupMembers)
       .where(eq(schema.screenGroupMembers.screen_id, screenId));
     return members.map((m) => m.group_id);
+  };
+
+  const fetchHeartbeatPayload = async (bucket?: string | null, objectKey?: string | null) => {
+    if (!bucket || !objectKey) return null;
+    try {
+      const data = await getObject(bucket, objectKey);
+      return JSON.parse(data.toString('utf8'));
+    } catch {
+      return null;
+    }
+  };
+
+  const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
+    if (!mediaId) return null;
+    const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+    if (!media) return null;
+    try {
+      if ((media as any).ready_object_id) {
+        const [stor] = await db
+          .select()
+          .from(schema.storageObjects)
+          .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
+        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
+      }
+      if ((media as any).source_bucket && (media as any).source_object_key) {
+        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
+    const [emergency] = await db
+      .select()
+      .from(schema.emergencies)
+      .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
+      .orderBy(desc(schema.emergencies.created_at))
+      .limit(1);
+    if (!emergency) return null;
+
+    const emergencyScreenIds = ((emergency as any).screen_ids || []) as string[];
+    const emergencyGroupIds = ((emergency as any).screen_group_ids || []) as string[];
+    const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
+    const targetAll = (emergency as any).target_all === true || !hasTargets;
+
+    if (!targetAll) {
+      if (emergencyScreenIds.includes(screenId)) {
+        // ok
+      } else {
+        const groupIds = await getGroupIdsForScreen(screenId);
+        const groupMatch = emergencyGroupIds.some((gid) => groupIds.includes(gid));
+        if (!groupMatch) return null;
+      }
+    }
+
+    const mediaUrl = includeUrls ? await resolveEmergencyMediaUrl((emergency as any).media_id) : null;
+    return {
+      id: emergency.id,
+      emergency_type_id: (emergency as any).emergency_type_id ?? null,
+      triggered_by: emergency.triggered_by,
+      message: emergency.message,
+      severity: emergency.priority,
+      media_id: (emergency as any).media_id ?? null,
+      media_url: mediaUrl,
+      screen_ids: emergencyScreenIds,
+      screen_group_ids: emergencyGroupIds,
+      target_all: (emergency as any).target_all ?? false,
+      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
+      cleared_at: emergency.cleared_at?.toISOString?.() ?? emergency.cleared_at,
+    };
   };
 
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
@@ -380,6 +470,25 @@ export async function screenRoutes(fastify: FastifyInstance) {
           return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
         }
 
+        const [latestHeartbeat] = await db
+          .select({
+            id: schema.heartbeats.id,
+            status: schema.heartbeats.status,
+            created_at: schema.heartbeats.created_at,
+            bucket: schema.storageObjects.bucket,
+            object_key: schema.storageObjects.object_key,
+          })
+          .from(schema.heartbeats)
+          .leftJoin(schema.storageObjects, eq(schema.heartbeats.storage_object_id, schema.storageObjects.id))
+          .where(eq(schema.heartbeats.screen_id, screen.id))
+          .orderBy(desc(schema.heartbeats.created_at))
+          .limit(1);
+
+        const heartbeatPayload = await fetchHeartbeatPayload(
+          (latestHeartbeat as any)?.bucket,
+          (latestHeartbeat as any)?.object_key
+        );
+
         return reply.send({
           id: screen.id,
           name: screen.name,
@@ -388,9 +497,222 @@ export async function screenRoutes(fastify: FastifyInstance) {
           current_schedule_id: (screen as any).current_schedule_id ?? null,
           current_media_id: (screen as any).current_media_id ?? null,
           updated_at: screen.updated_at.toISOString(),
+          latest_heartbeat: latestHeartbeat
+            ? {
+                id: latestHeartbeat.id,
+                status: latestHeartbeat.status ?? null,
+                created_at: latestHeartbeat.created_at?.toISOString?.() ?? latestHeartbeat.created_at,
+                payload: heartbeatPayload,
+              }
+            : null,
         });
       } catch (error) {
         logger.error(error, 'Get screen status error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Heartbeat history for a screen
+  fastify.get<{ Params: { id: string }; Querystring: typeof listHeartbeatsQuerySchema._type }>(
+    apiEndpoints.screens.heartbeats,
+    {
+      schema: {
+        description: 'List heartbeat history for a screen',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        }
+
+        await verifyAccessToken(token);
+
+        const screenId = (request.params as any).id;
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        }
+
+        const query = listHeartbeatsQuerySchema.parse(request.query);
+        if (query.start_at && query.end_at) {
+          const startAt = new Date(query.start_at);
+          const endAt = new Date(query.end_at);
+          if (startAt > endAt) {
+            return reply.status(BAD_REQUEST).send({ error: 'start_at must be before end_at' });
+          }
+        }
+
+        const includePayload = query.include_payload === 'true';
+        const conditions = [eq(schema.heartbeats.screen_id, screenId)];
+        if (query.start_at) conditions.push(gte(schema.heartbeats.created_at, new Date(query.start_at)));
+        if (query.end_at) conditions.push(lte(schema.heartbeats.created_at, new Date(query.end_at)));
+        if (query.status) conditions.push(eq(schema.heartbeats.status, query.status));
+
+        const [{ count }] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.heartbeats)
+          .where(and(...conditions));
+
+        const page = query.page;
+        const limit = query.limit;
+        const offset = (page - 1) * limit;
+
+        const rows = await db
+          .select({
+            id: schema.heartbeats.id,
+            status: schema.heartbeats.status,
+            created_at: schema.heartbeats.created_at,
+            storage_object_id: schema.heartbeats.storage_object_id,
+            bucket: schema.storageObjects.bucket,
+            object_key: schema.storageObjects.object_key,
+          })
+          .from(schema.heartbeats)
+          .leftJoin(schema.storageObjects, eq(schema.heartbeats.storage_object_id, schema.storageObjects.id))
+          .where(and(...conditions))
+          .orderBy(desc(schema.heartbeats.created_at))
+          .limit(limit)
+          .offset(offset);
+
+        const items = await Promise.all(
+          rows.map(async (row) => ({
+            id: row.id,
+            status: row.status ?? null,
+            created_at: row.created_at?.toISOString?.() ?? row.created_at,
+            storage_object_id: row.storage_object_id ?? null,
+            payload: includePayload ? await fetchHeartbeatPayload(row.bucket, row.object_key) : null,
+          }))
+        );
+
+        return reply.send({
+          screen_id: screenId,
+          items,
+          pagination: {
+            page,
+            limit,
+            total: Number(count || 0),
+          },
+        });
+      } catch (error) {
+        logger.error(error, 'List screen heartbeats error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Set screenshot interval for a screen
+  fastify.post<{ Params: { id: string }; Body: typeof screenshotSettingsSchema._type }>(
+    apiEndpoints.screens.screenshotSettings,
+    {
+      schema: {
+        description: 'Set screenshot interval for a screen',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        }
+
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const screenId = (request.params as any).id;
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        }
+
+        const data = screenshotSettingsSchema.parse(request.body);
+        const enabled = typeof data.enabled === 'boolean' ? data.enabled : true;
+        const intervalSeconds = typeof data.interval_seconds === 'number' ? data.interval_seconds : null;
+        if (enabled && !intervalSeconds) {
+          return reply.status(BAD_REQUEST).send({ error: 'interval_seconds is required when enabled' });
+        }
+
+        const updated = await screenRepo.update(screenId, {
+          screenshot_interval_seconds: intervalSeconds,
+          screenshot_enabled: enabled,
+        } as any);
+
+        const [command] = await db
+          .insert(schema.deviceCommands)
+          .values({
+            screen_id: screenId,
+            type: 'SET_SCREENSHOT_INTERVAL',
+            payload: { interval_seconds: intervalSeconds, enabled },
+            status: 'PENDING',
+            created_by: payload.sub,
+          })
+          .returning({ id: schema.deviceCommands.id });
+
+        return reply.send({
+          screen_id: screenId,
+          screenshot_enabled: (updated as any)?.screenshot_enabled ?? enabled,
+          screenshot_interval_seconds: (updated as any)?.screenshot_interval_seconds ?? intervalSeconds,
+          command_id: command?.id ?? null,
+        });
+      } catch (error) {
+        logger.error(error, 'Set screenshot interval error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Trigger screenshot for a screen
+  fastify.post<{ Params: { id: string }; Body: typeof screenshotTriggerSchema._type }>(
+    apiEndpoints.screens.screenshot,
+    {
+      schema: {
+        description: 'Trigger screenshot capture for a screen',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        }
+
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const screenId = (request.params as any).id;
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        }
+
+        const data = screenshotTriggerSchema.parse(request.body);
+
+        const [command] = await db
+          .insert(schema.deviceCommands)
+          .values({
+            screen_id: screenId,
+            type: 'TAKE_SCREENSHOT',
+            payload: { reason: data.reason ?? null },
+            status: 'PENDING',
+            created_by: payload.sub,
+          })
+          .returning({ id: schema.deviceCommands.id });
+
+        return reply.send({
+          screen_id: screenId,
+          command_id: command?.id ?? null,
+        });
+      } catch (error) {
+        logger.error(error, 'Trigger screenshot error');
         return respondWithError(reply, error);
       }
     }
@@ -415,6 +737,12 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
+
+        const includeUrls =
+          typeof (request.query as any).include_urls === 'string' &&
+          ((request.query as any).include_urls as string).toLowerCase() === 'true';
+
+        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
 
         const [latest] = await db
           .select({
@@ -570,12 +898,17 @@ export async function screenRoutes(fastify: FastifyInstance) {
           .limit(1);
 
         if (!latest) {
+          if (emergency) {
+            return reply.send({
+              screen_id: screenId,
+              publish: null,
+              snapshot: null,
+              media_urls: undefined,
+              emergency,
+            });
+          }
           return reply.status(NOT_FOUND).send({ error: 'No publish found for this screen' });
         }
-
-        const includeUrls =
-          typeof (request.query as any).include_urls === 'string' &&
-          ((request.query as any).include_urls as string).toLowerCase() === 'true';
 
         const rawPayload = (latest.payload as any) || {};
         const schedule = rawPayload.schedule || {};
@@ -649,6 +982,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           },
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
+          emergency,
         });
       } catch (error) {
         logger.error(error, 'Get screen snapshot error');

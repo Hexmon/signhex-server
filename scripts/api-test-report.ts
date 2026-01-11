@@ -30,6 +30,12 @@ type HttpResult = {
   error?: string;
 };
 
+type RunTestOptions = {
+  auth?: boolean;
+  note?: string;
+  expectStatus?: number | number[];
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
@@ -120,11 +126,15 @@ async function runTest(
   method: string,
   endpoint: string,
   body?: any,
-  opts: { auth?: boolean; note?: string } = {}
+  opts: RunTestOptions = {}
 ): Promise<HttpResult> {
   const started = performance.now();
   const response = await httpRequest(method, endpoint, { body, auth: opts.auth });
   const duration = performance.now() - started;
+
+  const expected = opts.expectStatus;
+  const expectedStatuses = Array.isArray(expected) ? expected : expected ? [expected] : null;
+  const success = expectedStatuses ? expectedStatuses.includes(response.status ?? -1) : response.ok;
 
   const sanitizedResponse = response.data ? sanitize(response.data) : undefined;
   const entry: TestResult = {
@@ -133,7 +143,7 @@ async function runTest(
     method,
     endpoint,
     status: response.status,
-    success: response.ok,
+    success,
     durationMs: Math.round(duration),
     request: body ? sanitize(body) : undefined,
     response: sanitizedResponse,
@@ -185,7 +195,7 @@ async function main() {
   await ensureBuckets();
 
   // Health
-  await runTest('Health', 'Check API health', 'GET', '/health');
+  await runTest('Health', 'Check API health', 'GET', '/api/v1/health');
 
   // Auth: login
   const loginRes = await runTest('Auth: login', 'Authenticate admin user', 'POST', apiEndpoints.auth.login, {
@@ -218,6 +228,12 @@ async function main() {
       { token: inviteRes.data.invite_token, password: 'TestPass123!' }
     );
   }
+  await runTest('Users: invites list', 'List user invites', 'GET', `${apiEndpoints.userInvite.list}?page=1&limit=10`, undefined, {
+    auth: true,
+  });
+  await runTest('Users: invites pending', 'List pending user invites', 'GET', apiEndpoints.userInvite.pending, undefined, {
+    auth: true,
+  });
 
   // Departments
   const deptPayload = { name: `QA Dept ${Date.now()}`, description: 'Temporary department created by api-test-report' };
@@ -281,6 +297,14 @@ async function main() {
       { first_name: 'Updated', last_name: 'User' },
       { auth: true }
     );
+    await runTest(
+      'Users: reset password',
+      'Reset user password',
+      'POST',
+      apiEndpoints.userInvite.resetPassword.replace(':id', state.userId),
+      { current_password: userPayload.password, new_password: 'NewPass123!X' },
+      { auth: true }
+    );
     await runTest('Users: delete', 'Delete user', 'DELETE', apiEndpoints.users.delete.replace(':id', state.userId), undefined, {
       auth: true,
     });
@@ -339,7 +363,7 @@ async function main() {
   }
 
   // Media metadata create/list/get
-  await runTest(
+  const mediaMetaCreate = await runTest(
     'Media: create metadata',
     'Create media metadata entry',
     'POST',
@@ -347,14 +371,47 @@ async function main() {
     { name: 'Test Media', type: 'IMAGE' },
     { auth: true }
   );
+  if (mediaMetaCreate.ok && mediaMetaCreate.data?.id) state.mediaMetaId = mediaMetaCreate.data.id;
   await runTest('Media: list', 'List media', 'GET', `${apiEndpoints.media.list}?page=1&limit=10`, undefined, { auth: true });
-  if (state.mediaId) {
+  const mediaToGet = state.mediaId || state.mediaMetaId;
+  if (mediaToGet) {
     await runTest(
       'Media: get',
       'Get media by id',
       'GET',
-      apiEndpoints.media.get.replace(':id', state.mediaId),
+      apiEndpoints.media.get.replace(':id', mediaToGet),
       undefined,
+      { auth: true }
+    );
+  }
+
+  // Layouts
+  const layoutPayload = {
+    name: `QA Layout ${Date.now()}`,
+    description: 'Created by api-test-report',
+    aspect_ratio: '16:9',
+    spec: { slots: [{ id: 'main', x: 0, y: 0, w: 1, h: 1 }] },
+  };
+  const layoutCreate = await runTest('Layouts: create', 'Create layout', 'POST', apiEndpoints.layouts.create, layoutPayload, {
+    auth: true,
+  });
+  if (layoutCreate.ok && layoutCreate.data?.id) state.layoutId = layoutCreate.data.id;
+  await runTest('Layouts: list', 'List layouts', 'GET', `${apiEndpoints.layouts.list}?page=1&limit=10`, undefined, { auth: true });
+  if (state.layoutId) {
+    await runTest(
+      'Layouts: get',
+      'Get layout',
+      'GET',
+      apiEndpoints.layouts.get.replace(':id', state.layoutId),
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Layouts: update',
+      'Update layout description',
+      'PATCH',
+      apiEndpoints.layouts.update.replace(':id', state.layoutId),
+      { description: 'Updated via API tests' },
       { auth: true }
     );
   }
@@ -381,7 +438,11 @@ async function main() {
   }
 
   // Presentations
-  const presentationPayload = { name: `QA Presentation ${Date.now()}`, description: 'Created by tests' };
+  const presentationPayload = {
+    name: `QA Presentation ${Date.now()}`,
+    description: 'Created by tests',
+    ...(state.layoutId ? { layout_id: state.layoutId } : {}),
+  };
   const presentationCreate = await runTest(
     'Presentations: create',
     'Create presentation',
@@ -391,6 +452,7 @@ async function main() {
     { auth: true }
   );
   if (presentationCreate.ok && presentationCreate.data?.id) state.presentationId = presentationCreate.data.id;
+  const mediaForPresentation = state.mediaId || state.mediaMetaId;
   await runTest(
     'Presentations: list',
     'List presentations',
@@ -416,19 +478,75 @@ async function main() {
       { name: 'QA Presentation Updated' },
       { auth: true }
     );
-    await runTest(
-      'Presentations: delete',
-      'Delete presentation',
-      'DELETE',
-      apiEndpoints.presentations.delete.replace(':id', state.presentationId),
-      undefined,
-      { auth: true }
-    );
+    if (mediaForPresentation) {
+      const addItemRes = await runTest(
+        'Presentations: add item',
+        'Add media to presentation',
+        'POST',
+        apiEndpoints.presentations.items.replace(':id', state.presentationId),
+        { media_id: mediaForPresentation, order: 0, duration_seconds: 15 },
+        { auth: true }
+      );
+      if (addItemRes.ok && addItemRes.data?.id) state.presentationItemId = addItemRes.data.id;
+      await runTest(
+        'Presentations: list items',
+        'List presentation items',
+        'GET',
+        apiEndpoints.presentations.items.replace(':id', state.presentationId),
+        undefined,
+        { auth: true }
+      );
+      if (state.presentationItemId) {
+        await runTest(
+          'Presentations: delete item',
+          'Delete presentation item',
+          'DELETE',
+          apiEndpoints.presentations.item
+            .replace(':id', state.presentationId)
+            .replace(':itemId', state.presentationItemId),
+          undefined,
+          { auth: true }
+        );
+      }
+    }
+    if (mediaForPresentation && state.layoutId) {
+      const addSlotRes = await runTest(
+        'Presentations: add slot item',
+        'Add media to presentation slot',
+        'POST',
+        apiEndpoints.presentations.slotItems.replace(':id', state.presentationId),
+        { slot_id: 'main', media_id: mediaForPresentation, order: 0, duration_seconds: 15 },
+        { auth: true }
+      );
+      if (addSlotRes.ok && addSlotRes.data?.id) state.presentationSlotItemId = addSlotRes.data.id;
+      await runTest(
+        'Presentations: list slot items',
+        'List presentation slot items',
+        'GET',
+        apiEndpoints.presentations.slotItems.replace(':id', state.presentationId),
+        undefined,
+        { auth: true }
+      );
+      if (state.presentationSlotItemId) {
+        await runTest(
+          'Presentations: delete slot item',
+          'Delete presentation slot item',
+          'DELETE',
+          apiEndpoints.presentations.slotItem
+            .replace(':id', state.presentationId)
+            .replace(':slotItemId', state.presentationSlotItemId),
+          undefined,
+          { auth: true }
+        );
+      }
+    }
   }
 
   // Schedules
   const startAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const endAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  const itemStartAt = new Date(new Date(startAt).getTime() + 5 * 60 * 1000).toISOString();
+  const itemEndAt = new Date(new Date(startAt).getTime() + 30 * 60 * 1000).toISOString();
   const scheduleCreate = await runTest(
     'Schedules: create',
     'Create schedule',
@@ -458,6 +576,32 @@ async function main() {
       { name: 'QA Schedule Updated' },
       { auth: true }
     );
+    if (state.presentationId) {
+      const addScheduleItem = await runTest(
+        'Schedules: add item',
+        'Add schedule item',
+        'POST',
+        apiEndpoints.schedules.items.replace(':id', state.scheduleId),
+        {
+          presentation_id: state.presentationId,
+          start_at: itemStartAt,
+          end_at: itemEndAt,
+          priority: 0,
+          screen_ids: state.screenId ? [state.screenId] : [],
+          screen_group_ids: [],
+        },
+        { auth: true }
+      );
+      if (addScheduleItem.ok && addScheduleItem.data?.id) state.scheduleItemId = addScheduleItem.data.id;
+      await runTest(
+        'Schedules: list items',
+        'List schedule items',
+        'GET',
+        apiEndpoints.schedules.items.replace(':id', state.scheduleId),
+        undefined,
+        { auth: true }
+      );
+    }
     if (state.screenId) {
       const publishRes = await runTest(
         'Schedules: publish',
@@ -477,7 +621,7 @@ async function main() {
           undefined,
           { auth: true }
         );
-        await runTest(
+        const publishStatus = await runTest(
           'Publishes: get',
           'Get publish record',
           'GET',
@@ -485,8 +629,248 @@ async function main() {
           undefined,
           { auth: true }
         );
+        if (publishStatus.ok && publishStatus.data?.targets?.length) {
+          const targetId = publishStatus.data.targets[0].id;
+          await runTest(
+            'Publishes: update target',
+            'Update publish target status',
+            'PATCH',
+            apiEndpoints.schedules.updatePublishTarget
+              .replace(':publishId', state.publishId)
+              .replace(':targetId', targetId),
+            { status: 'ACKNOWLEDGED' },
+            { auth: true }
+          );
+        }
       }
     }
+  }
+
+  // Schedule requests
+  if (state.scheduleId) {
+    const scheduleRequestPayload = {
+      schedule_id: state.scheduleId,
+      payload: {
+        screen_ids: state.screenId ? [state.screenId] : [],
+        screen_group_ids: [],
+        notes: 'QA schedule request',
+      },
+      notes: 'Please approve this schedule',
+    };
+    const scheduleRequestCreate = await runTest(
+      'Schedule requests: create',
+      'Create schedule request',
+      'POST',
+      apiEndpoints.scheduleRequests.create,
+      scheduleRequestPayload,
+      { auth: true }
+    );
+    if (scheduleRequestCreate.ok && scheduleRequestCreate.data?.id) state.scheduleRequestId = scheduleRequestCreate.data.id;
+    await runTest(
+      'Schedule requests: list',
+      'List schedule requests',
+      'GET',
+      `${apiEndpoints.scheduleRequests.list}?page=1&limit=10`,
+      undefined,
+      { auth: true }
+    );
+    if (state.scheduleRequestId) {
+      await runTest(
+        'Schedule requests: get',
+        'Get schedule request',
+        'GET',
+        apiEndpoints.scheduleRequests.get.replace(':id', state.scheduleRequestId),
+        undefined,
+        { auth: true }
+      );
+      await runTest(
+        'Schedule requests: update',
+        'Update schedule request notes',
+        'PATCH',
+        apiEndpoints.scheduleRequests.update.replace(':id', state.scheduleRequestId),
+        { notes: 'Updated request notes' },
+        { auth: true }
+      );
+      await runTest(
+        'Schedule requests: approve',
+        'Approve schedule request',
+        'POST',
+        apiEndpoints.scheduleRequests.approve.replace(':id', state.scheduleRequestId),
+        { comment: 'Approved in API tests' },
+        { auth: true }
+      );
+      await runTest(
+        'Schedule requests: publish',
+        'Publish schedule request',
+        'POST',
+        apiEndpoints.scheduleRequests.publish.replace(':id', state.scheduleRequestId),
+        undefined,
+        { auth: true }
+      );
+    }
+    const scheduleRejectCreate = await runTest(
+      'Schedule requests: create (reject)',
+      'Create schedule request to reject',
+      'POST',
+      apiEndpoints.scheduleRequests.create,
+      scheduleRequestPayload,
+      { auth: true }
+    );
+    if (scheduleRejectCreate.ok && scheduleRejectCreate.data?.id) {
+      await runTest(
+        'Schedule requests: reject',
+        'Reject schedule request',
+        'POST',
+        apiEndpoints.scheduleRequests.reject.replace(':id', scheduleRejectCreate.data.id),
+        { comment: 'Rejected in API tests' },
+        { auth: true }
+      );
+    }
+  }
+
+  // Screens (extended)
+  await runTest('Screens: overview', 'Overview of screens and groups', 'GET', apiEndpoints.screens.overview, undefined, {
+    auth: true,
+  });
+  if (state.screenId) {
+    await runTest(
+      'Screens: status',
+      'Get screen status',
+      'GET',
+      apiEndpoints.screens.status.replace(':id', state.screenId),
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screens: heartbeats',
+      'List screen heartbeats',
+      'GET',
+      `${apiEndpoints.screens.heartbeats.replace(':id', state.screenId)}?page=1&limit=10`,
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screens: screenshot settings',
+      'Set screen screenshot interval',
+      'POST',
+      apiEndpoints.screens.screenshotSettings.replace(':id', state.screenId),
+      { interval_seconds: 600, enabled: true },
+      { auth: true }
+    );
+    await runTest(
+      'Screens: screenshot trigger',
+      'Trigger screen screenshot',
+      'POST',
+      apiEndpoints.screens.screenshot.replace(':id', state.screenId),
+      { reason: 'API test' },
+      { auth: true }
+    );
+    await runTest(
+      'Screens: now playing',
+      'Get screen now playing',
+      'GET',
+      apiEndpoints.screens.nowPlaying.replace(':id', state.screenId),
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screens: availability',
+      'Get screen availability',
+      'GET',
+      apiEndpoints.screens.availability.replace(':id', state.screenId),
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screens: snapshot',
+      'Get screen snapshot',
+      'GET',
+      apiEndpoints.screens.snapshot.replace(':id', state.screenId),
+      undefined,
+      { auth: true }
+    );
+  }
+
+  // Screen groups
+  const screenGroupPayload = {
+    name: `QA Screen Group ${Date.now()}`,
+    description: 'Created by api-test-report',
+    screen_ids: state.screenId ? [state.screenId] : [],
+  };
+  const screenGroupCreate = await runTest(
+    'Screen groups: create',
+    'Create screen group',
+    'POST',
+    apiEndpoints.screenGroups.create,
+    screenGroupPayload,
+    { auth: true }
+  );
+  if (screenGroupCreate.ok && screenGroupCreate.data?.id) state.screenGroupId = screenGroupCreate.data.id;
+  await runTest(
+    'Screen groups: list',
+    'List screen groups',
+    'GET',
+    `${apiEndpoints.screenGroups.list}?page=1&limit=10`,
+    undefined,
+    { auth: true }
+  );
+  if (state.screenGroupId) {
+    await runTest(
+      'Screen groups: get',
+      'Get screen group',
+      'GET',
+      apiEndpoints.screenGroups.get.replace(':id', state.screenGroupId),
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screen groups: update',
+      'Update screen group',
+      'PATCH',
+      apiEndpoints.screenGroups.update.replace(':id', state.screenGroupId),
+      { description: 'Updated via API tests' },
+      { auth: true }
+    );
+    await runTest(
+      'Screen groups: available screens',
+      'List available screens for groups',
+      'GET',
+      `${apiEndpoints.screenGroups.availableScreens}?page=1&limit=10&group_id=${state.screenGroupId}`,
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screen groups: availability',
+      'Get group availability',
+      'GET',
+      apiEndpoints.screenGroups.availability.replace(':id', state.screenGroupId),
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screen groups: now playing',
+      'Get group now playing',
+      'GET',
+      apiEndpoints.screenGroupNowPlaying.get.replace(':id', state.screenGroupId),
+      undefined,
+      { auth: true }
+    );
+    await runTest(
+      'Screen groups: screenshot settings',
+      'Set group screenshot interval',
+      'POST',
+      apiEndpoints.screenGroups.screenshotSettings.replace(':id', state.screenGroupId),
+      { interval_seconds: 600, enabled: true },
+      { auth: true }
+    );
+    await runTest(
+      'Screen groups: screenshot trigger',
+      'Trigger group screenshot',
+      'POST',
+      apiEndpoints.screenGroups.screenshot.replace(':id', state.screenGroupId),
+      { reason: 'API test' },
+      { auth: true }
+    );
   }
 
   // Requests
@@ -604,6 +988,23 @@ async function main() {
       undefined,
       { auth: true }
     );
+    await runTest(
+      'Notifications: delete',
+      'Delete notification',
+      'DELETE',
+      apiEndpoints.notifications.delete.replace(':id', nid),
+      undefined,
+      { auth: true }
+    );
+  } else {
+    await runTest(
+      'Notifications: delete (missing)',
+      'Delete non-existent notification',
+      'DELETE',
+      apiEndpoints.notifications.delete.replace(':id', randomUUID()),
+      undefined,
+      { auth: true, expectStatus: 404 }
+    );
   }
   await runTest(
     'Notifications: mark all read',
@@ -615,7 +1016,7 @@ async function main() {
   );
 
   // Audit logs
-  await runTest(
+  const auditList = await runTest(
     'Audit logs: list',
     'List audit logs',
     'GET',
@@ -623,6 +1024,26 @@ async function main() {
     undefined,
     { auth: true }
   );
+  if (auditList.ok && Array.isArray(auditList.data?.items) && auditList.data.items.length > 0) {
+    const auditId = auditList.data.items[0].id;
+    await runTest(
+      'Audit logs: get',
+      'Get audit log',
+      'GET',
+      apiEndpoints.auditLogs.get.replace(':id', auditId),
+      undefined,
+      { auth: true }
+    );
+  } else {
+    await runTest(
+      'Audit logs: get (missing)',
+      'Get non-existent audit log',
+      'GET',
+      apiEndpoints.auditLogs.get.replace(':id', randomUUID()),
+      undefined,
+      { auth: true, expectStatus: 404 }
+    );
+  }
 
   // API keys
   const apiKeyCreate = await runTest(
@@ -770,8 +1191,40 @@ async function main() {
   // Reports
   await runTest('Reports: summary', 'Reports summary', 'GET', apiEndpoints.reports.summary, undefined, { auth: true });
   await runTest('Reports: trends', 'Reports trends', 'GET', apiEndpoints.reports.trends, undefined, { auth: true });
+  await runTest(
+    'Reports: requests by department',
+    'Requests grouped by department',
+    'GET',
+    apiEndpoints.reports.requestsByDepartment,
+    undefined,
+    { auth: true }
+  );
+  await runTest('Reports: offline screens', 'Offline screens report', 'GET', apiEndpoints.reports.offlineScreens, undefined, {
+    auth: true,
+  });
+  await runTest('Reports: storage', 'Storage report', 'GET', apiEndpoints.reports.storage, undefined, { auth: true });
+  await runTest('Reports: system health', 'System health report', 'GET', apiEndpoints.reports.systemHealth, undefined, {
+    auth: true,
+  });
 
   // Device pairing
+  const requestPairing = await runTest(
+    'Device pairing: request',
+    'Device-initiated pairing request',
+    'POST',
+    apiEndpoints.devicePairing.request,
+    { device_label: 'QA Device', expires_in: 600 }
+  );
+  if (requestPairing.ok && requestPairing.data?.pairing_code) {
+    await runTest(
+      'Device pairing: confirm',
+      'Confirm pairing and create screen',
+      'POST',
+      apiEndpoints.devicePairing.confirm,
+      { pairing_code: requestPairing.data.pairing_code, name: 'QA Paired Screen', location: 'QA Lab' },
+      { auth: true }
+    );
+  }
   const pairing = await runTest(
     'Device pairing: generate',
     'Generate device pairing code',
@@ -781,6 +1234,18 @@ async function main() {
     { auth: true }
   );
   if (pairing.ok && pairing.data?.pairing_code) state.pairingCode = pairing.data.pairing_code;
+  if (state.pairingCode) {
+    await runTest(
+      'Device pairing: complete',
+      'Complete device pairing with CSR',
+      'POST',
+      apiEndpoints.devicePairing.complete,
+      {
+        pairing_code: state.pairingCode,
+        csr: '-----BEGIN CERTIFICATE REQUEST-----\nTESTCSR\n-----END CERTIFICATE REQUEST-----',
+      }
+    );
+  }
   await runTest(
     'Device pairing: list',
     'List device pairings',
@@ -831,11 +1296,37 @@ async function main() {
       apiEndpoints.deviceTelemetry.screenshot,
       { device_id: state.screenId, timestamp: new Date().toISOString(), image_data: Buffer.from('hello').toString('base64') }
     );
-    await runTest(
+    const commandsRes = await runTest(
       'Device commands',
       'Fetch pending device commands',
       'GET',
       apiEndpoints.deviceTelemetry.commands.replace(':deviceId', state.screenId)
+    );
+    if (commandsRes.ok && Array.isArray(commandsRes.data?.commands) && commandsRes.data.commands.length > 0) {
+      const commandId = commandsRes.data.commands[0].id;
+      await runTest(
+        'Device command ack',
+        'Acknowledge device command',
+        'POST',
+        apiEndpoints.deviceTelemetry.ackCommand.replace(':deviceId', state.screenId).replace(':commandId', commandId)
+      );
+    } else {
+      await runTest(
+        'Device command ack (missing)',
+        'Acknowledge non-existent command',
+        'POST',
+        apiEndpoints.deviceTelemetry.ackCommand.replace(':deviceId', state.screenId).replace(':commandId', randomUUID()),
+        undefined,
+        { expectStatus: 404 }
+      );
+    }
+    await runTest(
+      'Device snapshot',
+      'Fetch device snapshot',
+      'GET',
+      apiEndpoints.deviceTelemetry.snapshot.replace(':deviceId', state.screenId),
+      undefined,
+      { auth: true }
     );
   } else {
     recordResult({
@@ -848,6 +1339,69 @@ async function main() {
       durationMs: 0,
       note: 'Device telemetry tests require screen id and MinIO buckets',
     });
+  }
+
+  // Cleanup delete endpoints
+  if (state.scheduleId && state.scheduleItemId) {
+    await runTest(
+      'Schedules: delete item',
+      'Delete schedule item',
+      'DELETE',
+      apiEndpoints.schedules.item.replace(':id', state.scheduleId).replace(':itemId', state.scheduleItemId),
+      undefined,
+      { auth: true }
+    );
+  }
+  if (state.presentationId) {
+    await runTest(
+      'Presentations: delete',
+      'Delete presentation',
+      'DELETE',
+      apiEndpoints.presentations.delete.replace(':id', state.presentationId),
+      undefined,
+      { auth: true }
+    );
+  }
+  if (state.layoutId) {
+    await runTest(
+      'Layouts: delete',
+      'Delete layout',
+      'DELETE',
+      apiEndpoints.layouts.delete.replace(':id', state.layoutId),
+      undefined,
+      { auth: true, expectStatus: 404 }
+    );
+  }
+  const mediaToDelete = state.mediaId || state.mediaMetaId;
+  if (mediaToDelete) {
+    await runTest(
+      'Media: delete',
+      'Delete media',
+      'DELETE',
+      apiEndpoints.media.delete.replace(':id', mediaToDelete),
+      undefined,
+      { auth: true }
+    );
+  }
+  if (state.screenGroupId) {
+    await runTest(
+      'Screen groups: delete',
+      'Delete screen group',
+      'DELETE',
+      apiEndpoints.screenGroups.delete.replace(':id', state.screenGroupId),
+      undefined,
+      { auth: true }
+    );
+  }
+  if (state.screenId) {
+    await runTest(
+      'Screens: delete',
+      'Delete screen',
+      'DELETE',
+      apiEndpoints.screens.delete.replace(':id', state.screenId),
+      undefined,
+      { auth: true }
+    );
   }
 
   // Logout

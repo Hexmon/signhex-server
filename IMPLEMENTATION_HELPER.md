@@ -54,10 +54,181 @@ New device-driven flow that checks connectivity and uses a numeric code.
 
 - **Publish snapshot**: `POST /api/v1/schedules/:id/publish` now stores a snapshot that includes schedule details plus resolved items (presentation → media), layout and slot media, and targets. Devices can consume that snapshot to know what to play.
 
+## Frontend Flow: Media -> Presentation -> Schedule -> Publish
+
+Use this as the end-to-end guide for frontend integration. It shows which API to call and when, including the approval path.
+
+Flow chart (Mermaid):
+
+```mermaid
+flowchart TD
+  %% =============== AUTH ===============
+  A0([Start]) --> A1[1) Auth<br/>POST /api/v1/auth/login<br/>→ token]
+  A1 --> A2[Use token on ALL subsequent calls<br/>(e.g., Authorization: Bearer ...)]
+
+  %% =============== MEDIA UPLOAD ===============
+  A2 --> M0{2) Upload Media<br/>Which method?}
+
+  %% Presigned upload path
+  M0 -- "A) Presigned upload (real file)" --> M1[POST /api/v1/media/presign-upload<br/>Body: filename, content_type, size<br/>→ upload_url, media_id]
+  M1 --> M2[PUT file to upload_url<br/>(MinIO presigned URL)]
+  M2 --> M3[POST /api/v1/media/:id/complete<br/>Body: { status: READY, size,<br/>width?, height?, duration_seconds? }]
+
+  %% Metadata-only path
+  M0 -- "B) Metadata-only (placeholder)" --> M4[POST /api/v1/media<br/>Body: { name, type: IMAGE|VIDEO|DOCUMENT }<br/>→ media_id]
+
+  %% Join after upload
+  M3 --> M5[(media_id)]
+  M4 --> M5
+
+  %% =============== OPTIONAL LAYOUT ===============
+  M5 --> L0{3) Optional Layout?<br/>(Split screen / mosaic needed?)}
+  L0 -- "Yes" --> L1[POST /api/v1/layouts<br/>Body: { name, aspect_ratio, spec }<br/>spec: slot definitions<br/>(each slot: id, x, y, w, h)<br/>→ layout_id]
+  L0 -- "No" --> P0
+
+  %% =============== CREATE PRESENTATION ===============
+  L1 --> P1[4) Create Presentation (with layout)<br/>POST /api/v1/presentations<br/>Body: { name, description?, layout_id }<br/>→ presentation_id<br/>(expects slot-based media)]
+  P0[4) Create Presentation (no layout)<br/>POST /api/v1/presentations<br/>Body: { name, description? }<br/>→ presentation_id<br/>(full-screen playlist)] --> P2
+
+  %% Join presentations
+  P1 --> P2[(presentation_id)]
+
+  %% =============== ADD MEDIA TO PRESENTATION ===============
+  P2 --> AM0{5) Add Media to Presentation<br/>Layout used?}
+
+  AM0 -- "No layout → playlist items" --> AM1[POST /api/v1/presentations/:id/items<br/>Body: { media_id, order?, duration_seconds? }]
+  AM0 -- "Layout → slot items" --> AM2[POST /api/v1/presentations/:id/slots<br/>Body: { slot_id, media_id,<br/>order?, duration_seconds?, fit_mode?, audio_enabled? }<br/>Rule: slot_id must match layout slot id]
+
+  %% =============== CREATE SCHEDULE ===============
+  AM1 --> S1
+  AM2 --> S1
+  S1[6) Create Schedule<br/>POST /api/v1/schedules<br/>Body: { name, description?, start_at?, end_at? }<br/>→ schedule_id] --> S2
+
+  %% =============== ADD SCHEDULE ITEM ===============
+  S2[7) Add Schedule Item<br/>POST /api/v1/schedules/:id/items<br/>Body: { presentation_id,<br/>start_at: ISO, end_at: ISO,<br/>priority: 0,<br/>screen_ids?: [...],<br/>screen_group_ids?: [...] }<br/><br/>Rules:<br/>• start_at/end_at within schedule window<br/>• empty screen_ids & screen_group_ids → applies to ALL<br/>• overlap on same targets is rejected] --> W0
+
+  %% =============== PUBLISH WORKFLOW ===============
+  W0{8) Publish Workflow?<br/>Approval required?}
+
+  %% Direct publish
+  W0 -- "No approval (direct publish)" --> PUB1[POST /api/v1/schedules/:id/publish<br/>Body: { screen_ids?, screen_group_ids?, notes? }<br/>→ DONE]
+
+  %% Approval workflow
+  W0 -- "Yes (approval required)" --> REQ1[POST /api/v1/schedule-requests<br/>Body: { schedule_id, payload, notes? }<br/>payload includes publish targets, e.g.:<br/>{ screen_ids?, screen_group_ids?, notes? }<br/>→ request_id]
+  REQ1 --> DEC1{Approve or Reject?}
+  DEC1 -- "Reject" --> REJ1[POST /api/v1/schedule-requests/:id/reject<br/>Body: { comment? }<br/>→ DONE (no publish)]
+  DEC1 -- "Approve" --> APP1[POST /api/v1/schedule-requests/:id/approve<br/>→ status APPROVED]
+  APP1 --> PUB2[POST /api/v1/schedule-requests/:id/publish<br/>(only if APPROVED)<br/>→ DONE]
+```
+
+Detailed steps and which API to call:
+
+1) Auth
+   - `POST /api/v1/auth/login` -> access token. Use for all subsequent calls.
+
+2) Upload media (pick one)
+   - Presigned upload (recommended for files):
+     - `POST /api/v1/media/presign-upload` with `{ filename, content_type, size }` -> `{ upload_url, media_id }`
+     - PUT file to `upload_url`
+     - `POST /api/v1/media/:id/complete` with `{ status: "READY", size, width?, height?, duration_seconds? }`
+   - Metadata-only placeholder:
+     - `POST /api/v1/media` with `{ name, type }`
+
+3) Optional layout (split screen / mosaic)
+   - `POST /api/v1/layouts` with `{ name, aspect_ratio, spec }`
+   - `spec` defines slots with `id` (slot_id) and `x,y,w,h` coords.
+
+4) Create presentation
+   - Full-screen playlist (no layout):
+     - `POST /api/v1/presentations` with `{ name, description? }`
+   - Slot-based presentation (has layout):
+     - `POST /api/v1/presentations` with `{ name, description?, layout_id }`
+
+5) Attach media to presentation
+   - If no layout:
+     - `POST /api/v1/presentations/:id/items` with `{ media_id, order?, duration_seconds? }`
+   - If layout:
+     - `POST /api/v1/presentations/:id/slots` with `{ slot_id, media_id, order?, duration_seconds?, fit_mode?, audio_enabled? }`
+     - `slot_id` must match a slot `id` from the layout spec.
+
+6) Create schedule
+   - `POST /api/v1/schedules` with `{ name, description?, start_at?, end_at? }`
+   - If start/end omitted, server defaults a 24h window starting now.
+
+7) Add schedule items (attach presentation + targets)
+   - `POST /api/v1/schedules/:id/items` with:
+     - `presentation_id`
+     - `start_at`, `end_at` (must be inside schedule window)
+     - `screen_ids` and/or `screen_group_ids` (empty means global)
+   - Server validates:
+     - Schedule exists
+     - Presentation exists
+     - Targets exist
+     - No overlapping items for the same targets
+
+8) Publish (choose one)
+   - Direct publish (no approval):
+     - `POST /api/v1/schedules/:id/publish` with `{ screen_ids?, screen_group_ids?, notes? }`
+   - Approval workflow:
+     - Create request: `POST /api/v1/schedule-requests`
+       - Body: `{ schedule_id, payload, notes? }`
+       - `payload` must match publish schema (e.g., `{ screen_ids: [...], screen_group_ids: [...] }`)
+     - Approve or reject:
+       - `POST /api/v1/schedule-requests/:id/approve`
+       - `POST /api/v1/schedule-requests/:id/reject`
+     - Publish approved request:
+       - `POST /api/v1/schedule-requests/:id/publish`
+       - Only works if status is APPROVED.
+
+9) Playback fetch (device or server)
+   - `GET /api/v1/device/:deviceId/snapshot?include_urls=true`
+   - or `GET /api/v1/screens/:id/snapshot?include_urls=true`
+
+## Emergency Types & Emergency Trigger (Admin Only)
+
+Use this to predefine emergency templates and trigger them to selected screens/groups or all screens. Emergency playback is full-screen media (no layout).
+
+- **Emergency types CRUD** (admin):
+  - Create: `POST /api/v1/emergency-types` with `{ name, description?, message, severity, media_id? }`
+  - List: `GET /api/v1/emergency-types?page=&limit=`
+  - Get: `GET /api/v1/emergency-types/:id`
+  - Update: `PATCH /api/v1/emergency-types/:id` (same fields; `media_id` can be set or cleared)
+  - Delete: `DELETE /api/v1/emergency-types/:id`
+
+- **Trigger emergency** (admin):
+  - `POST /api/v1/emergency/trigger`
+  - Body example:
+    ```json
+    {
+      "emergency_type_id": "<uuid>",
+      "screen_ids": ["<screen-id>"],
+      "screen_group_ids": ["<group-id>"],
+      "target_all": false
+    }
+    ```
+  - Targets:
+    - If `target_all` is true, it applies to all screens.
+    - If both `screen_ids` and `screen_group_ids` are empty and `target_all` is not set, it defaults to all.
+
+- **Emergency status/clear/history** (admin):
+  - Status: `GET /api/v1/emergency/status`
+  - Clear: `POST /api/v1/emergency/:id/clear`
+  - History: `GET /api/v1/emergency/history?page=&limit=`
+
+- **Device behavior (pause schedule + show emergency)**:
+  - Snapshot endpoints now include an `emergency` object when active.
+  - Devices should pause normal schedule playback while `emergency` is present and render the emergency media full-screen.
+  - Use `include_urls=true` to receive `emergency.media_url`.
+
 ## Screen Status & Commands
 
 - **Screen status**: `GET /api/v1/screens/:id/status` (auth) returns status, last heartbeat, and `current_schedule_id/current_media_id` as reported by device heartbeats.  
+- **Heartbeat history**: `GET /api/v1/screens/:id/heartbeats?page=&limit=&start_at=&end_at=&status=&include_payload=true` (auth) returns paginated heartbeat history with optional filters; set `include_payload=true` to include the stored heartbeat JSON.  
+- **Screenshot interval (screen)**: `POST /api/v1/screens/:id/screenshot-settings` with `{ "interval_seconds": 60, "enabled": true }` (auth). Sends a device command to apply the interval.  
+- **Screenshot interval (group)**: `POST /api/v1/screen-groups/:id/screenshot-settings` with `{ "interval_seconds": 60, "enabled": true }` (auth). Applies to all screens in the group and sends commands.  
+- **Trigger screenshot (screen)**: `POST /api/v1/screens/:id/screenshot` (auth) sends a `TAKE_SCREENSHOT` command.  
+- **Trigger screenshot (group)**: `POST /api/v1/screen-groups/:id/screenshot` (auth) sends `TAKE_SCREENSHOT` to all group members.  
 - **Now playing**: `GET /api/v1/screens/:id/now-playing` returns active schedule items from the latest publish for that screen.  
 - **Device commands**:  
-  - Create (admin): `POST /api/v1/device/:deviceId/commands` with `{ "type": "REBOOT|REFRESH|TEST_PATTERN", "payload": { ... } }`.  
+  - Create (admin): `POST /api/v1/device/:deviceId/commands` with `{ "type": "REBOOT|REFRESH|TEST_PATTERN|TAKE_SCREENSHOT|SET_SCREENSHOT_INTERVAL", "payload": { ... } }`.  
   - Devices poll `GET /api/v1/device/:deviceId/commands` and `POST /api/v1/device/:deviceId/commands/:commandId/ack` to acknowledge.

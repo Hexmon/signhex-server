@@ -1,4 +1,4 @@
-import { eq, desc, isNull } from 'drizzle-orm';
+import { eq, desc, isNull, and } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class EmergencyRepository {
@@ -6,13 +6,27 @@ export class EmergencyRepository {
     triggered_by: string;
     message: string;
     severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+    emergency_type_id?: string | null;
+    media_id?: string | null;
+    screen_ids?: string[] | null;
+    screen_group_ids?: string[] | null;
+    target_all?: boolean;
   }) {
     const db = getDatabase();
-    const result = await db.insert(schema.emergencies).values({
-      triggered_by: data.triggered_by,
-      message: data.message,
-      priority: data.severity,
-    }).returning();
+    const result = await db
+      .insert(schema.emergencies)
+      .values({
+        triggered_by: data.triggered_by,
+        message: data.message,
+        priority: data.severity,
+        emergency_type_id: data.emergency_type_id ?? null,
+        media_id: data.media_id ?? null,
+        screen_ids: data.screen_ids ?? [],
+        screen_group_ids: data.screen_group_ids ?? [],
+        target_all: data.target_all ?? false,
+        is_active: true,
+      })
+      .returning();
     return result[0];
   }
 
@@ -21,7 +35,7 @@ export class EmergencyRepository {
     const result = await db
       .select()
       .from(schema.emergencies)
-      .where(isNull(schema.emergencies.cleared_at))
+      .where(and(isNull(schema.emergencies.cleared_at), eq(schema.emergencies.is_active, true)))
       .orderBy(desc(schema.emergencies.created_at));
     return result[0] || null;
   }
@@ -59,6 +73,7 @@ export class EmergencyRepository {
       .set({
         cleared_at: new Date(),
         cleared_by,
+        is_active: false,
       })
       .where(eq(schema.emergencies.id, id))
       .returning();
@@ -78,4 +93,3 @@ export class EmergencyRepository {
 export function createEmergencyRepository(): EmergencyRepository {
   return new EmergencyRepository();
 }
-

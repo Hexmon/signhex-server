@@ -8,7 +8,7 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 
 const logger = createLogger('screen-group-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -22,6 +22,15 @@ const screenGroupSchema = z.object({
 const listGroupsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
+});
+
+const screenshotSettingsSchema = z.object({
+  interval_seconds: z.number().int().positive().max(86400).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const screenshotTriggerSchema = z.object({
+  reason: z.string().optional(),
 });
 
 const availableScreensQuerySchema = z.object({
@@ -205,6 +214,122 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Group availability error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Set screenshot interval for a screen group
+  fastify.post<{ Params: { id: string }; Body: typeof screenshotSettingsSchema._type }>(
+    apiEndpoints.screenGroups.screenshotSettings,
+    {
+      schema: {
+        description: 'Set screenshot interval for all screens in a group',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'ScreenGroup')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const group = await repo.findById((request.params as any).id);
+        if (!group) return reply.status(NOT_FOUND).send({ error: 'Screen group not found' });
+
+        const data = screenshotSettingsSchema.parse(request.body);
+        const enabled = typeof data.enabled === 'boolean' ? data.enabled : true;
+        const intervalSeconds = typeof data.interval_seconds === 'number' ? data.interval_seconds : null;
+        if (enabled && !intervalSeconds) {
+          return reply.status(BAD_REQUEST).send({ error: 'interval_seconds is required when enabled' });
+        }
+
+        const members = await repo.members(group.id);
+        const screenIds = Array.from(new Set(members.map((m: any) => m.screen_id)));
+
+        if (screenIds.length) {
+          await db
+            .update(schema.screens)
+            .set({
+              screenshot_interval_seconds: intervalSeconds,
+              screenshot_enabled: enabled,
+              updated_at: new Date(),
+            })
+            .where(inArray(schema.screens.id, screenIds as any));
+        }
+
+        const commands = screenIds.map((screenId) => ({
+          screen_id: screenId,
+          type: 'SET_SCREENSHOT_INTERVAL',
+          payload: { interval_seconds: intervalSeconds, enabled },
+          status: 'PENDING',
+          created_by: payload.sub,
+        }));
+        const inserted = commands.length
+          ? await db.insert(schema.deviceCommands).values(commands).returning({ id: schema.deviceCommands.id, screen_id: schema.deviceCommands.screen_id })
+          : [];
+
+        return reply.send({
+          group_id: group.id,
+          screenshot_enabled: enabled,
+          screenshot_interval_seconds: intervalSeconds,
+          updated_screens: screenIds.length,
+          commands: inserted,
+        });
+      } catch (error) {
+        logger.error(error, 'Set group screenshot interval error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Trigger screenshot for a screen group
+  fastify.post<{ Params: { id: string }; Body: typeof screenshotTriggerSchema._type }>(
+    apiEndpoints.screenGroups.screenshot,
+    {
+      schema: {
+        description: 'Trigger screenshot capture for all screens in a group',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('update', 'ScreenGroup')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const group = await repo.findById((request.params as any).id);
+        if (!group) return reply.status(NOT_FOUND).send({ error: 'Screen group not found' });
+
+        const data = screenshotTriggerSchema.parse(request.body);
+
+        const members = await repo.members(group.id);
+        const screenIds = Array.from(new Set(members.map((m: any) => m.screen_id)));
+
+        const commands = screenIds.map((screenId) => ({
+          screen_id: screenId,
+          type: 'TAKE_SCREENSHOT',
+          payload: { reason: data.reason ?? null },
+          status: 'PENDING',
+          created_by: payload.sub,
+        }));
+        const inserted = commands.length
+          ? await db.insert(schema.deviceCommands).values(commands).returning({ id: schema.deviceCommands.id, screen_id: schema.deviceCommands.screen_id })
+          : [];
+
+        return reply.send({
+          group_id: group.id,
+          commands_created: inserted.length,
+          commands: inserted,
+        });
+      } catch (error) {
+        logger.error(error, 'Trigger group screenshot error');
         return respondWithError(reply, error);
       }
     }
