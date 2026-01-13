@@ -889,6 +889,9 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
+        const query = snapshotQuerySchema.parse(request.query);
+        const includeUrls = query.include_urls?.toLowerCase() === 'true';
+        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
 
         const [latest] = await db
           .select({
