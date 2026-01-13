@@ -38,6 +38,10 @@ const requestPairingSchema = z.object({
   device_info: z.record(z.any()).optional(),
 });
 
+const pairingStatusQuerySchema = z.object({
+  device_id: z.string().uuid(),
+});
+
 const confirmPairingSchema = z.object({
   pairing_code: z.string().min(1),
   name: z.string().min(1).max(255),
@@ -47,6 +51,7 @@ const confirmPairingSchema = z.object({
 export async function devicePairingRoutes(fastify: FastifyInstance) {
   const pairingRepo = createDevicePairingRepository();
   const certificateRepo = createDeviceCertificateRepository();
+  const screenRepo = createScreenRepository();
 
   // Generate pairing code
   fastify.post<{ Body: typeof generatePairingCodeSchema._type }>(
@@ -103,6 +108,37 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Generate pairing code error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Check device pairing status (no auth)
+  fastify.get<{ Querystring: typeof pairingStatusQuerySchema._type }>(
+    apiEndpoints.devicePairing.status,
+    {
+      schema: {
+        description: 'Check if a device is already paired',
+        tags: ['Device Pairing'],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const query = pairingStatusQuerySchema.parse(request.query);
+        const screen = await screenRepo.findById(query.device_id);
+
+        return reply.send({
+          device_id: query.device_id,
+          paired: Boolean(screen),
+          screen: screen
+            ? {
+                id: screen.id,
+                status: screen.status,
+              }
+            : null,
+        });
+      } catch (error) {
+        logger.error(error, 'Device pairing status error');
         return respondWithError(reply, error);
       }
     }
@@ -272,8 +308,6 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         if (!pairing.device_id) {
           return reply.status(BAD_REQUEST).send({ error: 'Pairing missing device reference' });
         }
-
-        const screenRepo = createScreenRepository();
         const existing = await screenRepo.findById(pairing.device_id);
         if (existing) {
           return reply.status(CONFLICT).send({ error: 'Screen already exists for this device' });

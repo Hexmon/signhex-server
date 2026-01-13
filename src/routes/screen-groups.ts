@@ -263,9 +263,9 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
 
         const commands = screenIds.map((screenId) => ({
           screen_id: screenId,
-          type: 'SET_SCREENSHOT_INTERVAL',
+          type: 'SET_SCREENSHOT_INTERVAL' as const,
           payload: { interval_seconds: intervalSeconds, enabled },
-          status: 'PENDING',
+          status: 'PENDING' as const,
           created_by: payload.sub,
         }));
         const inserted = commands.length
@@ -314,9 +314,9 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
 
         const commands = screenIds.map((screenId) => ({
           screen_id: screenId,
-          type: 'TAKE_SCREENSHOT',
+          type: 'TAKE_SCREENSHOT' as const,
           payload: { reason: data.reason ?? null },
-          status: 'PENDING',
+          status: 'PENDING' as const,
           created_by: payload.sub,
         }));
         const inserted = commands.length

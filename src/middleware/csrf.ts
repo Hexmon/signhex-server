@@ -4,12 +4,17 @@ import { config as appConfig } from '@/config';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CSRF_HEADER_NAMES = ['x-csrf-token', 'x-xsrf-token'];
+const CSRF_EXEMPT_PATHS = new Set([
+  '/api/v1/device-pairing/request',
+]);
 
 export const csrfProtectionPlugin: FastifyPluginAsync = async (fastify) => {
   if (!appConfig.CSRF_ENABLED) return;
 
   fastify.addHook('preHandler', async (request, reply) => {
     if (SAFE_METHODS.has(request.method)) return;
+
+    if (request.routerPath && CSRF_EXEMPT_PATHS.has(request.routerPath)) return;
 
     // Skip CSRF check for token-based auth without cookies
     const hasAuthHeader = Boolean(request.headers.authorization);
