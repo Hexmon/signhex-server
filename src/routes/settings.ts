@@ -28,6 +28,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   const serializeMedia = (media: any, media_url: string | null) => ({
     id: media.id,
     name: media.name,
+    original_filename: (media as any).original_filename ?? media.name,
     type: media.type,
     status: media.status,
     source_bucket: media.source_bucket,

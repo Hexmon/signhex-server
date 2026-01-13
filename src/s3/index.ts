@@ -112,14 +112,26 @@ export async function headObject(bucket: string, key: string): Promise<any> {
   return client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
 }
 
+export interface PresignedGetUrlOptions {
+  expiresIn?: number;
+  responseContentDisposition?: string;
+  responseContentType?: string;
+}
+
 export async function getPresignedUrl(
   bucket: string,
   key: string,
-  expiresIn: number = 3600
+  expiresInOrOptions: number | PresignedGetUrlOptions = 3600
 ): Promise<string> {
   const client = getS3Client();
-  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-  return getSignedUrl(client, command, { expiresIn });
+  const options = typeof expiresInOrOptions === 'number' ? { expiresIn: expiresInOrOptions } : expiresInOrOptions;
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ResponseContentDisposition: options.responseContentDisposition,
+    ResponseContentType: options.responseContentType,
+  });
+  return getSignedUrl(client, command, { expiresIn: options.expiresIn ?? 3600 });
 }
 
 export async function getPresignedPutUrl(

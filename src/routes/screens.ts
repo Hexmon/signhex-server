@@ -11,6 +11,7 @@ import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
 import { getPresignedUrl, getObject } from '@/s3';
 import { getDefaultMedia } from '@/utils/default-media';
+import { buildContentDisposition } from '@/utils/object-key';
 
 const logger = createLogger('screen-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -74,16 +75,26 @@ export async function screenRoutes(fastify: FastifyInstance) {
     if (!mediaId) return null;
     const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
     if (!media) return null;
+    const filename = (media as any).original_filename ?? media.name ?? 'file';
+    const contentDisposition = buildContentDisposition(filename, 'inline');
     try {
       if ((media as any).ready_object_id) {
         const [stor] = await db
           .select()
           .from(schema.storageObjects)
           .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
-        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
+        if (stor) {
+          return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, {
+            expiresIn: 3600,
+            responseContentDisposition: contentDisposition,
+          });
+        }
       }
       if ((media as any).source_bucket && (media as any).source_object_key) {
-        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
+        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, {
+          expiresIn: 3600,
+          responseContentDisposition: contentDisposition,
+        });
       }
     } catch {
       return null;
@@ -914,6 +925,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
             ? {
                 id: defaultMedia.media.id,
                 name: defaultMedia.media.name,
+                original_filename: (defaultMedia.media as any).original_filename ?? defaultMedia.media.name,
                 type: defaultMedia.media.type,
                 status: defaultMedia.media.status,
                 duration_seconds: defaultMedia.media.duration_seconds,
@@ -987,17 +999,25 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
             mediaUrls = {};
             for (const m of medias as any[]) {
+              const filename = (m as any).original_filename ?? m.name ?? 'file';
+              const contentDisposition = buildContentDisposition(filename, 'inline');
               try {
                 if (m.ready_object_id) {
                   const stor = storageMap.get(m.ready_object_id);
                   if (stor) {
-                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, 3600);
+                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, {
+                      expiresIn: 3600,
+                      responseContentDisposition: contentDisposition,
+                    });
                     continue;
                   }
                 }
                 const source = sourceRefs.find((s) => s.id === m.id);
                 if (source) {
-                  mediaUrls[m.id] = await getPresignedUrl(source.bucket, source.key, 3600);
+                  mediaUrls[m.id] = await getPresignedUrl(source.bucket, source.key, {
+                    expiresIn: 3600,
+                    responseContentDisposition: contentDisposition,
+                  });
                 } else {
                   mediaUrls[m.id] = null;
                 }

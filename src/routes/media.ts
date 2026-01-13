@@ -1,5 +1,4 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import path from 'path';
 import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/schemas/media';
 import { createMediaRepository } from '@/db/repositories/media';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
@@ -14,6 +13,13 @@ import { respondWithError } from '@/utils/errors';
 import { deleteObject } from '@/s3';
 import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
+import {
+  buildContentDisposition,
+  buildObjectKey,
+  normalizeDisplayName,
+  normalizeOriginalFilename,
+  sanitizeFilenameHint,
+} from '@/utils/object-key';
 
 const logger = createLogger('media-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -32,6 +38,8 @@ export async function mediaRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
   const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
+    const filename = (media as any).original_filename ?? media.name ?? 'file';
+    const contentDisposition = buildContentDisposition(filename, 'inline');
     try {
       if (media.ready_object_id) {
         const obj = readyMap?.get(media.ready_object_id) ||
@@ -40,12 +48,18 @@ export async function mediaRoutes(fastify: FastifyInstance) {
             .from(schema.storageObjects)
             .where(eq(schema.storageObjects.id, media.ready_object_id)))[0];
         if (obj) {
-          return await getPresignedUrl(obj.bucket, obj.object_key, 3600);
+          return await getPresignedUrl(obj.bucket, obj.object_key, {
+            expiresIn: 3600,
+            responseContentDisposition: contentDisposition,
+          });
         }
       }
 
       if (media.source_bucket && media.source_object_key) {
-        return await getPresignedUrl(media.source_bucket, media.source_object_key, 3600);
+        return await getPresignedUrl(media.source_bucket, media.source_object_key, {
+          expiresIn: 3600,
+          responseContentDisposition: contentDisposition,
+        });
       }
     } catch (err) {
       logger.warn(err, 'Failed to generate media URL');
@@ -79,8 +93,13 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
         const data = presignUploadSchema.parse(request.body);
         const mediaId = randomUUID();
-        const safeFilename = path.basename(data.filename);
-        const objectKey = `${mediaId}/${safeFilename}`;
+        const originalFilename = normalizeOriginalFilename(data.filename);
+        const displayName = normalizeDisplayName(originalFilename);
+        const { objectKey, hint } = buildObjectKey({
+          originalFilename,
+          mimeType: data.content_type,
+          id: mediaId,
+        });
         const bucket = 'media-source';
 
         const inferredType = data.content_type?.startsWith('video')
@@ -98,7 +117,9 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         // Create media record
         const media = await mediaRepo.create({
           id: mediaId,
-          name: data.filename,
+          name: displayName,
+          original_filename: originalFilename,
+          sanitized_hint: hint,
           type: inferredType as any,
           status: PENDINGSTATUS,
           source_bucket: bucket,
@@ -113,6 +134,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           media_id: media.id,
           bucket,
           object_key: objectKey,
+          original_filename: originalFilename,
           expires_in: 3600,
         });
       } catch (error) {
@@ -147,8 +169,13 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const data = createMediaSchema.parse(request.body);
+        const originalFilename = normalizeOriginalFilename(data.name);
+        const displayName = normalizeDisplayName(originalFilename);
+        const { hint } = sanitizeFilenameHint(originalFilename);
         const media = await mediaRepo.create({
-          name: data.name,
+          name: displayName,
+          original_filename: originalFilename,
+          sanitized_hint: hint,
           type: data.type,
           status: 'PENDING',
           created_by: payload.sub,
@@ -157,6 +184,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           id: media.id,
           name: media.name,
+          original_filename: (media as any).original_filename ?? media.name,
           type: media.type,
           status: media.status,
           created_by: media.created_by,
@@ -209,6 +237,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
             return {
               id: m.id,
               name: m.name,
+              original_filename: (m as any).original_filename ?? m.name,
               type: m.type,
               status: m.status,
               source_bucket: m.source_bucket,
@@ -273,6 +302,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         return reply.send({
           id: media.id,
           name: media.name,
+          original_filename: (media as any).original_filename ?? media.name,
           type: media.type,
           status: media.status,
           source_bucket: media.source_bucket,
