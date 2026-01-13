@@ -9,6 +9,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
+import { getDefaultMedia } from '@/utils/default-media';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -259,6 +260,20 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .limit(1);
 
         if (!latest) {
+          const defaultMedia = await getDefaultMedia(db);
+          const defaultMediaPayload = defaultMedia?.media
+            ? {
+                id: defaultMedia.media.id,
+                name: defaultMedia.media.name,
+                type: defaultMedia.media.type,
+                status: defaultMedia.media.status,
+                duration_seconds: defaultMedia.media.duration_seconds,
+                width: defaultMedia.media.width,
+                height: defaultMedia.media.height,
+                media_url: includeUrls ? defaultMedia.media_url : null,
+              }
+            : null;
+
           if (emergency) {
             return reply.send({
               device_id: deviceId,
@@ -266,6 +281,17 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
               snapshot: null,
               media_urls: undefined,
               emergency,
+              default_media: defaultMediaPayload,
+            });
+          }
+          if (defaultMediaPayload) {
+            return reply.send({
+              device_id: deviceId,
+              publish: null,
+              snapshot: null,
+              media_urls: undefined,
+              emergency: null,
+              default_media: defaultMediaPayload,
             });
           }
           return reply.status(NOT_FOUND).send({ error: 'No publish found for this device' });

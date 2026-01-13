@@ -175,6 +175,7 @@ export const apiEndpoints = {
   settings: {
     list: withBase('/settings'),
     upsert: withBase('/settings'),
+    defaultMedia: withBase('/settings/default-media'),
   },
   conversations: {
     start: withBase('/conversations'),

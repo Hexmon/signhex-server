@@ -10,6 +10,7 @@ import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
 import { getPresignedUrl, getObject } from '@/s3';
+import { getDefaultMedia } from '@/utils/default-media';
 
 const logger = createLogger('screen-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -41,6 +42,10 @@ const screenshotSettingsSchema = z.object({
 
 const screenshotTriggerSchema = z.object({
   reason: z.string().optional(),
+});
+
+const snapshotQuerySchema = z.object({
+  include_urls: z.string().optional(),
 });
 
 export async function screenRoutes(fastify: FastifyInstance) {
@@ -808,6 +813,9 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
+        const query = snapshotQuerySchema.parse(request.query);
+        const includeUrls = query.include_urls?.toLowerCase() === 'true';
+        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
 
         const [latest] = await db
           .select({
@@ -898,6 +906,20 @@ export async function screenRoutes(fastify: FastifyInstance) {
           .limit(1);
 
         if (!latest) {
+          const defaultMedia = await getDefaultMedia(db);
+          const defaultMediaPayload = defaultMedia?.media
+            ? {
+                id: defaultMedia.media.id,
+                name: defaultMedia.media.name,
+                type: defaultMedia.media.type,
+                status: defaultMedia.media.status,
+                duration_seconds: defaultMedia.media.duration_seconds,
+                width: defaultMedia.media.width,
+                height: defaultMedia.media.height,
+                media_url: includeUrls ? defaultMedia.media_url : null,
+              }
+            : null;
+
           if (emergency) {
             return reply.send({
               screen_id: screenId,
@@ -905,6 +927,17 @@ export async function screenRoutes(fastify: FastifyInstance) {
               snapshot: null,
               media_urls: undefined,
               emergency,
+              default_media: defaultMediaPayload,
+            });
+          }
+          if (defaultMediaPayload) {
+            return reply.send({
+              screen_id: screenId,
+              publish: null,
+              snapshot: null,
+              media_urls: undefined,
+              emergency: null,
+              default_media: defaultMediaPayload,
             });
           }
           return reply.status(NOT_FOUND).send({ error: 'No publish found for this screen' });
