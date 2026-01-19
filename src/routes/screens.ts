@@ -26,6 +26,10 @@ const listScreensQuerySchema = z.object({
   status: z.enum(['ACTIVE', 'INACTIVE', 'OFFLINE']).optional(),
 });
 
+const aspectRatiosQuerySchema = z.object({
+  search: z.string().min(1).optional(),
+});
+
 const listHeartbeatsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(50),
@@ -284,6 +288,41 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List screens error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // List screen aspect ratios
+  fastify.get<{ Querystring: typeof aspectRatiosQuerySchema._type }>(
+    apiEndpoints.screens.aspectRatios,
+    {
+      schema: {
+        description: 'List screens with their aspect ratios',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+
+        const payload = await verifyAccessToken(token);
+        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        if (!ability.can('read', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+
+        const query = aspectRatiosQuerySchema.parse(request.query);
+        const screens = await screenRepo.listAspectRatios({ search: query.search });
+        return reply.send({
+          items: screens.map((s) => ({
+            id: s.id,
+            name: s.name,
+            aspect_ratio: s.aspect_ratio ?? null,
+          })),
+        });
+      } catch (error) {
+        logger.error(error, 'List screen aspect ratios error');
         return respondWithError(reply, error);
       }
     }

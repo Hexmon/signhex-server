@@ -22,6 +22,7 @@ const listLayoutsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
   aspect_ratio: z.string().optional(),
+  search: z.string().min(1).optional(),
 });
 
 export async function layoutRoutes(fastify: FastifyInstance) {
@@ -130,6 +131,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           page: query.page,
           limit: query.limit,
           aspect_ratio: query.aspect_ratio,
+          search: query.search,
         });
 
         return reply.send({
@@ -259,7 +261,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
         if (!layout) return reply.status(NOT_FOUND).send({ error: 'Layout not found' });
 
         await repo.delete(layout.id);
-        return reply.status(NOT_FOUND).send();
+        return reply.status(204).send();
       } catch (error) {
         logger.error(error, 'Delete layout error');
         return respondWithError(reply, error);

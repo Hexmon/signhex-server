@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, asc, or, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class ScreenRepository {
@@ -59,6 +59,34 @@ export class ScreenRepository {
       page,
       limit,
     };
+  }
+
+  async listAspectRatios(options?: { search?: string }) {
+    const db = getDatabase();
+    const conditions = [];
+    if (options?.search?.trim()) {
+      const term = `%${options.search.trim()}%`;
+      conditions.push(
+        or(
+          sql`${schema.screens.name} ILIKE ${term}`,
+          sql`${schema.screens.aspect_ratio} ILIKE ${term}`
+        )
+      );
+    }
+
+    let query = db
+      .select({
+        id: schema.screens.id,
+        name: schema.screens.name,
+        aspect_ratio: schema.screens.aspect_ratio,
+      })
+      .from(schema.screens);
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    return query.orderBy(asc(schema.screens.name));
   }
 
   async update(id: string, data: Partial<typeof schema.screens.$inferInsert>) {
