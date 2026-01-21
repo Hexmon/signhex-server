@@ -1,5 +1,6 @@
 import { hash, verify } from 'argon2';
 import { config as appConfig } from '@/config';
+import { AppError } from '@/utils/app-error';
 
 const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).+$/;
 
@@ -22,9 +23,19 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 export function validatePasswordStrength(password: string): void {
   if (password.length < appConfig.PASSWORD_MIN_LENGTH) {
-    throw new Error(`Password must be at least ${appConfig.PASSWORD_MIN_LENGTH} characters long`);
+    throw AppError.validation([
+      {
+        field: 'password',
+        message: `Password must be at least ${appConfig.PASSWORD_MIN_LENGTH} characters long`,
+      },
+    ]);
   }
   if (!PASSWORD_COMPLEXITY_REGEX.test(password)) {
-    throw new Error('Password must include upper, lower, number, and special character');
+    throw AppError.validation([
+      {
+        field: 'password',
+        message: 'Password must include upper, lower, number, and special character',
+      },
+    ]);
   }
 }

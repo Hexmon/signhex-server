@@ -7,6 +7,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('api-keys-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -34,10 +35,10 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('create', 'ApiKey')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('create', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const data = createApiKeySchema.parse(request.body);
         const { record, secret } = await repo.create({
@@ -69,10 +70,10 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'ApiKey')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const result = await repo.list({ page: 1, limit: 100, includeRevoked: true });
         return reply.send(result);
@@ -96,13 +97,13 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'ApiKey')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const { record, secret } = await repo.rotate((request.params as any).id);
-        if (!record) return reply.status(NOT_FOUND).send({ error: 'API key not found' });
+        if (!record) throw AppError.notFound('API key not found');
         return reply.send({ ...record, secret });
       } catch (error) {
         logger.error(error, 'Rotate API key error');
@@ -124,13 +125,13 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('delete', 'ApiKey')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('delete', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const record = await repo.revoke((request.params as any).id);
-        if (!record) return reply.status(NOT_FOUND).send({ error: 'API key not found' });
+        if (!record) throw AppError.notFound('API key not found');
         return reply.send(record);
       } catch (error) {
         logger.error(error, 'Revoke API key error');

@@ -6,6 +6,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('notification-routes');
 const { BAD_REQUEST, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -33,7 +34,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -83,19 +84,19 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
-          return reply.status(NOT_FOUND).send({ error: 'Notification not found' });
+          throw AppError.notFound('Notification not found');
         }
 
         // Check ownership
         if (notification.user_id !== payload.sub) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         return reply.send({
@@ -129,19 +130,19 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
-          return reply.status(NOT_FOUND).send({ error: 'Notification not found' });
+          throw AppError.notFound('Notification not found');
         }
 
         // Check ownership
         if (notification.user_id !== payload.sub) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const updated = await notifRepo.markAsRead((request.params as any).id);
@@ -177,7 +178,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -205,19 +206,19 @@ export async function notificationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
-          return reply.status(NOT_FOUND).send({ error: 'Notification not found' });
+          throw AppError.notFound('Notification not found');
         }
 
         // Check ownership
         if (notification.user_id !== payload.sub) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         await notifRepo.delete((request.params as any).id);

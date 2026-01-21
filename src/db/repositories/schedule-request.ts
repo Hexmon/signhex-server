@@ -6,16 +6,16 @@ type ScheduleRequestStatus = (typeof schema.scheduleRequestStatusEnum.enumValues
 export class ScheduleRequestRepository {
   async create(data: {
     schedule_id: string;
-    payload: any;
     notes?: string;
     requested_by: string;
+    payload?: any;
   }) {
     const db = getDatabase();
     const [req] = await db
       .insert(schema.scheduleRequests)
       .values({
         schedule_id: data.schedule_id,
-        schedule_payload: data.payload,
+        schedule_payload: data.payload ?? {},
         notes: data.notes,
         requested_by: data.requested_by,
       })

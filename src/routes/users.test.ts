@@ -57,7 +57,7 @@ describe('User Routes', () => {
       expect(body.role).toBe('OPERATOR');
     });
 
-    it('should return 400 for invalid email', async () => {
+    it('should return 422 for invalid email', async () => {
       const response = await server.inject({
         method: 'POST',
         url: '/api/v1/users',
@@ -73,7 +73,10 @@ describe('User Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNPROCESSABLE_CONTENT);
+      const body = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error.code).toBe('VALIDATION_ERROR');
     });
   });
 

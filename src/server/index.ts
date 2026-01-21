@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import { randomUUID } from 'crypto';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -33,6 +34,9 @@ import { layoutRoutes } from '@/routes/layouts';
 import { screenGroupRoutes } from '@/routes/screen-groups';
 import { scheduleRequestRoutes } from '@/routes/schedule-requests';
 import csrfProtectionPlugin from '@/middleware/csrf';
+import { formatErrorResponse } from '@/utils/app-error';
+import { toAppError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -45,6 +49,27 @@ export async function createServer() {
         },
       },
     },
+    genReqId: (req) => {
+      const header = req.headers['x-request-id'];
+      if (Array.isArray(header) && header[0]) return header[0];
+      if (typeof header === 'string' && header.length > 0) return header;
+      return randomUUID();
+    },
+  });
+
+  fastify.addHook('onRequest', (request, reply, done) => {
+    reply.header('x-request-id', request.id);
+    done();
+  });
+
+  fastify.setErrorHandler((error, request, reply) => {
+    const appError = toAppError(error);
+    request.log.error({ err: error, traceId: request.id }, 'Request failed');
+    reply.status(appError.statusCode).send(formatErrorResponse(appError, request.id));
+  });
+
+  fastify.setNotFoundHandler(() => {
+    throw AppError.notFound('Route not found');
   });
 
   // Security middleware

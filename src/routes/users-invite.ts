@@ -11,6 +11,7 @@ import { getDatabase, schema } from '@/db';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('users-invite-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -80,10 +81,10 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('create', 'User')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('create', 'User')) throw AppError.forbidden('Forbidden');
 
         const data = inviteSchema.parse(request.body);
         const tempPassword = randomBytes(6).toString('hex');
@@ -143,10 +144,10 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'User')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'User')) throw AppError.forbidden('Forbidden');
 
         const query = listInvitesQuerySchema.parse(request.query);
         const statusLookup: Record<string, 'pending' | 'expired' | 'activated'> = {
@@ -203,10 +204,10 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'User')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'User')) throw AppError.forbidden('Forbidden');
 
         const result = await userRepo.listInvites({
           page: 1,
@@ -242,18 +243,18 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'User')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'User')) throw AppError.forbidden('Forbidden');
 
         const data = resetPasswordSchema.parse(request.body);
         const current = await userRepo.findById((request.params as any).id);
-        if (!current) return reply.status(NOT_FOUND).send({ error: 'User not found' });
+        if (!current) throw AppError.notFound('User not found');
 
         const currentMatches = await verifyPassword(data.current_password, current.password_hash);
         if (!currentMatches) {
-          return reply.status(BAD_REQUEST).send({ error: 'Current password is incorrect' });
+          throw AppError.badRequest('Current password is incorrect');
         }
 
         validatePasswordStrength(data.new_password);
@@ -263,7 +264,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
           password_hash: passwordHash,
           ext: current.ext,
         });
-        if (!user) return reply.status(NOT_FOUND).send({ error: 'User not found' });
+        if (!user) throw AppError.notFound('User not found');
 
         return reply.send({
           id: user.id,

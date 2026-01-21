@@ -2,6 +2,7 @@ import { inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { createScheduleRepository, ScheduleRepository } from '@/db/repositories/schedule';
 import { createScheduleItemRepository, ScheduleItemRepository } from '@/db/repositories/schedule-item';
+import { AppError } from '@/utils/app-error';
 
 type DB = ReturnType<typeof getDatabase>;
 
@@ -108,7 +109,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
 
   const schedule = await scheduleRepo.findById(params.scheduleId);
   if (!schedule) {
-    throw new Error('Schedule not found');
+    throw AppError.notFound('Schedule not found');
   }
 
   const scheduleItems = await scheduleItemRepo.listBySchedule(schedule.id);
@@ -154,7 +155,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
   }
 
   if (resolvedScreenIds.size === 0) {
-    throw new Error('No target screens found for publish');
+    throw AppError.badRequest('No target screens found for publish');
   }
 
   const snapshotPayload = {

@@ -12,6 +12,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('device-pairing-routes');
 const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -67,14 +68,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'DevicePairing')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = generatePairingCodeSchema.parse(request.body);
@@ -221,16 +222,16 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         // Find pairing by code
         const pairing = await pairingRepo.findByCode(data.pairing_code);
         if (!pairing) {
-          return reply.status(NOT_FOUND).send({ error: 'Invalid or expired pairing code' });
+          throw AppError.notFound('Invalid or expired pairing code');
         }
         if (!pairing.device_id) {
-          return reply.status(BAD_REQUEST).send({ error: 'Pairing is missing a device id' });
+          throw AppError.badRequest('Pairing is missing a device id');
         }
         const deviceId = pairing.device_id;
 
         const csr = data.csr.trim();
         if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
-          return reply.status(BAD_REQUEST).send({ error: 'Invalid CSR format' });
+          throw AppError.badRequest('Invalid CSR format');
         }
 
         const caCert = await readFile(config.CA_CERT_PATH, 'utf8');
@@ -289,28 +290,28 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Screen')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = confirmPairingSchema.parse(request.body);
 
         const pairing = await pairingRepo.findByCode(data.pairing_code);
         if (!pairing) {
-          return reply.status(NOT_FOUND).send({ error: 'Invalid or expired pairing code' });
+          throw AppError.notFound('Invalid or expired pairing code');
         }
         if (!pairing.device_id) {
-          return reply.status(BAD_REQUEST).send({ error: 'Pairing missing device reference' });
+          throw AppError.badRequest('Pairing missing device reference');
         }
         const existing = await screenRepo.findById(pairing.device_id);
         if (existing) {
-          return reply.status(CONFLICT).send({ error: 'Screen already exists for this device' });
+          throw AppError.conflict('Screen already exists for this device');
         }
 
         const screen = await screenRepo.create({
@@ -368,14 +369,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('read', 'DevicePairing')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const page = (request.query as any).page ? parseInt((request.query as any).page as string) : 1;

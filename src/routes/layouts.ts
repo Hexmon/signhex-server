@@ -7,6 +7,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('layout-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -79,16 +80,18 @@ export async function layoutRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('create', 'Layout')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('create', 'Layout')) throw AppError.forbidden('Forbidden');
 
         const data = layoutSchema.parse(request.body);
         try {
           validateLayoutSpec((data as any).spec);
         } catch (err: any) {
-          return reply.status(BAD_REQUEST).send({ error: err.message || 'Invalid layout spec' });
+          throw AppError.validation([
+            { field: 'spec', message: err?.message || 'Invalid layout spec' },
+          ]);
         }
         const layout = await repo.create(data);
 
@@ -121,10 +124,10 @@ export async function layoutRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Layout')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'Layout')) throw AppError.forbidden('Forbidden');
 
         const query = listLayoutsQuerySchema.parse(request.query);
         const result = await repo.list({
@@ -170,13 +173,13 @@ export async function layoutRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Layout')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'Layout')) throw AppError.forbidden('Forbidden');
 
         const layout = await repo.findById((request.params as any).id);
-        if (!layout) return reply.status(NOT_FOUND).send({ error: 'Layout not found' });
+        if (!layout) throw AppError.notFound('Layout not found');
 
         return reply.send({
           id: layout.id,
@@ -207,21 +210,23 @@ export async function layoutRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Layout')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'Layout')) throw AppError.forbidden('Forbidden');
 
         const data = layoutSchema.partial().parse(request.body);
         if (data.spec) {
           try {
             validateLayoutSpec((data as any).spec);
           } catch (err: any) {
-            return reply.status(BAD_REQUEST).send({ error: err.message || 'Invalid layout spec' });
+            throw AppError.validation([
+              { field: 'spec', message: err?.message || 'Invalid layout spec' },
+            ]);
           }
         }
         const layout = await repo.update((request.params as any).id, data);
-        if (!layout) return reply.status(NOT_FOUND).send({ error: 'Layout not found' });
+        if (!layout) throw AppError.notFound('Layout not found');
 
         return reply.send({
           id: layout.id,
@@ -252,13 +257,13 @@ export async function layoutRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('delete', 'Layout')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('delete', 'Layout')) throw AppError.forbidden('Forbidden');
 
         const layout = await repo.findById((request.params as any).id);
-        if (!layout) return reply.status(NOT_FOUND).send({ error: 'Layout not found' });
+        if (!layout) throw AppError.notFound('Layout not found');
 
         await repo.delete(layout.id);
         return reply.status(204).send();

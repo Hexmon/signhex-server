@@ -10,6 +10,7 @@ import { getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('proof-of-play-routes');
 const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
@@ -53,10 +54,10 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'ProofOfPlay')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'ProofOfPlay')) throw AppError.forbidden('Forbidden');
 
         const query = listSchema.parse(request.query);
         const page = query.page;
@@ -157,10 +158,10 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'ProofOfPlay')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'ProofOfPlay')) throw AppError.forbidden('Forbidden');
 
         const query = listSchema.parse(request.query);
         const where = (buildConditions(query).length ? and(...buildConditions(query)) : undefined) as any;

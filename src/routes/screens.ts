@@ -11,6 +11,7 @@ import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
 import { getPresignedUrl, getObject } from '@/s3';
 import { getDefaultMedia } from '@/utils/default-media';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('screen-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -201,14 +202,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('create', 'Screen')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = createScreenSchema.parse(request.body);
@@ -251,7 +252,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -306,11 +307,11 @@ export async function screenRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('read', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const query = aspectRatiosQuerySchema.parse(request.query);
         const screens = await screenRepo.listAspectRatios({ search: query.search });
@@ -342,7 +343,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(_request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -457,14 +458,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
 
         const screen = await screenRepo.findById((request.params as any).id);
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+          throw AppError.notFound('Screen not found');
         }
 
         return reply.send({
@@ -504,14 +505,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
 
         const screen = await screenRepo.findById((request.params as any).id);
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+          throw AppError.notFound('Screen not found');
         }
 
         const [latestHeartbeat] = await db
@@ -571,7 +572,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -579,7 +580,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const screenId = (request.params as any).id;
         const screen = await screenRepo.findById(screenId);
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+          throw AppError.notFound('Screen not found');
         }
 
         const query = listHeartbeatsQuerySchema.parse(request.query);
@@ -587,7 +588,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           const startAt = new Date(query.start_at);
           const endAt = new Date(query.end_at);
           if (startAt > endAt) {
-            return reply.status(BAD_REQUEST).send({ error: 'start_at must be before end_at' });
+            throw AppError.badRequest('start_at must be before end_at');
           }
         }
 
@@ -662,24 +663,24 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const screenId = (request.params as any).id;
         const screen = await screenRepo.findById(screenId);
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+          throw AppError.notFound('Screen not found');
         }
 
         const data = screenshotSettingsSchema.parse(request.body);
         const enabled = typeof data.enabled === 'boolean' ? data.enabled : true;
         const intervalSeconds = typeof data.interval_seconds === 'number' ? data.interval_seconds : null;
         if (enabled && !intervalSeconds) {
-          return reply.status(BAD_REQUEST).send({ error: 'interval_seconds is required when enabled' });
+          throw AppError.badRequest('interval_seconds is required when enabled');
         }
 
         const updated = await screenRepo.update(screenId, {
@@ -725,17 +726,17 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const screenId = (request.params as any).id;
         const screen = await screenRepo.findById(screenId);
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+          throw AppError.notFound('Screen not found');
         }
 
         const data = screenshotTriggerSchema.parse(request.body);
@@ -776,7 +777,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -847,7 +848,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -923,7 +924,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -982,7 +983,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
               default_media: defaultMediaPayload,
             });
           }
-          return reply.status(NOT_FOUND).send({ error: 'No publish found for this screen' });
+          throw AppError.notFound('No publish found for this screen');
         }
 
         const rawPayload = (latest.payload as any) || {};
@@ -1080,21 +1081,21 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('update', 'Screen')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = createScreenSchema.partial().parse(request.body);
         const screen = await screenRepo.update((request.params as any).id, data);
 
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+          throw AppError.notFound('Screen not found');
         }
 
         return reply.send({
@@ -1134,14 +1135,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
 
         if (!ability.can('delete', 'Screen')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const screenId = (request.params as any).id;

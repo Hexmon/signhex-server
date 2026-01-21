@@ -10,6 +10,7 @@ import { respondWithError } from '@/utils/errors';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { getDefaultMedia } from '@/utils/default-media';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -237,7 +238,13 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const auth = await authenticateDeviceSnapshot(request, deviceId);
         if (!auth.ok) {
           const status = (auth as any).status || UNAUTHORIZED;
-          return reply.status(status).send({ error: auth.error });
+          if (status === UNAUTHORIZED) {
+            throw AppError.unauthorized(auth.error);
+          }
+          if (status === FORBIDDEN) {
+            throw AppError.forbidden(auth.error);
+          }
+          throw AppError.badRequest(auth.error);
         }
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
@@ -294,7 +301,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
               default_media: defaultMediaPayload,
             });
           }
-          return reply.status(NOT_FOUND).send({ error: 'No publish found for this device' });
+          throw AppError.notFound('No publish found for this device');
         }
 
         const rawPayload = (latest.payload as any) || {};
@@ -383,16 +390,16 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        if (!ability.can('update', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const data = createCommandSchema.parse(request.body);
         const screenId = (request.params as any).deviceId;
 
         const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId));
-        if (!screen) return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        if (!screen) throw AppError.notFound('Screen not found');
 
         const [command] = await db
           .insert(schema.deviceCommands)
@@ -438,7 +445,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .where(eq(schema.screens.id, data.device_id));
 
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Device not registered' });
+          throw AppError.notFound('Device not registered');
         }
 
         const receivedAt = new Date();
@@ -699,7 +706,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .returning({ id: schema.deviceCommands.id });
 
         if (!updatedCommand) {
-          return reply.status(NOT_FOUND).send({ error: 'Command not found' });
+          throw AppError.notFound('Command not found');
         }
 
         logger.info({ deviceId, commandId }, 'Command acknowledged');
