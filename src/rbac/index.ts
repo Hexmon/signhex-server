@@ -1,86 +1,92 @@
 import { AbilityBuilder, createMongoAbility, MongoAbility } from '@casl/ability';
+import { createRoleRepository } from '@/db/repositories/role';
+import { RolePermissions, PermissionAction, PermissionSubject, RoleRecord } from '@/rbac/permissions';
+import { AppError } from '@/utils/app-error';
 
-export type Role = 'ADMIN' | 'OPERATOR' | 'DEPARTMENT';
-
-export type Action = 'create' | 'read' | 'update' | 'delete' | 'manage';
-
-export type Subject =
-  | 'User'
-  | 'Department'
-  | 'Media'
-  | 'Layout'
-  | 'Presentation'
-  | 'Schedule'
-  | 'ScheduleRequest'
-  | 'Screen'
-  | 'ScreenGroup'
-  | 'Request'
-  | 'Notification'
-  | 'AuditLog'
-  | 'DevicePairing'
-  | 'Emergency'
-  | 'EmergencyType'
-  | 'ApiKey'
-  | 'Webhook'
-  | 'SsoConfig'
-  | 'OrgSettings'
-  | 'Conversation'
-  | 'ProofOfPlay'
-  | 'Dashboard'
-  | 'all';
-
-// Define the fields that can be used in conditions for each subject
-export interface SubjectFields {
-  User: { department_id?: string };
-  Request: { created_by?: string };
-  Notification: { user_id?: string };
-  ScheduleRequest: { requested_by?: string };
-}
+export type Action = PermissionAction;
+export type Subject = PermissionSubject;
 
 export type AppAbility = MongoAbility<[Action, Subject]>;
 
-export function defineAbilityFor(role: Role, userId: string, departmentId?: string): AppAbility {
+type UserContext = {
+  id: string;
+  department_id?: string | null;
+};
+
+const resolveConditionValue = (value: string, user: UserContext) => {
+  if (value === '$user.id') return user.id;
+  if (value === '$user.department_id') return user.department_id ?? undefined;
+  return value;
+};
+
+const resolveConditions = (conditions: Record<string, string> | undefined, user: UserContext) => {
+  if (!conditions) return undefined;
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(conditions)) {
+    const resolvedValue = resolveConditionValue(value, user);
+    if (resolvedValue === undefined || resolvedValue === null) {
+      return undefined;
+    }
+    resolved[key] = resolvedValue;
+  }
+  return resolved;
+};
+
+const parsePermissions = (permissions: RolePermissions | null | undefined): RolePermissions => {
+  if (!permissions || typeof permissions !== 'object') {
+    return { grants: [] };
+  }
+  const grants = Array.isArray((permissions as any).grants) ? (permissions as any).grants : [];
+  const inherits = Array.isArray((permissions as any).inherits) ? (permissions as any).inherits : [];
+  return { grants, inherits };
+};
+
+const resolveRoleGrants = async (role: RoleRecord, visited: Set<string>): Promise<any[]> => {
+  if (visited.has(role.id)) return [];
+  visited.add(role.id);
+
+  const roleRepo = createRoleRepository();
+  const permissions = parsePermissions(role.permissions);
+  const grants = [...permissions.grants];
+
+  if (permissions.inherits && permissions.inherits.length > 0) {
+    for (const inheritedId of permissions.inherits) {
+      const inheritedRole = await roleRepo.findById(inheritedId);
+      if (!inheritedRole) continue;
+      const inheritedGrants = await resolveRoleGrants(inheritedRole as any, visited);
+      grants.push(...inheritedGrants);
+    }
+  }
+
+  return grants;
+};
+
+export async function defineAbilityFor(roleId: string, userId: string, departmentId?: string): Promise<AppAbility> {
+  const roleRepo = createRoleRepository();
+  const role = await roleRepo.findById(roleId);
+  if (!role) {
+    throw AppError.forbidden('Role not found');
+  }
+
   const { can, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
 
-  if (role === 'ADMIN') {
-    // Admins can do everything
+  if (role.name === 'SUPER_ADMIN') {
     can('manage', 'all');
-  } else if (role === 'OPERATOR') {
-    // Operators can read most things and manage requests/schedules
-    can('read', 'all');
-    can('create', 'Request');
-    can('update', 'Request');
-    can('create', 'Schedule');
-    can('update', 'Schedule');
-    can('create', 'Media');
-    can('update', 'Media');
-    can('create', 'Layout');
-    can('update', 'Layout');
-    can('create', 'ScreenGroup');
-    can('update', 'ScreenGroup');
-    can('read', 'ScreenGroup');
-    can('create', 'ScheduleRequest');
-    can('read', 'ScheduleRequest', { requested_by: userId } as any);
-    can('update', 'ScheduleRequest', { requested_by: userId } as any);
-    can('create', 'Presentation');
-    can('update', 'Presentation');
-    can('read', 'AuditLog');
-    can('read', 'Dashboard');
-    can('read', 'ProofOfPlay');
-    can('read', 'Conversation');
-  } else if (role === 'DEPARTMENT') {
-    // Department users can only manage their own department's resources
-    can('read', 'User', { department_id: departmentId } as any);
-    can('read', 'Request', { created_by: userId } as any);
-    can('create', 'Request');
-    can('update', 'Request', { created_by: userId } as any);
-    can('read', 'Notification', { user_id: userId } as any);
-    can('update', 'Notification', { user_id: userId } as any);
-    can('create', 'ScheduleRequest');
-    can('read', 'ScheduleRequest', { requested_by: userId } as any);
-    can('update', 'ScheduleRequest', { requested_by: userId } as any);
-    can('read', 'Conversation');
+    return build();
   }
+
+  const userContext: UserContext = { id: userId, department_id: departmentId };
+  const grants = await resolveRoleGrants(role as any, new Set<string>());
+
+  grants.forEach((grant: any) => {
+    if (!grant || !grant.action || !grant.subject) return;
+    const conditions = resolveConditions(grant.conditions, userContext);
+    if (grant.action === 'manage') {
+      can('manage', grant.subject, conditions as any);
+      return;
+    }
+    can(grant.action, grant.subject, conditions as any);
+  });
 
   return build();
 }

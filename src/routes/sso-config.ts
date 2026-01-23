@@ -42,7 +42,7 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('manage', 'SsoConfig') && !ability.can('update', 'SsoConfig')) {
           throw AppError.forbidden('Forbidden');
         }
@@ -71,7 +71,7 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'SsoConfig')) throw AppError.forbidden('Forbidden');
 
         const result = await repo.listActive();
@@ -97,7 +97,7 @@ export async function ssoConfigRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'SsoConfig')) throw AppError.forbidden('Forbidden');
 
         const record = await repo.deactivate((request.params as any).id);

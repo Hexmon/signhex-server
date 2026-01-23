@@ -54,7 +54,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('create', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
         const data = createRequestSchema.parse(request.body);
@@ -96,7 +96,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
         const query = listRequestQuerySchema.parse(request.query);
@@ -150,7 +150,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
 
         const data = updateRequestSchema.parse(request.body);
@@ -206,7 +206,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
@@ -250,7 +250,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
@@ -286,7 +286,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
@@ -342,7 +342,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);

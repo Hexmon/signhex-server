@@ -33,6 +33,8 @@ import { userActivateRoutes } from '@/routes/users-activate';
 import { layoutRoutes } from '@/routes/layouts';
 import { screenGroupRoutes } from '@/routes/screen-groups';
 import { scheduleRequestRoutes } from '@/routes/schedule-requests';
+import { roleRoutes } from '@/routes/roles';
+import { permissionRoutes } from '@/routes/permissions';
 import csrfProtectionPlugin from '@/middleware/csrf';
 import { formatErrorResponse } from '@/utils/app-error';
 import { toAppError } from '@/utils/errors';
@@ -178,6 +180,8 @@ export async function createServer() {
   await fastify.register(layoutRoutes);
   await fastify.register(screenGroupRoutes);
   await fastify.register(scheduleRequestRoutes);
+  await fastify.register(roleRoutes);
+  await fastify.register(permissionRoutes);
 
   return fastify;
 }

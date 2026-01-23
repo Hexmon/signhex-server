@@ -108,7 +108,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Schedule')) {
           throw AppError.forbidden('Forbidden');
@@ -211,7 +211,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Schedule')) {
           throw AppError.forbidden('Forbidden');
         }
@@ -340,7 +340,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Schedule')) throw AppError.forbidden('Forbidden');
 
         const schedule = await scheduleRepo.findById((request.params as any).id);
@@ -441,7 +441,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Schedule')) throw AppError.forbidden('Forbidden');
 
         const schedule = await scheduleRepo.findById((request.params as any).id);
@@ -526,7 +526,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Schedule')) throw AppError.forbidden('Forbidden');
 
         const schedule = await scheduleRepo.findById((request.params as any).id);
@@ -567,7 +567,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('update', 'Schedule')) {
           throw AppError.forbidden('Forbidden');
@@ -636,7 +636,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('update', 'Schedule')) {
           throw AppError.forbidden('Forbidden');

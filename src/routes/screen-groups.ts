@@ -99,7 +99,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('create', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const data = screenGroupSchema.parse(request.body);
@@ -135,7 +135,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const group = await repo.findById((request.params as any).id);
@@ -235,7 +235,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const group = await repo.findById((request.params as any).id);
@@ -302,7 +302,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const group = await repo.findById((request.params as any).id);
@@ -351,7 +351,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const query = availableScreensQuerySchema.parse(request.query);
@@ -419,7 +419,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const query = listGroupsQuerySchema.parse(request.query);
@@ -467,7 +467,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const group = await repo.findById((request.params as any).id);
@@ -504,7 +504,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const data = screenGroupSchema.partial().parse(request.body);
@@ -542,7 +542,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const group = await repo.findById((request.params as any).id);
@@ -626,7 +626,7 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('delete', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const group = await repo.findById((request.params as any).id);

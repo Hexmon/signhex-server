@@ -56,7 +56,7 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ProofOfPlay')) throw AppError.forbidden('Forbidden');
 
         const query = listSchema.parse(request.query);
@@ -160,7 +160,7 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ProofOfPlay')) throw AppError.forbidden('Forbidden');
 
         const query = listSchema.parse(request.query);

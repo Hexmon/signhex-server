@@ -12,6 +12,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { isLockedOut, recordFailedAttempt, resetAttempts } from '@/auth/login-throttle';
 import { AppError } from '@/utils/app-error';
+import { createRoleRepository } from '@/db/repositories/role';
 
 const logger = createLogger('auth-routes');
 const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, TOO_MANY_REQUESTS, UNAUTHORIZED } = HTTP_STATUS;
@@ -19,6 +20,7 @@ const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, TOO_MANY_REQUESTS, UNAUTHORIZED } = H
 export async function authRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
   const sessionRepo = createSessionRepository();
+  const roleRepo = createRoleRepository();
 
   // Login
   fastify.post<{ Body: typeof loginSchema._type }>(
@@ -71,13 +73,24 @@ export async function authRoutes(fastify: FastifyInstance) {
         }
         resetAttempts(throttleKey);
 
-        const { is_active, id, role, first_name, last_name } = user || {}
+        const { is_active, id, role_id, first_name, last_name, department_id } = user || {}
 
         if (!is_active) {
           throw AppError.forbidden('User account is inactive');
         }
 
-        const { token, jti, expiresAt } = await generateAccessToken(id, email, role);
+        const role = await roleRepo.findById(role_id);
+        if (!role) {
+          throw AppError.forbidden('Role not found');
+        }
+
+        const { token, jti, expiresAt } = await generateAccessToken(
+          id,
+          email,
+          role.id,
+          role.name,
+          department_id
+        );
         const csrfToken = randomUUID();
 
         await sessionRepo.create({
@@ -117,7 +130,8 @@ export async function authRoutes(fastify: FastifyInstance) {
             email: email,
             first_name: first_name,
             last_name: last_name,
-            role: role,
+            role: role.name,
+            role_id: role.id,
           },
           expiresAt: expiresAt.toISOString(),
         };
@@ -197,12 +211,15 @@ export async function authRoutes(fastify: FastifyInstance) {
           throw AppError.notFound('User not found');
         }
 
+        const role = await roleRepo.findById(user.role_id);
+
         return reply.send({
           id: user.id,
           email: user.email,
           first_name: user.first_name,
           last_name: user.last_name,
-          role: user.role,
+          role: role?.name ?? null,
+          role_id: user.role_id,
           department_id: user.department_id,
           is_active: user.is_active,
           created_at: user.created_at.toISOString(),

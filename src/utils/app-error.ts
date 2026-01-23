@@ -59,6 +59,15 @@ export class AppError extends Error {
   static internal(message = 'Unexpected error.') {
     return new AppError({ statusCode: 500, code: 'INTERNAL_ERROR', message, details: null });
   }
+
+  static caCertMissing(message = 'CA certificate is missing. Please configure CA_CERT_PATH correctly.') {
+    return new AppError({
+      statusCode: 500,
+      code: 'CA_CERT_MISSING',
+      message,
+      details: null,
+    });
+  }
 }
 
 export type ErrorResponse = {

@@ -72,7 +72,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Media')) {
           throw AppError.forbidden('Forbidden');
@@ -141,7 +141,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Media')) {
           throw AppError.forbidden('Forbidden');
@@ -315,7 +315,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Media')) {
           throw AppError.forbidden('Forbidden');
         }
@@ -385,7 +385,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('delete', 'Media')) {
           throw AppError.forbidden('Forbidden');
         }

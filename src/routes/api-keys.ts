@@ -37,7 +37,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('create', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const data = createApiKeySchema.parse(request.body);
@@ -72,7 +72,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const result = await repo.list({ page: 1, limit: 100, includeRevoked: true });
@@ -99,7 +99,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const { record, secret } = await repo.rotate((request.params as any).id);
@@ -127,7 +127,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('delete', 'ApiKey')) throw AppError.forbidden('Forbidden');
 
         const record = await repo.revoke((request.params as any).id);

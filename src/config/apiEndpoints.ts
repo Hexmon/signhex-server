@@ -200,6 +200,16 @@ export const apiEndpoints = {
     storage: withBase('/reports/storage'),
     systemHealth: withBase('/reports/system-health'),
   },
+  roles: {
+    create: withBase('/roles'),
+    list: withBase('/roles'),
+    get: withBase('/roles/:id'),
+    update: withBase('/roles/:id'),
+    delete: withBase('/roles/:id'),
+  },
+  permissions: {
+    metadata: withBase('/permissions/metadata'),
+  },
   screenGroupNowPlaying: {
     get: withBase('/screen-groups/:id/now-playing'),
   },

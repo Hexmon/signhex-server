@@ -60,7 +60,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'OrgSettings')) throw AppError.forbidden('Forbidden');
 
         const items = await db.select().from(schema.settings);
@@ -115,7 +115,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'OrgSettings')) throw AppError.forbidden('Forbidden');
 
         const data = defaultMediaUpdateSchema.parse(request.body);
@@ -163,7 +163,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'OrgSettings')) throw AppError.forbidden('Forbidden');
 
         const data = upsertSettingSchema.parse(request.body);

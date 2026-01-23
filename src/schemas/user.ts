@@ -16,7 +16,7 @@ export const createUserSchema = z.object({
     }, 'Password must include upper, lower, number, and special character and meet length requirements'),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
-  role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']).default('OPERATOR'),
+  role_id: z.string().uuid(),
   department_id: z.string().uuid().optional(),
 });
 
@@ -25,7 +25,7 @@ export type CreateUserRequest = z.infer<typeof createUserSchema>;
 export const updateUserSchema = z.object({
   first_name: z.string().optional(),
   last_name: z.string().optional(),
-  role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']).optional(),
+  role_id: z.string().uuid().optional(),
   department_id: z.string().uuid().optional(),
   is_active: z.boolean().optional(),
 });
@@ -37,7 +37,8 @@ export const userResponseSchema = z.object({
   email: z.string().email(),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
-  role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']),
+  role: z.string().nullable(),
+  role_id: z.string().uuid(),
   department_id: z.string().uuid().optional(),
   is_active: z.boolean(),
   created_at: z.string().datetime(),
@@ -49,7 +50,7 @@ export type UserResponse = z.infer<typeof userResponseSchema>;
 export const listUsersQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
-  role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']).optional(),
+  role_id: z.string().uuid().optional(),
   department_id: z.string().uuid().optional(),
   is_active: z.enum(['true', 'false']).optional(),
 });

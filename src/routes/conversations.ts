@@ -38,7 +38,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Conversation')) throw AppError.forbidden('Forbidden');
 
         const data = startConversationSchema.parse(request.body);
@@ -65,7 +65,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Conversation')) throw AppError.forbidden('Forbidden');
 
         const items = await repo.listForUser(payload.sub);
@@ -91,7 +91,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Conversation')) throw AppError.forbidden('Forbidden');
 
         const page = (request.query as any).page ? parseInt((request.query as any).page as string) : 1;
@@ -119,7 +119,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Conversation')) throw AppError.forbidden('Forbidden');
 
         const data = sendMessageSchema.parse(request.body);
@@ -146,7 +146,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Conversation')) throw AppError.forbidden('Forbidden');
 
         const record = await repo.markRead((request.params as any).id, payload.sub);

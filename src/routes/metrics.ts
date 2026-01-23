@@ -29,7 +29,7 @@ export async function metricsRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Dashboard')) throw AppError.forbidden('Forbidden');
 
         const [usersCount] = await db.select({ count: sql<number>`count(*)` }).from(schema.users);

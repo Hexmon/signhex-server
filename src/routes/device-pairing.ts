@@ -72,7 +72,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'DevicePairing')) {
           throw AppError.forbidden('Forbidden');
@@ -234,7 +234,15 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           throw AppError.badRequest('Invalid CSR format');
         }
 
-        const caCert = await readFile(config.CA_CERT_PATH, 'utf8');
+        let caCert: string;
+        try {
+          caCert = await readFile(config.CA_CERT_PATH, 'utf8');
+        } catch (err: any) {
+          if (err?.code === 'ENOENT') {
+            throw AppError.caCertMissing(`CA certificate not found at ${config.CA_CERT_PATH}`);
+          }
+          throw err;
+        }
         const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
 
         const signature = createHmac('sha256', caCert).update(csr).digest('base64');
@@ -294,7 +302,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Screen')) {
           throw AppError.forbidden('Forbidden');
@@ -327,8 +335,6 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
             codecs: (pairing as any).codecs ?? null,
           },
         });
-
-        await pairingRepo.markAsUsed(pairing.id);
 
         logger.info({ pairingId: pairing.id, deviceId: pairing.device_id, screenId: screen.id }, 'Pairing confirmed and screen created');
 
@@ -373,7 +379,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('read', 'DevicePairing')) {
           throw AppError.forbidden('Forbidden');

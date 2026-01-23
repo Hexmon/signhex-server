@@ -43,7 +43,7 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('read', 'AuditLog')) {
           throw AppError.forbidden('Forbidden');
@@ -103,7 +103,7 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('read', 'AuditLog')) {
           throw AppError.forbidden('Forbidden');

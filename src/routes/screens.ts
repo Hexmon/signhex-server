@@ -206,7 +206,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Screen')) {
           throw AppError.forbidden('Forbidden');
@@ -310,7 +310,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const query = aspectRatiosQuerySchema.parse(request.query);
@@ -667,7 +667,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const screenId = (request.params as any).id;
@@ -730,7 +730,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const screenId = (request.params as any).id;
@@ -1085,7 +1085,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('update', 'Screen')) {
           throw AppError.forbidden('Forbidden');
@@ -1139,7 +1139,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('delete', 'Screen')) {
           throw AppError.forbidden('Forbidden');
