@@ -72,6 +72,7 @@ export const apiEndpoints = {
     approve: withBase('/schedule-requests/:id/approve'),
     reject: withBase('/schedule-requests/:id/reject'),
     publish: withBase('/schedule-requests/:id/publish'),
+    statusSummary: withBase('/schedule-requests/status-summary'),
   },
   screens: {
     create: withBase('/screens'),
@@ -95,6 +96,7 @@ export const apiEndpoints = {
     availableScreens: withBase('/screen-groups/available-screens'),
     get: withBase('/screen-groups/:id'),
     availability: withBase('/screen-groups/:id/availability'),
+    snapshot: withBase('/screen-groups/:id/snapshot'),
     screenshotSettings: withBase('/screen-groups/:id/screenshot-settings'),
     screenshot: withBase('/screen-groups/:id/screenshot'),
     update: withBase('/screen-groups/:id'),

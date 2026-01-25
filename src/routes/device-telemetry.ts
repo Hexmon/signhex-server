@@ -20,7 +20,7 @@ const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
 const heartbeatSchema = z.object({
   device_id: z.string().min(1),
   status: z.enum(['ONLINE', 'OFFLINE', 'ERROR']),
-  uptime: z.number().int().nonnegative(),
+  uptime: z.number().nonnegative(),
   memory_usage: z.number().nonnegative(),
   cpu_usage: z.number().nonnegative(),
   temperature: z.number().optional(),

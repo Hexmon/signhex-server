@@ -61,8 +61,8 @@ describe('Auth Routes', () => {
 
       expect(response.statusCode).toBe(HTTP_STATUS.OK);
       const body = JSON.parse(response.body);
-      expect(body).toHaveProperty('access_token');
-      expect(body).toHaveProperty('expires_in');
+      expect(body).toHaveProperty('user');
+      expect(body).toHaveProperty('expiresAt');
     });
   });
 

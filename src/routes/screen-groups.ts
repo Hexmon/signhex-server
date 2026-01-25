@@ -9,6 +9,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { desc, eq, inArray } from 'drizzle-orm';
+import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('screen-group-routes');
@@ -40,6 +41,10 @@ const availableScreensQuerySchema = z.object({
   group_id: z.string().uuid().optional(),
 });
 
+const snapshotQuerySchema = z.object({
+  include_urls: z.string().optional(),
+});
+
 export async function screenGroupRoutes(fastify: FastifyInstance) {
   const repo = createScreenGroupRepository();
   const db = getDatabase();
@@ -60,6 +65,17 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
       if (!hasTargets) return true;
       if (itemScreens.includes(screenId)) return true;
       return itemGroups.some((gid) => groupIds.includes(gid));
+    });
+  };
+
+  const filterItemsForGroup = (items: any[], groupId: string, memberIds: string[]) => {
+    return items.filter((i) => {
+      const itemScreens = (i.screen_ids || []) as string[];
+      const itemGroups = (i.screen_group_ids || []) as string[];
+      const hasTargets = (itemScreens && itemScreens.length > 0) || (itemGroups && itemGroups.length > 0);
+      if (!hasTargets) return true;
+      if (itemGroups.includes(groupId)) return true;
+      return itemScreens.some((sid) => memberIds.includes(sid));
     });
   };
 
@@ -215,6 +231,138 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Group availability error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  // Snapshot for a screen group
+  fastify.get<{ Params: { id: string }; Querystring: typeof snapshotQuerySchema._type }>(
+    apiEndpoints.screenGroups.snapshot,
+    {
+      schema: {
+        description: 'Get latest publish snapshot targeting this screen group',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
+
+        const groupId = (request.params as any).id;
+        const group = await repo.findById(groupId);
+        if (!group) throw AppError.notFound('Screen group not found');
+        const members = await repo.members(group.id);
+        const screenIds = members.map((m: any) => m.screen_id);
+        const query = snapshotQuerySchema.parse(request.query);
+        const includeUrls = query.include_urls?.toLowerCase() === 'true';
+
+        const [latest] = await db
+          .select({
+            publish_id: schema.publishes.id,
+            schedule_id: schema.publishes.schedule_id,
+            snapshot_id: schema.publishes.snapshot_id,
+            published_at: schema.publishes.published_at,
+            payload: schema.scheduleSnapshots.payload,
+          })
+          .from(schema.publishTargets)
+          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
+          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
+          .where(eq(schema.publishTargets.screen_group_id, group.id))
+          .orderBy(desc(schema.publishes.published_at))
+          .limit(1);
+
+        if (!latest) {
+          return reply.send({
+            group_id: group.id,
+            name: group.name,
+            description: group.description,
+            screen_ids: screenIds,
+            publish: null,
+            snapshot: null,
+            media_urls: undefined,
+          });
+        }
+
+        const rawPayload = (latest.payload as any) || {};
+        const schedule = rawPayload.schedule || {};
+        const filteredItems = filterItemsForGroup(schedule.items || [], group.id, screenIds);
+        const filteredSnapshot = {
+          ...rawPayload,
+          schedule: { ...schedule, items: filteredItems },
+        };
+
+        let mediaUrls: Record<string, string | null> | undefined;
+        if (includeUrls) {
+          const mediaIds = new Set<string>();
+          const collectMediaIds = (obj: any) => {
+            if (!obj) return;
+            if (obj.media_id) mediaIds.add(obj.media_id);
+            if (Array.isArray(obj.items)) obj.items.forEach(collectMediaIds);
+            if (Array.isArray(obj.slots)) obj.slots.forEach(collectMediaIds);
+          };
+
+          filteredItems.forEach((item) => {
+            collectMediaIds(item.presentation);
+          });
+
+          const ids = Array.from(mediaIds);
+          if (ids.length > 0) {
+            const medias = await db.select().from(schema.media).where(inArray(schema.media.id, ids as any));
+            const readyIds = medias.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
+            const sourceRefs = medias
+              .filter((m: any) => m.source_bucket && m.source_object_key)
+              .map((m: any) => ({ id: m.id, bucket: m.source_bucket, key: m.source_object_key }));
+
+            const storageRows = readyIds.length
+              ? await db.select().from(schema.storageObjects).where(inArray(schema.storageObjects.id, readyIds as any))
+              : [];
+            const storageMap = new Map(storageRows.map((s: any) => [s.id, s]));
+
+            mediaUrls = {};
+            for (const m of medias as any[]) {
+              try {
+                if (m.ready_object_id) {
+                  const stor = storageMap.get(m.ready_object_id);
+                  if (stor) {
+                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, 3600);
+                    continue;
+                  }
+                }
+                const source = sourceRefs.find((s) => s.id === m.id);
+                if (source) {
+                  mediaUrls[m.id] = await getPresignedUrl(source.bucket, source.key, 3600);
+                } else {
+                  mediaUrls[m.id] = null;
+                }
+              } catch {
+                mediaUrls[m.id] = null;
+              }
+            }
+          }
+        }
+
+        return reply.send({
+          group_id: group.id,
+          name: group.name,
+          description: group.description,
+          screen_ids: screenIds,
+          publish: {
+            publish_id: latest.publish_id,
+            schedule_id: latest.schedule_id,
+            snapshot_id: latest.snapshot_id,
+            published_at: latest.published_at.toISOString?.() ?? latest.published_at,
+          },
+          snapshot: filteredSnapshot,
+          media_urls: mediaUrls,
+        });
+      } catch (error) {
+        logger.error(error, 'Get screen group snapshot error');
         return respondWithError(reply, error);
       }
     }

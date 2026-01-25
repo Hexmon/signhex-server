@@ -17,6 +17,10 @@ import { AppError } from '@/utils/app-error';
 const logger = createLogger('device-pairing-routes');
 const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 
+function looksBase64(value: string) {
+  return /^[A-Za-z0-9+/=\\r\\n]+$/.test(value);
+}
+
 const generatePairingCodeSchema = z.object({
   device_id: z.string().min(1),
   expires_in: z.number().int().positive().default(3600), // 1 hour
@@ -217,6 +221,18 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        if (config.NODE_ENV === 'development' && request.body && typeof request.body === 'object') {
+          const rawBody = request.body as Record<string, unknown>;
+          if ('pairingCode' in rawBody && !('pairing_code' in rawBody)) {
+            logger.warn({ keys: Object.keys(rawBody) }, 'Possible schema mismatch: pairingCode used instead of pairing_code');
+          }
+          if (typeof rawBody.csr === 'string') {
+            const trimmed = rawBody.csr.trim();
+            if (!trimmed.startsWith('-----BEGIN CERTIFICATE REQUEST-----') && looksBase64(trimmed)) {
+              logger.warn('CSR appears to be base64 without PEM header/footer');
+            }
+          }
+        }
         const data = completePairingSchema.parse(request.body);
 
         // Find pairing by code
@@ -232,6 +248,25 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         const csr = data.csr.trim();
         if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
           throw AppError.badRequest('Invalid CSR format');
+        }
+        const csrBody = csr
+          .replace('-----BEGIN CERTIFICATE REQUEST-----', '')
+          .replace('-----END CERTIFICATE REQUEST-----', '')
+          .replace(/\\s+/g, '');
+        try {
+          const decoded = Buffer.from(csrBody, 'base64').toString('utf8');
+          const match = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+          if (match && match[0].toLowerCase() !== deviceId.toLowerCase()) {
+            throw AppError.conflict('CSR deviceId does not match pairing deviceId');
+          }
+          if (config.NODE_ENV === 'development' && !decoded.includes(deviceId)) {
+            logger.warn({ deviceId }, 'CSR does not appear to include deviceId in subject');
+          }
+        } catch (err) {
+          if (err instanceof AppError) throw err;
+          if (config.NODE_ENV === 'development') {
+            logger.warn({ deviceId }, 'Failed to decode CSR for deviceId check');
+          }
         }
 
         let caCert: string;
