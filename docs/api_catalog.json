@@ -1,0 +1,1954 @@
+[
+  {
+    "domain": "health",
+    "method": "GET",
+    "path": "/api/v1/health",
+    "auth": "public",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/server/index.ts (health response)",
+    "errors": [
+      { "status": 500, "code": "INTERNAL_ERROR", "when": "Unhandled error" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/server/index.ts fastify.get('/api/v1/health')"
+  },
+
+  {
+    "domain": "auth",
+    "method": "POST",
+    "path": "/api/v1/auth/login",
+    "auth": "public",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/auth.ts#loginSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/auth.ts (login response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Invalid credentials" },
+      { "status": 403, "code": "FORBIDDEN", "when": "User inactive or role missing" },
+      { "status": 429, "code": "RATE_LIMITED", "when": "Too many failed attempts" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/auth.ts fastify.post(apiEndpoints.auth.login). Side effects: sessions, cookies, login throttle state."
+  },
+  {
+    "domain": "auth",
+    "method": "POST",
+    "path": "/api/v1/auth/logout",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/auth.ts (logout response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/auth.ts fastify.post(apiEndpoints.auth.logout). Side effects: revoke session, clear cookies."
+  },
+  {
+    "domain": "auth",
+    "method": "GET",
+    "path": "/api/v1/auth/me",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/auth.ts#meResponseSchema",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token or revoked session" },
+      { "status": 404, "code": "NOT_FOUND", "when": "User not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/auth.ts fastify.get(apiEndpoints.auth.me)"
+  },
+
+  {
+    "domain": "users",
+    "method": "POST",
+    "path": "/api/v1/users",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/user.ts#createUserSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/user.ts#userResponseSchema",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 409, "code": "CONFLICT", "when": "Email already exists" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users.ts fastify.post(apiEndpoints.users.create). Side effects: users table."
+  },
+  {
+    "domain": "users",
+    "method": "GET",
+    "path": "/api/v1/users",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/user.ts#listUsersQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users.ts (list users response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Bad query params" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users.ts fastify.get(apiEndpoints.users.list)"
+  },
+  {
+    "domain": "users",
+    "method": "GET",
+    "path": "/api/v1/users/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/user.ts#userResponseSchema",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 404, "code": "NOT_FOUND", "when": "User not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users.ts fastify.get(apiEndpoints.users.get)"
+  },
+  {
+    "domain": "users",
+    "method": "PATCH",
+    "path": "/api/v1/users/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/user.ts#updateUserSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/user.ts#userResponseSchema",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 404, "code": "NOT_FOUND", "when": "User not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users.ts fastify.patch(apiEndpoints.users.update). Side effects: users table."
+  },
+  {
+    "domain": "users",
+    "method": "DELETE",
+    "path": "/api/v1/users/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users.ts (delete user response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 404, "code": "NOT_FOUND", "when": "User not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users.ts fastify.delete(apiEndpoints.users.delete). Side effects: users table."
+  },
+
+  {
+    "domain": "users-invite",
+    "method": "POST",
+    "path": "/api/v1/users/invite",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts#inviteSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts (invite response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 409, "code": "CONFLICT", "when": "Email exists" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts fastify.post(apiEndpoints.userInvite.invite). Side effects: users + invite metadata."
+  },
+  {
+    "domain": "users-invite",
+    "method": "GET",
+    "path": "/api/v1/users/invite",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts#listInvitesQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts (list invites response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts fastify.get(apiEndpoints.userInvite.list)"
+  },
+  {
+    "domain": "users-invite",
+    "method": "GET",
+    "path": "/api/v1/users/invite/pending",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts (pending invites response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts fastify.get(apiEndpoints.userInvite.pending)"
+  },
+  {
+    "domain": "users-invite",
+    "method": "POST",
+    "path": "/api/v1/users/:id/reset-password",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts#resetPasswordSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts (reset password response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Current password incorrect" },
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 404, "code": "NOT_FOUND", "when": "User not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-invite.ts fastify.post(apiEndpoints.userInvite.resetPassword). Side effects: users table."
+  },
+  {
+    "domain": "users-activate",
+    "method": "POST",
+    "path": "/api/v1/users/activate",
+    "auth": "public",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-activate.ts#activateSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-activate.ts (activate response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Invite expired" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/users-activate.ts fastify.post(apiEndpoints.userActivate.activate). Side effects: users ext + is_active."
+  },
+
+  {
+    "domain": "roles",
+    "method": "POST",
+    "path": "/api/v1/roles",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts#createRoleSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts (role response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts fastify.post(apiEndpoints.roles.create)"
+  },
+  {
+    "domain": "roles",
+    "method": "GET",
+    "path": "/api/v1/roles",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts#listRolesQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts (list roles response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts fastify.get(apiEndpoints.roles.list)"
+  },
+  {
+    "domain": "roles",
+    "method": "GET",
+    "path": "/api/v1/roles/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts (role response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Role not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts fastify.get(apiEndpoints.roles.get)"
+  },
+  {
+    "domain": "roles",
+    "method": "PUT",
+    "path": "/api/v1/roles/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts#updateRoleSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts (role response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Role not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts fastify.put(apiEndpoints.roles.update)"
+  },
+  {
+    "domain": "roles",
+    "method": "DELETE",
+    "path": "/api/v1/roles/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts (delete response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Role not found" },
+      { "status": 409, "code": "CONFLICT", "when": "System role or role in use" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/roles.ts fastify.delete(apiEndpoints.roles.delete)"
+  },
+  {
+    "domain": "permissions",
+    "method": "GET",
+    "path": "/api/v1/permissions/metadata",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/permissions.ts (metadata response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/permissions.ts fastify.get(apiEndpoints.permissions.metadata)"
+  },
+
+  {
+    "domain": "departments",
+    "method": "POST",
+    "path": "/api/v1/departments",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts#createDepartmentSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts (department response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts fastify.post(apiEndpoints.departments.create)"
+  },
+  {
+    "domain": "departments",
+    "method": "GET",
+    "path": "/api/v1/departments",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts#listDepartmentsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts (list response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts fastify.get(apiEndpoints.departments.list)"
+  },
+  {
+    "domain": "departments",
+    "method": "GET",
+    "path": "/api/v1/departments/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts (department response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Department not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts fastify.get(apiEndpoints.departments.get)"
+  },
+  {
+    "domain": "departments",
+    "method": "PATCH",
+    "path": "/api/v1/departments/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts#createDepartmentSchema (partial)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts (department response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Department not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts fastify.patch(apiEndpoints.departments.update)"
+  },
+  {
+    "domain": "departments",
+    "method": "DELETE",
+    "path": "/api/v1/departments/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts (delete response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Department not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/departments.ts fastify.delete(apiEndpoints.departments.delete)"
+  },
+
+  {
+    "domain": "media",
+    "method": "POST",
+    "path": "/api/v1/media/presign-upload",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/media.ts#presignUploadSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/media.ts#presignUploadResponseSchema",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid file metadata" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts fastify.post(apiEndpoints.media.presignUpload). Side effects: media row, MinIO bucket."
+  },
+  {
+    "domain": "media",
+    "method": "POST",
+    "path": "/api/v1/media",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/media.ts#createMediaSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/media.ts#mediaResponseSchema",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts fastify.post(apiEndpoints.media.create). Side effects: media row."
+  },
+  {
+    "domain": "media",
+    "method": "GET",
+    "path": "/api/v1/media",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/media.ts#listMediaQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts (list response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Bad query params" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts fastify.get(apiEndpoints.media.list)"
+  },
+  {
+    "domain": "media",
+    "method": "GET",
+    "path": "/api/v1/media/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts (media response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Media not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts fastify.get(apiEndpoints.media.get)"
+  },
+  {
+    "domain": "media",
+    "method": "POST",
+    "path": "/api/v1/media/:id/complete",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts#completeUploadSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts (complete response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Missing source object or invalid state" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Media not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts fastify.post(apiEndpoints.media.complete). Side effects: media row update."
+  },
+  {
+    "domain": "media",
+    "method": "DELETE",
+    "path": "/api/v1/media/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts (delete response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Media not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/media.ts fastify.delete(apiEndpoints.media.delete). Side effects: media row update/delete + MinIO deletes."
+  },
+
+  {
+    "domain": "presentations",
+    "method": "POST",
+    "path": "/api/v1/presentations",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts#createPresentationSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (presentation response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Layout not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.post(apiEndpoints.presentations.create)"
+  },
+  {
+    "domain": "presentations",
+    "method": "GET",
+    "path": "/api/v1/presentations",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts#listPresentationsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (list response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Bad query params" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.get(apiEndpoints.presentations.list)"
+  },
+  {
+    "domain": "presentations",
+    "method": "GET",
+    "path": "/api/v1/presentations/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (presentation detail response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Presentation not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.get(apiEndpoints.presentations.get)"
+  },
+  {
+    "domain": "presentations",
+    "method": "PATCH",
+    "path": "/api/v1/presentations/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts#createPresentationSchema (partial)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (presentation response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Presentation or layout not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.patch(apiEndpoints.presentations.update)"
+  },
+  {
+    "domain": "presentations",
+    "method": "DELETE",
+    "path": "/api/v1/presentations/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.delete(apiEndpoints.presentations.delete)"
+  },
+  {
+    "domain": "presentations",
+    "method": "GET",
+    "path": "/api/v1/presentations/:id/items",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (items response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Presentation not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.get(apiEndpoints.presentations.items)"
+  },
+  {
+    "domain": "presentations",
+    "method": "POST",
+    "path": "/api/v1/presentations/:id/items",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts#presentationItemSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (item response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Order conflict" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Presentation or media not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.post(apiEndpoints.presentations.items)"
+  },
+  {
+    "domain": "presentations",
+    "method": "DELETE",
+    "path": "/api/v1/presentations/:id/items/:itemId",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Item not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.delete(apiEndpoints.presentations.item)"
+  },
+  {
+    "domain": "presentations",
+    "method": "GET",
+    "path": "/api/v1/presentations/:id/slots",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (slot items response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Presentation not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.get(apiEndpoints.presentations.slotItems)"
+  },
+  {
+    "domain": "presentations",
+    "method": "POST",
+    "path": "/api/v1/presentations/:id/slots",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts#presentationSlotItemSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts (slot item response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Presentation has no layout" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Presentation or media not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.post(apiEndpoints.presentations.slotItems)"
+  },
+  {
+    "domain": "presentations",
+    "method": "DELETE",
+    "path": "/api/v1/presentations/:id/slots/:slotItemId",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Slot item not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/presentations.ts fastify.delete(apiEndpoints.presentations.slotItem)"
+  },
+
+  {
+    "domain": "layouts",
+    "method": "POST",
+    "path": "/api/v1/layouts",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts#layoutSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts (layout response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid spec" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts fastify.post(apiEndpoints.layouts.create)"
+  },
+  {
+    "domain": "layouts",
+    "method": "GET",
+    "path": "/api/v1/layouts",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts#listLayoutsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts fastify.get(apiEndpoints.layouts.list)"
+  },
+  {
+    "domain": "layouts",
+    "method": "GET",
+    "path": "/api/v1/layouts/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts (layout response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Layout not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts fastify.get(apiEndpoints.layouts.get)"
+  },
+  {
+    "domain": "layouts",
+    "method": "PATCH",
+    "path": "/api/v1/layouts/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts#layoutSchema (partial)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts (layout response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid spec" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Layout not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts fastify.patch(apiEndpoints.layouts.update)"
+  },
+  {
+    "domain": "layouts",
+    "method": "DELETE",
+    "path": "/api/v1/layouts/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Layout not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/layouts.ts fastify.delete(apiEndpoints.layouts.delete)"
+  },
+
+  {
+    "domain": "schedules",
+    "method": "POST",
+    "path": "/api/v1/schedules",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/schedule.ts#createScheduleSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/schedule.ts#scheduleResponseSchema",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Invalid start/end" },
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.post(apiEndpoints.schedules.create)"
+  },
+  {
+    "domain": "schedules",
+    "method": "GET",
+    "path": "/api/v1/schedules",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/schedule.ts#listSchedulesQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts (list response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Bad query params" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.get(apiEndpoints.schedules.list)"
+  },
+  {
+    "domain": "schedules",
+    "method": "GET",
+    "path": "/api/v1/schedules/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/schedule.ts#scheduleResponseSchema",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Schedule not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.get(apiEndpoints.schedules.get)"
+  },
+  {
+    "domain": "schedules",
+    "method": "PATCH",
+    "path": "/api/v1/schedules/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/schedule.ts#updateScheduleSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/schedule.ts#scheduleResponseSchema",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Invalid start/end" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Schedule not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.patch(apiEndpoints.schedules.update)"
+  },
+  {
+    "domain": "schedules",
+    "method": "POST",
+    "path": "/api/v1/schedules/:id/publish",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/schemas/schedule.ts#publishScheduleSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts (publish response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Invalid targets or request status" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Schedule request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.post(apiEndpoints.schedules.publish). Side effects: schedule snapshots + publish targets."
+  },
+  {
+    "domain": "schedules",
+    "method": "GET",
+    "path": "/api/v1/schedules/:id/publishes",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts (publishes response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.get(apiEndpoints.schedules.publishes)"
+  },
+  {
+    "domain": "schedules",
+    "method": "PATCH",
+    "path": "/api/v1/publishes/:publishId/targets/:targetId",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts (publish target response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Target not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.patch(apiEndpoints.schedules.updatePublishTarget)"
+  },
+  {
+    "domain": "schedules",
+    "method": "GET",
+    "path": "/api/v1/publishes/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts (publish response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Publish not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.get(apiEndpoints.schedules.publishStatus)"
+  },
+  {
+    "domain": "schedules",
+    "method": "GET",
+    "path": "/api/v1/schedules/:id/items",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts (schedule items response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Schedule not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.get(apiEndpoints.schedules.items)"
+  },
+  {
+    "domain": "schedules",
+    "method": "POST",
+    "path": "/api/v1/schedules/:id/items",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts#scheduleItemSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts (schedule item response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Invalid targets or overlap" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Schedule or presentation not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.post(apiEndpoints.schedules.items)"
+  },
+  {
+    "domain": "schedules",
+    "method": "DELETE",
+    "path": "/api/v1/schedules/:id/items/:itemId",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Item not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedules.ts fastify.delete(apiEndpoints.schedules.item)"
+  },
+
+  {
+    "domain": "schedule-requests",
+    "method": "POST",
+    "path": "/api/v1/schedule-requests",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts#createRequestSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (create response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.post(apiEndpoints.scheduleRequests.create)"
+  },
+  {
+    "domain": "schedule-requests",
+    "method": "GET",
+    "path": "/api/v1/schedule-requests/status-summary",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (status summary response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.get(apiEndpoints.scheduleRequests.statusSummary)"
+  },
+  {
+    "domain": "schedule-requests",
+    "method": "GET",
+    "path": "/api/v1/schedule-requests",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts#listRequestQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.get(apiEndpoints.scheduleRequests.list)"
+  },
+  {
+    "domain": "schedule-requests",
+    "method": "GET",
+    "path": "/api/v1/schedule-requests/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts#getRequestQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (get response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "Not owner/admin" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.get(apiEndpoints.scheduleRequests.get)"
+  },
+  {
+    "domain": "schedule-requests",
+    "method": "PATCH",
+    "path": "/api/v1/schedule-requests/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts#updateRequestSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (update response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Approved request cannot be edited" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.patch(apiEndpoints.scheduleRequests.update)"
+  },
+  {
+    "domain": "schedule-requests",
+    "method": "POST",
+    "path": "/api/v1/schedule-requests/:id/approve",
+    "auth": "jwt",
+    "requestSchemaRef": "{ comment?: string } (inline)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (approve response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.post(apiEndpoints.scheduleRequests.approve)"
+  },
+  {
+    "domain": "schedule-requests",
+    "method": "POST",
+    "path": "/api/v1/schedule-requests/:id/reject",
+    "auth": "jwt",
+    "requestSchemaRef": "{ comment?: string } (inline)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (reject response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.post(apiEndpoints.scheduleRequests.reject)"
+  },
+  {
+    "domain": "schedule-requests",
+    "method": "POST",
+    "path": "/api/v1/schedule-requests/:id/publish",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts (publish response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Request not approved" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/schedule-requests.ts fastify.post(apiEndpoints.scheduleRequests.publish)"
+  },
+
+  {
+    "domain": "screens",
+    "method": "POST",
+    "path": "/api/v1/screens",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#createScreenSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (screen response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.post(apiEndpoints.screens.create)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#listScreensQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (list response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Bad query params" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.list)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/aspect-ratios",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#aspectRatiosQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (aspect ratios response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.aspectRatios)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/overview",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (overview response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.overview)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (screen response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Screen not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.get)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/:id/status",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (status response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Screen not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.status)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/:id/heartbeats",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#listHeartbeatsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (heartbeats response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Invalid time range" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Screen not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.heartbeats)"
+  },
+  {
+    "domain": "screens",
+    "method": "POST",
+    "path": "/api/v1/screens/:id/screenshot-settings",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#screenshotSettingsSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (screenshot settings response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "interval_seconds required" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Screen not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.post(apiEndpoints.screens.screenshotSettings). Side effects: screens + device_commands."
+  },
+  {
+    "domain": "screens",
+    "method": "POST",
+    "path": "/api/v1/screens/:id/screenshot",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#screenshotTriggerSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (screenshot command response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Screen not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.post(apiEndpoints.screens.screenshot). Side effects: device_commands."
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/:id/now-playing",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (now-playing response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.nowPlaying)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/:id/availability",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#snapshotQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (availability response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.availability)"
+  },
+  {
+    "domain": "screens",
+    "method": "GET",
+    "path": "/api/v1/screens/:id/snapshot",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#snapshotQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (snapshot response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "No publish + no default media" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.get(apiEndpoints.screens.snapshot)"
+  },
+  {
+    "domain": "screens",
+    "method": "PATCH",
+    "path": "/api/v1/screens/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts#createScreenSchema (partial)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (screen response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Screen not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.patch(apiEndpoints.screens.update)"
+  },
+  {
+    "domain": "screens",
+    "method": "DELETE",
+    "path": "/api/v1/screens/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts (delete response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts fastify.delete(apiEndpoints.screens.delete). Side effects: cleanup of device data."
+  },
+
+  {
+    "domain": "screen-groups",
+    "method": "POST",
+    "path": "/api/v1/screen-groups",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts#screenGroupSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (group response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.post(apiEndpoints.screenGroups.create)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "GET",
+    "path": "/api/v1/screen-groups/available-screens",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts#availableScreensQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (available screens response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.get(apiEndpoints.screenGroups.availableScreens)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "GET",
+    "path": "/api/v1/screen-groups",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts#listGroupsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (list groups response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.get(apiEndpoints.screenGroups.list)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "GET",
+    "path": "/api/v1/screen-groups/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (group response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.get(apiEndpoints.screenGroups.get)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "PATCH",
+    "path": "/api/v1/screen-groups/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts#screenGroupSchema (partial)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (group response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.patch(apiEndpoints.screenGroups.update)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "DELETE",
+    "path": "/api/v1/screen-groups/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.delete(apiEndpoints.screenGroups.delete)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "GET",
+    "path": "/api/v1/screen-groups/:id/availability",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (availability response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.get(apiEndpoints.screenGroups.availability)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "GET",
+    "path": "/api/v1/screen-groups/:id/snapshot",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts#snapshotQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (snapshot response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.get(apiEndpoints.screenGroups.snapshot)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "POST",
+    "path": "/api/v1/screen-groups/:id/screenshot-settings",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts#screenshotSettingsSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (screenshot settings response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "interval_seconds required" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.post(apiEndpoints.screenGroups.screenshotSettings)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "POST",
+    "path": "/api/v1/screen-groups/:id/screenshot",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts#screenshotTriggerSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (screenshot command response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.post(apiEndpoints.screenGroups.screenshot)"
+  },
+  {
+    "domain": "screen-groups",
+    "method": "GET",
+    "path": "/api/v1/screen-groups/:id/now-playing",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts (now-playing response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Group not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screen-groups.ts fastify.get(apiEndpoints.screenGroupNowPlaying.get)"
+  },
+
+  {
+    "domain": "device-pairing",
+    "method": "POST",
+    "path": "/api/v1/device-pairing/request",
+    "auth": "public",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts#requestPairingSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts (request response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid fields" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.post(apiEndpoints.devicePairing.request)"
+  },
+  {
+    "domain": "device-pairing",
+    "method": "GET",
+    "path": "/api/v1/device-pairing/status",
+    "auth": "public",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts#pairingStatusQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts (status response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid device_id" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.get(apiEndpoints.devicePairing.status)"
+  },
+  {
+    "domain": "device-pairing",
+    "method": "POST",
+    "path": "/api/v1/device-pairing/confirm",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts#confirmPairingSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts (confirm response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Pairing code invalid" },
+      { "status": 409, "code": "CONFLICT", "when": "Screen already exists" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.post(apiEndpoints.devicePairing.confirm)"
+  },
+  {
+    "domain": "device-pairing",
+    "method": "POST",
+    "path": "/api/v1/device-pairing/complete",
+    "auth": "public",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts#completePairingSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts (complete response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Invalid CSR" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Pairing code invalid" },
+      { "status": 500, "code": "CA_CERT_MISSING", "when": "CA cert missing" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.post(apiEndpoints.devicePairing.complete)"
+  },
+  {
+    "domain": "device-pairing",
+    "method": "POST",
+    "path": "/api/v1/device-pairing/generate",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts#generatePairingCodeSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts (generate response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.post(apiEndpoints.devicePairing.generate)"
+  },
+  {
+    "domain": "device-pairing",
+    "method": "GET",
+    "path": "/api/v1/device-pairing",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.get(apiEndpoints.devicePairing.list)"
+  },
+
+  {
+    "domain": "device-telemetry",
+    "method": "GET",
+    "path": "/api/v1/device/:deviceId/snapshot",
+    "auth": "device-cert-or-jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts#snapshotQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts (snapshot response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token or cert" },
+      { "status": 403, "code": "FORBIDDEN", "when": "JWT lacks Screen read" },
+      { "status": 404, "code": "NOT_FOUND", "when": "No publish and no default media" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.get(apiEndpoints.deviceTelemetry.snapshot)"
+  },
+  {
+    "domain": "device-telemetry",
+    "method": "POST",
+    "path": "/api/v1/device/:deviceId/commands",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts#createCommandSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts (command response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Screen not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.post(apiEndpoints.deviceTelemetry.commands)"
+  },
+  {
+    "domain": "device-telemetry",
+    "method": "GET",
+    "path": "/api/v1/device/:deviceId/commands",
+    "auth": "device-cert",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts (commands response)",
+    "errors": [
+      { "status": 500, "code": "INTERNAL_ERROR", "when": "Unhandled error" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.get(apiEndpoints.deviceTelemetry.commands). Side effects: mark commands SENT."
+  },
+  {
+    "domain": "device-telemetry",
+    "method": "POST",
+    "path": "/api/v1/device/:deviceId/commands/:commandId/ack",
+    "auth": "device-cert",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts (ack response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Command not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.post(apiEndpoints.deviceTelemetry.ackCommand). Side effects: mark ACKNOWLEDGED."
+  },
+  {
+    "domain": "device-telemetry",
+    "method": "POST",
+    "path": "/api/v1/device/heartbeat",
+    "auth": "device-cert",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts#heartbeatSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts (heartbeat response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Device not registered" },
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.post(apiEndpoints.deviceTelemetry.heartbeat). Side effects: heartbeats + storage_objects + screens."
+  },
+  {
+    "domain": "device-telemetry",
+    "method": "POST",
+    "path": "/api/v1/device/proof-of-play",
+    "auth": "device-cert",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts#proofOfPlaySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts (PoP response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.post(apiEndpoints.deviceTelemetry.proofOfPlay). Side effects: proof_of_play + storage_objects."
+  },
+  {
+    "domain": "device-telemetry",
+    "method": "POST",
+    "path": "/api/v1/device/screenshot",
+    "auth": "device-cert",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts#screenshotSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts (screenshot response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.post(apiEndpoints.deviceTelemetry.screenshot). Side effects: MinIO device-screenshots."
+  },
+
+  {
+    "domain": "emergency",
+    "method": "POST",
+    "path": "/api/v1/emergency/trigger",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts#triggerEmergencySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (trigger response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Missing message or invalid targets" },
+      { "status": 409, "code": "CONFLICT", "when": "Emergency already active" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.post(apiEndpoints.emergency.trigger)"
+  },
+  {
+    "domain": "emergency",
+    "method": "GET",
+    "path": "/api/v1/emergency/status",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (status response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "Not admin" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.get(apiEndpoints.emergency.status)"
+  },
+  {
+    "domain": "emergency",
+    "method": "POST",
+    "path": "/api/v1/emergency/:id/clear",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (clear response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Emergency not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.post(apiEndpoints.emergency.clear)"
+  },
+  {
+    "domain": "emergency",
+    "method": "GET",
+    "path": "/api/v1/emergency/history",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (history response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "Not admin" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.get(apiEndpoints.emergency.history)"
+  },
+  {
+    "domain": "emergency-types",
+    "method": "POST",
+    "path": "/api/v1/emergency-types",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts#emergencyTypeSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (type response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Media not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.post(apiEndpoints.emergencyTypes.create)"
+  },
+  {
+    "domain": "emergency-types",
+    "method": "GET",
+    "path": "/api/v1/emergency-types",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts#listEmergencyTypesQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (types list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "Not admin" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.get(apiEndpoints.emergencyTypes.list)"
+  },
+  {
+    "domain": "emergency-types",
+    "method": "GET",
+    "path": "/api/v1/emergency-types/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (type response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Type not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.get(apiEndpoints.emergencyTypes.get)"
+  },
+  {
+    "domain": "emergency-types",
+    "method": "PATCH",
+    "path": "/api/v1/emergency-types/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts#emergencyTypeUpdateSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts (type response)",
+    "errors": [
+      { "status": 400, "code": "BAD_REQUEST", "when": "Media not found" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Type not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.patch(apiEndpoints.emergencyTypes.update)"
+  },
+  {
+    "domain": "emergency-types",
+    "method": "DELETE",
+    "path": "/api/v1/emergency-types/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Type not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/emergency.ts fastify.delete(apiEndpoints.emergencyTypes.delete)"
+  },
+
+  {
+    "domain": "requests",
+    "method": "POST",
+    "path": "/api/v1/requests",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts#createRequestSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts (request response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts fastify.post(apiEndpoints.requests.create)"
+  },
+  {
+    "domain": "requests",
+    "method": "GET",
+    "path": "/api/v1/requests",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts#listRequestsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts (list response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Bad query params" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts fastify.get(apiEndpoints.requests.list)"
+  },
+  {
+    "domain": "requests",
+    "method": "GET",
+    "path": "/api/v1/requests/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts (get response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts fastify.get(apiEndpoints.requests.get)"
+  },
+  {
+    "domain": "requests",
+    "method": "PATCH",
+    "path": "/api/v1/requests/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts#createRequestSchema (partial)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts (update response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Request not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts fastify.patch(apiEndpoints.requests.update)"
+  },
+  {
+    "domain": "requests",
+    "method": "POST",
+    "path": "/api/v1/requests/:id/messages",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts#createMessageSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts (message response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts fastify.post(apiEndpoints.requests.addMessage)"
+  },
+  {
+    "domain": "requests",
+    "method": "GET",
+    "path": "/api/v1/requests/:id/messages",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts (messages list response)",
+    "errors": [
+      { "status": 500, "code": "INTERNAL_ERROR", "when": "Unhandled error" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/requests.ts fastify.get(apiEndpoints.requests.listMessages)"
+  },
+
+  {
+    "domain": "notifications",
+    "method": "GET",
+    "path": "/api/v1/notifications",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts#listNotificationsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts (list response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts fastify.get(apiEndpoints.notifications.list)"
+  },
+  {
+    "domain": "notifications",
+    "method": "GET",
+    "path": "/api/v1/notifications/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts (get response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "Not owner" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Notification not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts fastify.get(apiEndpoints.notifications.get)"
+  },
+  {
+    "domain": "notifications",
+    "method": "POST",
+    "path": "/api/v1/notifications/:id/read",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts (mark read response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "Not owner" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Notification not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts fastify.post(apiEndpoints.notifications.markRead)"
+  },
+  {
+    "domain": "notifications",
+    "method": "POST",
+    "path": "/api/v1/notifications/read-all",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts (mark all read response)",
+    "errors": [
+      { "status": 401, "code": "UNAUTHORIZED", "when": "Missing/invalid token" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts fastify.post(apiEndpoints.notifications.markAllRead)"
+  },
+  {
+    "domain": "notifications",
+    "method": "DELETE",
+    "path": "/api/v1/notifications/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "Not owner" },
+      { "status": 404, "code": "NOT_FOUND", "when": "Notification not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/notifications.ts fastify.delete(apiEndpoints.notifications.delete)"
+  },
+
+  {
+    "domain": "audit-logs",
+    "method": "GET",
+    "path": "/api/v1/audit-logs",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/audit-logs.ts#listAuditLogsQuerySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/audit-logs.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/audit-logs.ts fastify.get(apiEndpoints.auditLogs.list)"
+  },
+  {
+    "domain": "audit-logs",
+    "method": "GET",
+    "path": "/api/v1/audit-logs/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/audit-logs.ts (get response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Audit log not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/audit-logs.ts fastify.get(apiEndpoints.auditLogs.get)"
+  },
+
+  {
+    "domain": "api-keys",
+    "method": "POST",
+    "path": "/api/v1/api-keys",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts#createApiKeySchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts (create response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts fastify.post(apiEndpoints.apiKeys.create)"
+  },
+  {
+    "domain": "api-keys",
+    "method": "GET",
+    "path": "/api/v1/api-keys",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts fastify.get(apiEndpoints.apiKeys.list)"
+  },
+  {
+    "domain": "api-keys",
+    "method": "POST",
+    "path": "/api/v1/api-keys/:id/rotate",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts (rotate response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "API key not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts fastify.post(apiEndpoints.apiKeys.rotate)"
+  },
+  {
+    "domain": "api-keys",
+    "method": "POST",
+    "path": "/api/v1/api-keys/:id/revoke",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts (revoke response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "API key not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/api-keys.ts fastify.post(apiEndpoints.apiKeys.revoke)"
+  },
+
+  {
+    "domain": "webhooks",
+    "method": "POST",
+    "path": "/api/v1/webhooks",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts#webhookSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts (create response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts fastify.post(apiEndpoints.webhooks.create)"
+  },
+  {
+    "domain": "webhooks",
+    "method": "GET",
+    "path": "/api/v1/webhooks",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts fastify.get(apiEndpoints.webhooks.list)"
+  },
+  {
+    "domain": "webhooks",
+    "method": "PATCH",
+    "path": "/api/v1/webhooks/:id",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts#webhookSchema (partial)",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts (update response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Webhook not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts fastify.patch(apiEndpoints.webhooks.update)"
+  },
+  {
+    "domain": "webhooks",
+    "method": "DELETE",
+    "path": "/api/v1/webhooks/:id",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "204 no content",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Webhook not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts fastify.delete(apiEndpoints.webhooks.delete)"
+  },
+  {
+    "domain": "webhooks",
+    "method": "POST",
+    "path": "/api/v1/webhooks/:id/test",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts (test response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Webhook not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/webhooks.ts fastify.post(apiEndpoints.webhooks.test)"
+  },
+
+  {
+    "domain": "sso",
+    "method": "POST",
+    "path": "/api/v1/sso-config",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/sso-config.ts#ssoSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/sso-config.ts (upsert response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/sso-config.ts fastify.post(apiEndpoints.ssoConfig.upsert)"
+  },
+  {
+    "domain": "sso",
+    "method": "GET",
+    "path": "/api/v1/sso-config",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/sso-config.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/sso-config.ts fastify.get(apiEndpoints.ssoConfig.list)"
+  },
+  {
+    "domain": "sso",
+    "method": "POST",
+    "path": "/api/v1/sso-config/:id/deactivate",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/sso-config.ts (deactivate response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "SSO config not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/sso-config.ts fastify.post(apiEndpoints.ssoConfig.deactivate)"
+  },
+
+  {
+    "domain": "settings",
+    "method": "GET",
+    "path": "/api/v1/settings",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts (list settings response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts fastify.get(apiEndpoints.settings.list)"
+  },
+  {
+    "domain": "settings",
+    "method": "POST",
+    "path": "/api/v1/settings",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts#upsertSettingSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts (upsert response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts fastify.post(apiEndpoints.settings.upsert)"
+  },
+  {
+    "domain": "settings",
+    "method": "GET",
+    "path": "/api/v1/settings/default-media",
+    "auth": "public",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts (default media response)",
+    "errors": [
+      { "status": 500, "code": "INTERNAL_ERROR", "when": "Unhandled error" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts fastify.get(apiEndpoints.settings.defaultMedia)"
+  },
+  {
+    "domain": "settings",
+    "method": "PUT",
+    "path": "/api/v1/settings/default-media",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts#defaultMediaUpdateSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts (default media response)",
+    "errors": [
+      { "status": 404, "code": "NOT_FOUND", "when": "Media not found" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/settings.ts fastify.put(apiEndpoints.settings.defaultMedia)"
+  },
+
+  {
+    "domain": "conversations",
+    "method": "POST",
+    "path": "/api/v1/conversations",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts#startConversationSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts (start response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts fastify.post(apiEndpoints.conversations.start)"
+  },
+  {
+    "domain": "conversations",
+    "method": "GET",
+    "path": "/api/v1/conversations",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts fastify.get(apiEndpoints.conversations.list)"
+  },
+  {
+    "domain": "conversations",
+    "method": "GET",
+    "path": "/api/v1/conversations/:id/messages",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts (messages response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts fastify.get(apiEndpoints.conversations.listMessages)"
+  },
+  {
+    "domain": "conversations",
+    "method": "POST",
+    "path": "/api/v1/conversations/:id/messages",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts#sendMessageSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts (send response)",
+    "errors": [
+      { "status": 422, "code": "VALIDATION_ERROR", "when": "Invalid payload" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts fastify.post(apiEndpoints.conversations.sendMessage)"
+  },
+  {
+    "domain": "conversations",
+    "method": "POST",
+    "path": "/api/v1/conversations/:id/read",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts (mark read response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/conversations.ts fastify.post(apiEndpoints.conversations.markRead)"
+  },
+
+  {
+    "domain": "proof-of-play",
+    "method": "GET",
+    "path": "/api/v1/proof-of-play",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/proof-of-play.ts#listSchema",
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/proof-of-play.ts (list response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/proof-of-play.ts fastify.get(apiEndpoints.proofOfPlay.list)"
+  },
+  {
+    "domain": "proof-of-play",
+    "method": "GET",
+    "path": "/api/v1/proof-of-play/export",
+    "auth": "jwt",
+    "requestSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/proof-of-play.ts#listSchema",
+    "responseSchemaRef": "text/csv",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/proof-of-play.ts fastify.get(apiEndpoints.proofOfPlay.export)"
+  },
+
+  {
+    "domain": "metrics",
+    "method": "GET",
+    "path": "/api/v1/metrics/overview",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/metrics.ts (overview response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/metrics.ts fastify.get(apiEndpoints.metrics.overview)"
+  },
+
+  {
+    "domain": "reports",
+    "method": "GET",
+    "path": "/api/v1/reports/summary",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts (summary response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts fastify.get(apiEndpoints.reports.summary)"
+  },
+  {
+    "domain": "reports",
+    "method": "GET",
+    "path": "/api/v1/reports/trends",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts (trends response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts fastify.get(apiEndpoints.reports.trends)"
+  },
+  {
+    "domain": "reports",
+    "method": "GET",
+    "path": "/api/v1/reports/requests-by-department",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts (requests-by-department response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts fastify.get(apiEndpoints.reports.requestsByDepartment)"
+  },
+  {
+    "domain": "reports",
+    "method": "GET",
+    "path": "/api/v1/reports/offline-screens",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts (offline-screens response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts fastify.get(apiEndpoints.reports.offlineScreens)"
+  },
+  {
+    "domain": "reports",
+    "method": "GET",
+    "path": "/api/v1/reports/storage",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts (storage response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts fastify.get(apiEndpoints.reports.storage)"
+  },
+  {
+    "domain": "reports",
+    "method": "GET",
+    "path": "/api/v1/reports/system-health",
+    "auth": "jwt",
+    "requestSchemaRef": null,
+    "responseSchemaRef": "/Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts (system-health response)",
+    "errors": [
+      { "status": 403, "code": "FORBIDDEN", "when": "RBAC denies" }
+    ],
+    "notes": "Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/reports.ts fastify.get(apiEndpoints.reports.systemHealth)"
+  }
+]
