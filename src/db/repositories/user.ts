@@ -1,4 +1,4 @@
-import { eq, and, sql, desc, or } from 'drizzle-orm';
+import { eq, and, sql, desc, or, getTableColumns } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class UserRepository {
@@ -93,8 +93,12 @@ export class UserRepository {
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const items = await db
-      .select()
+      .select({
+        ...getTableColumns(schema.users),
+        role: schema.roles.name,
+      })
       .from(schema.users)
+      .leftJoin(schema.roles, eq(schema.users.role_id, schema.roles.id))
       .where(whereClause)
       .orderBy(desc(schema.users.created_at))
       .limit(limit)

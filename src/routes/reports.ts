@@ -282,7 +282,8 @@ export async function reportsRoutes(fastify: FastifyInstance) {
         const [activeOperators] = await db
           .select({ count: sql<number>`count(*)` })
           .from(schema.users)
-          .where(sql`${schema.users.role} = 'OPERATOR' AND ${schema.users.is_active} = true`);
+          .innerJoin(schema.roles, eq(schema.users.role_id, schema.roles.id))
+          .where(sql`${schema.roles.name} = 'OPERATOR' AND ${schema.users.is_active} = true`);
 
         return reply.send({
           transcode_queue: {

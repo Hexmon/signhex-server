@@ -185,7 +185,10 @@ export async function roleRoutes(fastify: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: typeof updateRoleSchema._type }>,
+      reply: FastifyReply
+    ) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');

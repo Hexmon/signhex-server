@@ -40,30 +40,30 @@ const resetPasswordSchema = z.object({
 
 const createInviteSerializer =
   (referenceDate: Date) =>
-  (user: any) => {
-    const ext = user.ext || {};
-    const expiresAt = ext.invite_expires_at ? new Date(ext.invite_expires_at) : null;
-    let derivedStatus: string | null = null;
-    if (ext.invite_status) {
-      derivedStatus = ext.invite_status;
-    } else if (ext.invite_token) {
-      derivedStatus = expiresAt && expiresAt < referenceDate ? 'EXPIRED' : 'PENDING';
-    }
+    (user: any) => {
+      const ext = user.ext || {};
+      const expiresAt = ext.invite_expires_at ? new Date(ext.invite_expires_at) : null;
+      let derivedStatus: string | null = null;
+      if (ext.invite_status) {
+        derivedStatus = ext.invite_status;
+      } else if (ext.invite_token) {
+        derivedStatus = expiresAt && expiresAt < referenceDate ? 'EXPIRED' : 'PENDING';
+      }
 
-    return {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      department_id: user.department_id,
-      invite_token: ext.invite_token ?? null,
-      invite_expires_at: ext.invite_expires_at ?? null,
-      invite_status: derivedStatus,
-      invited_at: ext.invited_at ?? null,
-      is_active: user.is_active,
-      created_at: user.created_at.toISOString(),
-      updated_at: user.updated_at.toISOString(),
+      return {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        department_id: user.department_id,
+        invite_token: ext.invite_token ?? null,
+        invite_expires_at: ext.invite_expires_at ?? null,
+        invite_status: derivedStatus,
+        invited_at: ext.invited_at ?? null,
+        is_active: user.is_active,
+        created_at: user.created_at.toISOString(),
+        updated_at: user.updated_at.toISOString(),
+      };
     };
-  };
 
 export async function userInviteRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
@@ -87,6 +87,16 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         if (!ability.can('create', 'User')) throw AppError.forbidden('Forbidden');
 
         const data = inviteSchema.parse(request.body);
+
+        const [targetRole] = await db
+          .select()
+          .from(schema.roles)
+          .where(eq(schema.roles.name, data.role));
+
+        if (!targetRole) {
+          throw AppError.badRequest(`Role '${data.role}' not found`);
+        }
+
         const tempPassword = randomBytes(6).toString('hex');
         const inviteToken = randomBytes(16).toString('hex');
         const now = new Date();
@@ -95,7 +105,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         const user = await userRepo.create({
           email: data.email,
           password_hash: passwordHash,
-          role: data.role,
+          role_id: targetRole.id,
           department_id: data.department_id,
         });
 
@@ -116,7 +126,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           id: user.id,
           email: user.email,
-          role: user.role,
+          role: data.role,
           department_id: user.department_id,
           invite_token: inviteToken,
           invite_expires_at: expires.toISOString(),
@@ -163,6 +173,27 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
             .map((s) => statusLookup[s.trim().toLowerCase()])
             .filter(Boolean) as ('pending' | 'expired' | 'activated')[] | undefined;
 
+        let roleId: string | undefined;
+        if (query.role) {
+          const [targetRole] = await db
+            .select()
+            .from(schema.roles)
+            .where(eq(schema.roles.name, query.role));
+          if (targetRole) {
+            roleId = targetRole.id;
+          } else {
+            // If filter by role but role not found, return empty
+            return reply.send({
+              items: [],
+              pagination: {
+                page: query.page,
+                limit: query.limit,
+                total: 0,
+              },
+            });
+          }
+        }
+
         const result = await userRepo.listInvites({
           page: query.page,
           limit: query.limit,
@@ -170,7 +201,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
           invited_before: query.invited_before,
           invited_after: query.invited_after,
           email: query.email,
-          role: query.role,
+          role_id: roleId,
           department_id: query.department_id,
         });
 

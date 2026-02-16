@@ -94,7 +94,7 @@ export class ScheduleRequestRepository {
     }
 
     const conditions = [];
-    if (options.status) conditions.push(eq(schema.scheduleRequests.status, options.status));
+    if (options.status) conditions.push(eq(schema.scheduleRequests.status, options.status as ScheduleRequestStatus));
     if (options.requested_by) conditions.push(eq(schema.scheduleRequests.requested_by, options.requested_by));
 
     let query = db.select().from(schema.scheduleRequests);
