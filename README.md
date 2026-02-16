@@ -124,6 +124,7 @@ scripts/
 See `.env.example` for all available options:
 
 - `NODE_ENV` - Environment (development/production/test)
+- `HOST` - Bind host for API server (default: 0.0.0.0)
 - `PORT` - API server port (default: 3000)
 - `DEVICE_PORT` - mTLS device server port (default: 8443)
 - `DATABASE_URL` - PostgreSQL connection string

@@ -131,10 +131,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const query = pairingStatusQuerySchema.parse(request.query);
         const screen = await screenRepo.findById(query.device_id);
+        const pairing = await pairingRepo.findByDeviceId(query.device_id);
+        const pairingInfo = (pairing?.device_info || {}) as Record<string, any>;
+        const confirmed = Boolean(pairingInfo?.pairing?.confirmed);
 
         return reply.send({
           device_id: query.device_id,
-          paired: Boolean(screen),
+          paired: Boolean(screen) || confirmed,
+          confirmed,
           screen: screen
             ? {
                 id: screen.id,
@@ -244,6 +248,21 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           throw AppError.badRequest('Pairing is missing a device id');
         }
         const deviceId = pairing.device_id;
+        const pairingInfo = (pairing.device_info || {}) as Record<string, any>;
+        const pairingMeta = (pairingInfo?.pairing || {}) as Record<string, any>;
+        const confirmed = pairingMeta.confirmed === true;
+        const screenName =
+          typeof pairingMeta.screen_name === 'string' && pairingMeta.screen_name.trim()
+            ? pairingMeta.screen_name.trim()
+            : null;
+        const screenLocation =
+          typeof pairingMeta.screen_location === 'string' && pairingMeta.screen_location.trim()
+            ? pairingMeta.screen_location.trim()
+            : null;
+
+        if (!confirmed || !screenName) {
+          throw AppError.conflict('Pairing not confirmed');
+        }
 
         const csr = data.csr.trim();
         if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
@@ -293,6 +312,25 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           expires_at: expiresAt,
         });
 
+        const existingScreen = await screenRepo.findById(deviceId);
+        if (!existingScreen) {
+          const { pairing: _pairingMeta, ...deviceInfoRest } = pairingInfo;
+          const screenDeviceInfo: Record<string, any> = { ...(deviceInfoRest || {}) };
+          if (pairing.model && screenDeviceInfo.model == null) screenDeviceInfo.model = pairing.model;
+          if (pairing.codecs && screenDeviceInfo.codecs == null) screenDeviceInfo.codecs = pairing.codecs;
+
+          await screenRepo.create({
+            id: deviceId,
+            name: screenName,
+            location: screenLocation ?? undefined,
+            aspect_ratio: (pairing as any).aspect_ratio ?? null,
+            width: (pairing as any).width ?? null,
+            height: (pairing as any).height ?? null,
+            orientation: (pairing as any).orientation ?? null,
+            device_info: Object.keys(screenDeviceInfo).length > 0 ? screenDeviceInfo : null,
+          });
+        }
+
         await pairingRepo.markAsUsed(pairing.id);
 
         logger.info(
@@ -309,6 +347,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           message: 'Device pairing completed. Certificate issued.',
           device_id: deviceId,
           certificate: certificatePem,
+          ca_certificate: caCert,
           fingerprint,
           expires_at: expiresAt.toISOString(),
         });
@@ -319,12 +358,12 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Confirm pairing and create screen (admin)
+  // Confirm pairing (admin)
   fastify.post<{ Body: typeof confirmPairingSchema._type }>(
     apiEndpoints.devicePairing.confirm,
     {
       schema: {
-        description: 'Confirm pairing code and create screen (admin only)',
+        description: 'Confirm pairing code (admin only)',
         tags: ['Device Pairing'],
         security: [{ bearerAuth: [] }],
       },
@@ -357,36 +396,30 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           throw AppError.conflict('Screen already exists for this device');
         }
 
-        const screen = await screenRepo.create({
-          id: pairing.device_id,
-          name: data.name,
-          location: data.location,
-          aspect_ratio: (pairing as any).aspect_ratio ?? null,
-          width: (pairing as any).width ?? null,
-          height: (pairing as any).height ?? null,
-          orientation: (pairing as any).orientation ?? null,
-          device_info: (pairing as any).device_info ?? {
-            model: (pairing as any).model ?? null,
-            codecs: (pairing as any).codecs ?? null,
+        const pairingInfo = (pairing.device_info || {}) as Record<string, any>;
+        const updatedInfo = {
+          ...pairingInfo,
+          pairing: {
+            ...(pairingInfo as any)?.pairing,
+            confirmed: true,
+            confirmed_at: new Date().toISOString(),
+            screen_name: data.name,
+            screen_location: data.location ?? null,
           },
-        });
+        };
 
-        logger.info({ pairingId: pairing.id, deviceId: pairing.device_id, screenId: screen.id }, 'Pairing confirmed and screen created');
+        await pairingRepo.updateDeviceInfo(pairing.id, updatedInfo);
+
+        logger.info({ pairingId: pairing.id, deviceId: pairing.device_id }, 'Pairing confirmed; awaiting device completion');
 
         return reply.status(OK).send({
-          message: 'Screen paired successfully',
-          screen: {
-            id: screen.id,
-            name: screen.name,
-            location: screen.location,
-            status: screen.status,
-            aspect_ratio: (screen as any).aspect_ratio ?? null,
-            width: (screen as any).width ?? null,
-            height: (screen as any).height ?? null,
-            orientation: (screen as any).orientation ?? null,
-            device_info: (screen as any).device_info ?? null,
-            created_at: screen.created_at.toISOString(),
-            updated_at: screen.updated_at.toISOString(),
+          message: 'Pairing confirmed. Awaiting device completion.',
+          pairing: {
+            id: pairing.id,
+            device_id: pairing.device_id,
+            pairing_code: pairing.pairing_code,
+            expires_at: pairing.expires_at?.toISOString?.() ?? pairing.expires_at,
+            confirmed_at: (updatedInfo as any).pairing?.confirmed_at,
           },
         });
       } catch (error) {

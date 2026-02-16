@@ -49,8 +49,8 @@ async function main() {
     const fastify = await createServer();
 
     // Start server
-    await fastify.listen({ port: appConfig.PORT, host: '0.0.0.0' });
-    logger.info(`Server listening on port ${appConfig.PORT} (env: ${appConfig.NODE_ENV})`);
+    await fastify.listen({ port: appConfig.PORT, host: appConfig.HOST });
+    logger.info(`Server listening on ${appConfig.HOST}:${appConfig.PORT} (env: ${appConfig.NODE_ENV})`);
 
     // Graceful shutdown
     process.on('SIGTERM', async () => {
@@ -73,4 +73,3 @@ async function main() {
 }
 
 main();
-
