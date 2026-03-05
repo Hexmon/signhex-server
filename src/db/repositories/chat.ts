@@ -14,6 +14,9 @@ import { AppError } from '@/utils/app-error';
 type ConversationType = 'DM' | 'GROUP_CLOSED' | 'FORUM_OPEN';
 type ConversationState = 'ACTIVE' | 'ARCHIVED' | 'DELETED';
 type MemberRole = 'OWNER' | 'CHAT_ADMIN' | 'MOD' | 'MEMBER';
+type ModerationAction = 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
+
+const INDEFINITE_UNTIL = new Date('9999-12-31T23:59:59.999Z');
 
 function isAdminRole(roleName: string | undefined | null): boolean {
   return roleName === 'ADMIN' || roleName === 'SUPER_ADMIN';
@@ -84,6 +87,20 @@ export class ChatRepository {
           isNull(schema.chatMembers.left_at)
         )
       );
+  }
+
+  async getModeration(conversationId: string, userId: string) {
+    const db = getDatabase();
+    const [row] = await db
+      .select()
+      .from(schema.chatModeration)
+      .where(
+        and(
+          eq(schema.chatModeration.conversation_id, conversationId),
+          eq(schema.chatModeration.user_id, userId)
+        )
+      );
+    return row || null;
   }
 
   async getOrCreateDm(userId: string, otherUserId: string) {
@@ -604,6 +621,72 @@ export class ChatRepository {
       .returning();
 
     return receipt;
+  }
+
+  async applyModerationAction(input: {
+    conversationId: string;
+    userId: string;
+    action: ModerationAction;
+    until?: Date;
+    reason?: string;
+  }) {
+    const db = getDatabase();
+    const [existing] = await db
+      .select()
+      .from(schema.chatModeration)
+      .where(
+        and(
+          eq(schema.chatModeration.conversation_id, input.conversationId),
+          eq(schema.chatModeration.user_id, input.userId)
+        )
+      );
+
+    if (input.action === 'UNMUTE' || input.action === 'UNBAN') {
+      if (!existing) return null;
+      const [updated] = await db
+        .update(schema.chatModeration)
+        .set({
+          muted_until: input.action === 'UNMUTE' ? null : existing.muted_until,
+          banned_until: input.action === 'UNBAN' ? null : existing.banned_until,
+          reason: input.reason ?? existing.reason,
+          updated_at: new Date(),
+        })
+        .where(eq(schema.chatModeration.id, existing.id))
+        .returning();
+      return updated || null;
+    }
+
+    const until = input.until ?? INDEFINITE_UNTIL;
+    if (until.getTime() <= Date.now()) {
+      throw AppError.badRequest('Moderation expiry must be in the future');
+    }
+
+    if (existing) {
+      const [updated] = await db
+        .update(schema.chatModeration)
+        .set({
+          muted_until: input.action === 'MUTE' ? until : existing.muted_until,
+          banned_until: input.action === 'BAN' ? until : existing.banned_until,
+          reason: input.reason ?? existing.reason,
+          updated_at: new Date(),
+        })
+        .where(eq(schema.chatModeration.id, existing.id))
+        .returning();
+      return updated || null;
+    }
+
+    const [created] = await db
+      .insert(schema.chatModeration)
+      .values({
+        conversation_id: input.conversationId,
+        user_id: input.userId,
+        muted_until: input.action === 'MUTE' ? until : null,
+        banned_until: input.action === 'BAN' ? until : null,
+        reason: input.reason ?? null,
+        updated_at: new Date(),
+      })
+      .returning();
+    return created || null;
   }
 
   async inviteMembers(conversationId: string, userIds: string[], role: MemberRole = 'MEMBER') {

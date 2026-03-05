@@ -280,4 +280,180 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
     expect(revisions.length).toBe(1);
     expect(revisions[0].action).toBe('DELETE');
   });
+
+  it('allows admin to mute/unmute and enforces muted write restrictions', async () => {
+    const db = getDatabase();
+    const conversationId = randomUUID();
+    const messageId = randomUUID();
+
+    await db.insert(schema.chatConversations).values({
+      id: conversationId,
+      type: 'FORUM_OPEN',
+      created_by: testUser.id,
+      state: 'ACTIVE',
+      invite_policy: 'ANY_MEMBER_CAN_INVITE',
+      title: 'Muted Forum',
+      metadata: {},
+      last_seq: 1,
+    });
+
+    await db.insert(schema.chatMessages).values({
+      id: messageId,
+      conversation_id: conversationId,
+      seq: 1,
+      sender_id: testUser.id,
+      body_text: 'seed for moderation',
+    });
+
+    const mutedUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const muteResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/moderation`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        userId: testUser.id,
+        action: 'MUTE',
+        until: mutedUntil,
+        reason: 'test mute',
+      },
+    });
+    expect(muteResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const muteBody = JSON.parse(muteResponse.body);
+    expect(muteBody.moderation.user_id).toBe(testUser.id);
+    expect(muteBody.moderation.muted_until).toBeTruthy();
+
+    const blockedCalls = await Promise.all([
+      server.inject({
+        method: 'POST',
+        url: `/api/v1/chat/conversations/${conversationId}/messages`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { text: 'muted send' },
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/api/v1/chat/messages/${messageId}/reactions`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { emoji: ':mute:', op: 'add' },
+      }),
+      server.inject({
+        method: 'PATCH',
+        url: `/api/v1/chat/messages/${messageId}`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { text: 'muted edit' },
+      }),
+      server.inject({
+        method: 'DELETE',
+        url: `/api/v1/chat/messages/${messageId}`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      }),
+    ]);
+
+    for (const response of blockedCalls) {
+      expect(response.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+      const body = JSON.parse(response.body);
+      expect(body.error.code).toBe('CHAT_MUTED');
+      expect(body.error.details?.muted_until).toBeTruthy();
+    }
+
+    const listResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}/messages?afterSeq=0&limit=10`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(listResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const unmuteResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/moderation`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        userId: testUser.id,
+        action: 'UNMUTE',
+      },
+    });
+    expect(unmuteResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const sendAfterUnmute = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'allowed after unmute' },
+    });
+    expect(sendAfterUnmute.statusCode).toBe(HTTP_STATUS.OK);
+  });
+
+  it('allows admin to ban/unban and enforces banned read/write restrictions', async () => {
+    const db = getDatabase();
+    const conversationId = randomUUID();
+
+    await db.insert(schema.chatConversations).values({
+      id: conversationId,
+      type: 'FORUM_OPEN',
+      created_by: testUser.id,
+      state: 'ACTIVE',
+      invite_policy: 'ANY_MEMBER_CAN_INVITE',
+      title: 'Banned Forum',
+      metadata: {},
+      last_seq: 0,
+    });
+
+    const bannedUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const banResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/moderation`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        userId: testUser.id,
+        action: 'BAN',
+        until: bannedUntil,
+        reason: 'test ban',
+      },
+    });
+    expect(banResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const blockedCalls = await Promise.all([
+      server.inject({
+        method: 'GET',
+        url: `/api/v1/chat/conversations/${conversationId}/messages?afterSeq=0&limit=10`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/api/v1/chat/conversations/${conversationId}/read`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { lastReadSeq: 0 },
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/api/v1/chat/conversations/${conversationId}/messages`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { text: 'banned send' },
+      }),
+    ]);
+
+    for (const response of blockedCalls) {
+      expect(response.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+      const body = JSON.parse(response.body);
+      expect(body.error.code).toBe('CHAT_BANNED');
+      expect(body.error.details?.banned_until).toBeTruthy();
+    }
+
+    const unbanResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/moderation`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        userId: testUser.id,
+        action: 'UNBAN',
+      },
+    });
+    expect(unbanResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const listAfterUnban = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}/messages?afterSeq=0&limit=10`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(listAfterUnban.statusCode).toBe(HTTP_STATUS.OK);
+  });
 });

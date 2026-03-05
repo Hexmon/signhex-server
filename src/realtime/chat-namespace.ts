@@ -4,6 +4,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { createSessionRepository } from '@/db/repositories/session';
 import { createChatRepository } from '@/db/repositories/chat';
 import { createLogger } from '@/utils/logger';
+import { getActiveModeration } from '@/chat/guard';
 import {
   getOrCreateSocketServer,
   getSocketAllowedOrigins,
@@ -71,6 +72,15 @@ export function chatConversationRoom(conversationId: string): string {
   return `chat:conv:${conversationId}`;
 }
 
+export function canSocketSubscribe(
+  canAccess: boolean,
+  moderation: { muted_until?: Date | string | null; banned_until?: Date | string | null } | null
+): boolean {
+  if (!canAccess) return false;
+  const { bannedUntil } = getActiveModeration(moderation);
+  return !bannedUntil;
+}
+
 export async function setupChatNamespace(fastify: FastifyInstance) {
   if ((fastify as any)._chatNamespaceReady) return;
 
@@ -129,7 +139,8 @@ export async function setupChatNamespace(fastify: FastifyInstance) {
 
         for (const id of ids) {
           const canAccess = await chatRepo.canAccessConversation(id, user.sub, user.role);
-          if (!canAccess) {
+          const moderation = await chatRepo.getModeration(id, user.sub);
+          if (!canSocketSubscribe(canAccess, moderation)) {
             rejected.push(id);
             continue;
           }
@@ -145,6 +156,8 @@ export async function setupChatNamespace(fastify: FastifyInstance) {
       if (!payload?.conversationId) return;
       const canAccess = await chatRepo.canAccessConversation(payload.conversationId, user.sub, user.role);
       if (!canAccess) return;
+      const moderation = await chatRepo.getModeration(payload.conversationId, user.sub);
+      if (getActiveModeration(moderation).bannedUntil) return;
 
       nsp.to(chatConversationRoom(payload.conversationId)).emit('chat:typing', {
         conversationId: payload.conversationId,
@@ -158,6 +171,8 @@ export async function setupChatNamespace(fastify: FastifyInstance) {
       if (!payload?.conversationId || typeof payload.lastReadSeq !== 'number') return;
       const canAccess = await chatRepo.canAccessConversation(payload.conversationId, user.sub, user.role);
       if (!canAccess) return;
+      const moderation = await chatRepo.getModeration(payload.conversationId, user.sub);
+      if (getActiveModeration(moderation).bannedUntil) return;
       await chatRepo.markRead(payload.conversationId, user.sub, payload.lastReadSeq);
     });
   });

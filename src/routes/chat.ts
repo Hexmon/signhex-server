@@ -13,7 +13,7 @@ import { emitChatEvent, setupChatNamespace } from '@/realtime/chat-namespace';
 import { notifyMessageEvent } from '@/chat/notify';
 import { createRateLimiter } from '@/chat/rate-limit';
 import { assertAttachmentAccess } from '@/chat/attachment-auth';
-import { assertConversationWritable } from '@/chat/guard';
+import { assertCanWriteToConversation, assertConversationWritable, assertNotBanned } from '@/chat/guard';
 import { getDatabase, schema } from '@/db';
 import { queueChatMediaCleanup } from '@/jobs';
 
@@ -80,6 +80,13 @@ const updateConversationSchema = z.object({
     .enum(['ANY_MEMBER_CAN_INVITE', 'ADMINS_ONLY_CAN_INVITE', 'INVITES_DISABLED'])
     .optional(),
   state: z.enum(['ACTIVE', 'ARCHIVED']).optional(),
+});
+
+const moderationSchema = z.object({
+  userId: z.string().uuid(),
+  action: z.enum(['MUTE', 'BAN', 'UNMUTE', 'UNBAN']),
+  until: z.string().datetime().optional(),
+  reason: z.string().max(2000).optional(),
 });
 
 function isAdminRole(roleName: string | undefined): boolean {
@@ -213,8 +220,11 @@ export async function chatRoutes(fastify: FastifyInstance) {
       try {
         const { payload } = await authenticate(request);
         const query = listMessagesQuerySchema.parse(request.query);
-        await getConversationForAccess((request.params as any).id, payload.sub, payload.role);
-        const items = await chatRepo.listMessages((request.params as any).id, {
+        const conversationId = (request.params as any).id;
+        await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertNotBanned(moderation);
+        const items = await chatRepo.listMessages(conversationId, {
           afterSeq: query.afterSeq,
           limit: query.limit,
         });
@@ -236,6 +246,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const conversationId = (request.params as any).id;
         const parentMessageId = (request.params as any).parentMessageId;
         await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertNotBanned(moderation);
         const parentMessage = await chatRepo.getMessageById(parentMessageId);
         if (!parentMessage || parentMessage.conversation_id !== conversationId) {
           throw AppError.notFound('Parent message not found');
@@ -263,7 +275,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const data = sendMessageSchema.parse(request.body);
         const conversationId = (request.params as any).id;
         const conversation = await getConversationForAccess(conversationId, payload.sub, payload.role);
-        assertConversationWritable(conversation);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
 
         if (conversation.type === 'FORUM_OPEN') {
           const key = `${payload.sub}:${conversationId}:forum`;
@@ -358,7 +371,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const row = await chatRepo.getConversationForMessage((request.params as any).id);
         if (!row) throw AppError.notFound('Message not found');
         const conversation = await getConversationForAccess(row.conversation.id, payload.sub, payload.role);
-        assertConversationWritable(conversation);
+        const moderation = await chatRepo.getModeration(row.conversation.id, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
         const isOwner = row.message.sender_id === payload.sub;
         if (!isOwner && !isAdminRole(payload.role)) {
           throw AppError.forbidden('You cannot edit this message');
@@ -394,7 +408,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const row = await chatRepo.getConversationForMessage((request.params as any).id);
         if (!row) throw AppError.notFound('Message not found');
         const conversation = await getConversationForAccess(row.conversation.id, payload.sub, payload.role);
-        assertConversationWritable(conversation);
+        const moderation = await chatRepo.getModeration(row.conversation.id, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
         const isOwner = row.message.sender_id === payload.sub;
         if (!isOwner && !isAdminRole(payload.role)) {
           throw AppError.forbidden('You cannot delete this message');
@@ -429,7 +444,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const row = await chatRepo.getConversationForMessage((request.params as any).id);
         if (!row) throw AppError.notFound('Message not found');
         const conversation = await getConversationForAccess(row.conversation.id, payload.sub, payload.role);
-        assertConversationWritable(conversation);
+        const moderation = await chatRepo.getModeration(row.conversation.id, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
 
         const result = await chatRepo.updateReaction({
           messageId: row.message.id,
@@ -468,6 +484,8 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const data = readSchema.parse(request.body);
         const conversationId = (request.params as any).id;
         await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertNotBanned(moderation);
 
         const receipt = await chatRepo.markRead(conversationId, payload.sub, data.lastReadSeq);
         return reply.send({ receipt });
@@ -649,6 +667,56 @@ export async function chatRoutes(fastify: FastifyInstance) {
         return reply.send({ success: true, conversationId });
       } catch (error) {
         logger.error(error, 'Hard delete conversation error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: typeof moderationSchema._type }>(
+    apiEndpoints.chat.moderateConversation,
+    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const data = moderationSchema.parse(request.body);
+        const conversationId = (request.params as any).id;
+        const conversation = await getConversationForAccess(conversationId, payload.sub, payload.role);
+
+        if (conversation.type === 'DM') throw AppError.forbidden('Moderation is not supported for DM');
+        if (!isAdminRole(payload.role)) {
+          throw AppError.forbidden('Only admin can moderate conversations');
+        }
+
+        const moderation = await chatRepo.applyModerationAction({
+          conversationId,
+          userId: data.userId,
+          action: data.action,
+          until: data.until ? new Date(data.until) : undefined,
+          reason: data.reason,
+        });
+
+        const auditAction =
+          data.action === 'MUTE'
+            ? 'CHAT_MODERATION_MUTE'
+            : data.action === 'BAN'
+            ? 'CHAT_MODERATION_BAN'
+            : data.action === 'UNMUTE'
+            ? 'CHAT_MODERATION_UNMUTE'
+            : 'CHAT_MODERATION_UNBAN';
+
+        await appendAudit(request, payload.sub, auditAction, 'ChatConversation', conversationId);
+        emitChatEvent(fastify, conversationId, 'chat:conversation:updated', {
+          conversationId,
+          patch: {
+            moderationChanged: true,
+            action: data.action,
+            userId: data.userId,
+          },
+        });
+
+        return reply.send({ moderation });
+      } catch (error) {
+        logger.error(error, 'Moderation update error');
         return respondWithError(reply, error);
       }
     }

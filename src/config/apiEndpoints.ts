@@ -204,6 +204,7 @@ export const apiEndpoints = {
     deleteMessage: withBase('/chat/messages/:id'),
     reactToMessage: withBase('/chat/messages/:id/reactions'),
     markRead: withBase('/chat/conversations/:id/read'),
+    moderateConversation: withBase('/chat/conversations/:id/moderation'),
   },
   proofOfPlay: {
     list: withBase('/proof-of-play'),

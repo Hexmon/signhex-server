@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSocketAuthToken } from '@/realtime/chat-namespace';
+import { canSocketSubscribe, resolveSocketAuthToken } from '@/realtime/chat-namespace';
 
 describe('chat namespace auth resolution', () => {
   const allowlist = ['http://localhost:8080'];
@@ -40,5 +40,19 @@ describe('chat namespace auth resolution', () => {
     });
     expect(result.token).toBe('token-123');
     expect(result.source).toBe('handshake_auth');
+  });
+
+  it('rejects socket subscription when user is actively banned', () => {
+    const allowed = canSocketSubscribe(true, {
+      banned_until: new Date(Date.now() + 60_000),
+    });
+    expect(allowed).toBe(false);
+  });
+
+  it('allows socket subscription for muted users', () => {
+    const allowed = canSocketSubscribe(true, {
+      muted_until: new Date(Date.now() + 60_000),
+    });
+    expect(allowed).toBe(true);
   });
 });
