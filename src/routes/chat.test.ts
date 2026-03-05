@@ -207,6 +207,17 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
         headers: { authorization: `Bearer ${adminToken}` },
         payload: { title: 'blocked update' },
       }),
+      server.inject({
+        method: 'POST',
+        url: `/api/v1/chat/conversations/${conversationId}/moderation`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {
+          userId: secondUserId,
+          action: 'MUTE',
+          until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          reason: 'blocked moderation',
+        },
+      }),
     ];
 
     const results = await Promise.all(mutatingCalls);

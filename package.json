@@ -20,7 +20,8 @@
     "admin-cli": "tsx scripts/admin-cli.ts",
     "check": "tsx scripts/check-services.ts",
     "verify": "tsx scripts/verify-build.ts",
-    "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts"
+    "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts",
+    "chat:dry-run": "tsx scripts/chat-dry-run.ts"
   },
   "keywords": [
     "signage",
@@ -68,6 +69,7 @@
     "nodemon": "^3.1.10",
     "pino-pretty": "^10.3.1",
     "prettier": "^3.1.1",
+    "socket.io-client": "^4.8.1",
     "supertest": "^6.3.3",
     "tsc-alias": "^1.8.8",
     "tsx": "^4.7.0",

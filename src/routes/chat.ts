@@ -694,6 +694,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const data = moderationSchema.parse(request.body);
         const conversationId = (request.params as any).id;
         const conversation = await getConversationForAccess(conversationId, payload.sub, payload.role);
+        assertConversationWritable(conversation);
 
         if (conversation.type === 'DM') throw AppError.forbidden('Moderation is not supported for DM');
         if (!isAdminRole(payload.role)) {

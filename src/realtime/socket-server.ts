@@ -3,6 +3,11 @@ import { Server as SocketIOServer } from 'socket.io';
 import { config as appConfig } from '@/config';
 
 const DEFAULT_ORIGIN = 'http://localhost:8080';
+const SOCKET_SERVER_KEY = Symbol.for('signhex.socket.io.server');
+
+type HttpServerWithSocket = {
+  [SOCKET_SERVER_KEY]?: SocketIOServer;
+};
 
 export function parseAllowedOrigins(value: string): string[] {
   return value
@@ -27,6 +32,13 @@ export function isAllowedOrigin(origin: string | undefined, allowlist = getSocke
 }
 
 export function getOrCreateSocketServer(fastify: FastifyInstance): SocketIOServer {
+  const httpServer = fastify.server as HttpServerWithSocket;
+  const existingOnServer = httpServer[SOCKET_SERVER_KEY];
+  if (existingOnServer) {
+    (fastify as any).io = existingOnServer;
+    return existingOnServer;
+  }
+
   const existing = (fastify as any).io as SocketIOServer | undefined;
   if (existing) return existing;
 
@@ -43,5 +55,6 @@ export function getOrCreateSocketServer(fastify: FastifyInstance): SocketIOServe
   });
 
   (fastify as any).io = io;
+  httpServer[SOCKET_SERVER_KEY] = io;
   return io;
 }
