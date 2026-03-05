@@ -18,7 +18,8 @@
     "seed": "tsx scripts/seed.ts",
     "admin-cli": "tsx scripts/admin-cli.ts",
     "check": "tsx scripts/check-services.ts",
-    "verify": "tsx scripts/verify-build.ts"
+    "verify": "tsx scripts/verify-build.ts",
+    "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts"
   },
   "keywords": [
     "signage",
