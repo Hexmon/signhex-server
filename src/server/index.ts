@@ -35,6 +35,7 @@ import { screenGroupRoutes } from '@/routes/screen-groups';
 import { scheduleRequestRoutes } from '@/routes/schedule-requests';
 import { roleRoutes } from '@/routes/roles';
 import { permissionRoutes } from '@/routes/permissions';
+import { chatRoutes } from '@/routes/chat';
 import csrfProtectionPlugin from '@/middleware/csrf';
 import { formatErrorResponse } from '@/utils/app-error';
 import { toAppError } from '@/utils/errors';
@@ -247,6 +248,7 @@ export async function createServer() {
   await fastify.register(ssoConfigRoutes);
   await fastify.register(settingsRoutes);
   await fastify.register(conversationRoutes);
+  await fastify.register(chatRoutes);
   await fastify.register(proofOfPlayRoutes);
   await fastify.register(metricsRoutes);
   await fastify.register(reportsRoutes);

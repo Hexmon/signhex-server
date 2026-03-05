@@ -142,6 +142,11 @@ export interface CleanupJob {
   type: 'expired_sessions' | 'old_logs' | 'orphaned_objects';
 }
 
+export interface ChatMediaCleanupJob {
+  conversationId: string;
+  mediaAssetIds: string[];
+}
+
 // Job queue functions
 export async function queueFFmpegTranscode(job: FFmpegTranscodeJob, options?: any) {
   const jobs = getJobs();
@@ -174,6 +179,15 @@ export async function queueCleanup(job: CleanupJob, options?: any) {
   const jobs = getJobs();
   return jobs.send('cleanup', job, {
     retryLimit: 1,
+    ...options,
+  });
+}
+
+export async function queueChatMediaCleanup(job: ChatMediaCleanupJob, options?: any) {
+  const jobs = getJobs();
+  return jobs.send('chat:media-cleanup', job, {
+    retryLimit: 3,
+    retryDelay: 60,
     ...options,
   });
 }
@@ -593,6 +607,110 @@ export async function registerJobHandlers() {
     }
   });
 
+  await jobs.work<ChatMediaCleanupJob>('chat:media-cleanup', async (jobBatch) => {
+    const db = getDatabase();
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      const mediaIds = Array.from(new Set(job.data.mediaAssetIds || []));
+      if (!mediaIds.length) continue;
+
+      logger.info(
+        { conversationId: job.data.conversationId, mediaCount: mediaIds.length },
+        'Processing chat media cleanup job'
+      );
+
+      for (const mediaId of mediaIds) {
+        try {
+          const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+          if (!media) continue;
+
+          const [chatRefCount] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(schema.chatAttachments)
+            .where(eq(schema.chatAttachments.media_asset_id, mediaId));
+          const [presentationItemRefCount] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(schema.presentationItems)
+            .where(eq(schema.presentationItems.media_id, mediaId));
+          const [presentationSlotRefCount] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(schema.presentationSlotItems)
+            .where(eq(schema.presentationSlotItems.media_id, mediaId));
+          const [emergencyRefCount] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(schema.emergencies)
+            .where(eq(schema.emergencies.media_id, mediaId));
+          const [emergencyTypeRefCount] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(schema.emergencyTypes)
+            .where(eq(schema.emergencyTypes.media_id, mediaId));
+
+          const totalRefs =
+            Number((chatRefCount as any)?.count || 0) +
+            Number((presentationItemRefCount as any)?.count || 0) +
+            Number((presentationSlotRefCount as any)?.count || 0) +
+            Number((emergencyRefCount as any)?.count || 0) +
+            Number((emergencyTypeRefCount as any)?.count || 0);
+
+          if (totalRefs > 0) {
+            logger.info({ mediaId, totalRefs }, 'Skipping media cleanup because references still exist');
+            continue;
+          }
+
+          const storageRows = [];
+          if (media.source_object_id) {
+            const [row] = await db
+              .select()
+              .from(schema.storageObjects)
+              .where(eq(schema.storageObjects.id, media.source_object_id));
+            if (row) storageRows.push(row);
+          }
+          if (media.ready_object_id) {
+            const [row] = await db
+              .select()
+              .from(schema.storageObjects)
+              .where(eq(schema.storageObjects.id, media.ready_object_id));
+            if (row) storageRows.push(row);
+          }
+          if (media.thumbnail_object_id) {
+            const [row] = await db
+              .select()
+              .from(schema.storageObjects)
+              .where(eq(schema.storageObjects.id, media.thumbnail_object_id));
+            if (row) storageRows.push(row);
+          }
+
+          if (media.source_bucket && media.source_object_key) {
+            try {
+              await deleteObject(media.source_bucket, media.source_object_key);
+            } catch (error) {
+              logger.warn(error, `Failed to delete source object for media ${mediaId}`);
+            }
+          }
+
+          for (const storage of storageRows) {
+            try {
+              await deleteObject(storage.bucket, storage.object_key);
+            } catch (error) {
+              logger.warn(error, `Failed to delete storage object ${storage.bucket}/${storage.object_key}`);
+            }
+          }
+
+          if (storageRows.length) {
+            await db
+              .delete(schema.storageObjects)
+              .where(inArray(schema.storageObjects.id, storageRows.map((row) => row.id)));
+          }
+
+          await db.delete(schema.media).where(eq(schema.media.id, mediaId));
+        } catch (error) {
+          logger.error(error, `Failed chat media cleanup for media ${mediaId}`);
+        }
+      }
+    }
+  });
+
   logger.info('Job handlers registered');
 }
 
@@ -639,6 +757,7 @@ export async function scheduleRecurringJobs() {
     // Ensure queues exist BEFORE scheduling
     await jobs.createQueue('cleanup').catch(() => { }); // ignore "already exists"
     await jobs.createQueue('archive').catch(() => { });
+    await jobs.createQueue('chat:media-cleanup').catch(() => { });
 
     // (Optional) also ensure worker queues exist if you schedule them too later on:
     // await jobs.createQueue('ffmpeg:transcode').catch(() => {});

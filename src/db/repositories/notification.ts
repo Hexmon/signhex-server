@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, lt } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class NotificationRepository {
@@ -6,7 +6,7 @@ export class NotificationRepository {
     user_id: string;
     title: string;
     message: string;
-    type: 'INFO' | 'WARNING' | 'ERROR' | 'SUCCESS';
+    type: string;
     data?: Record<string, any>;
   }) {
     const db = getDatabase();
@@ -95,8 +95,7 @@ export class NotificationRepository {
       .where(
         and(
           eq(schema.notifications.is_read, true),
-          // @ts-ignore - Drizzle doesn't have a built-in lt operator
-          // This would need to be implemented with raw SQL
+          lt(schema.notifications.created_at, cutoffDate),
         )
       );
   }
@@ -105,4 +104,3 @@ export class NotificationRepository {
 export function createNotificationRepository(): NotificationRepository {
   return new NotificationRepository();
 }
-

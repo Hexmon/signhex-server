@@ -13,6 +13,7 @@ import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
+import { getOrCreateSocketServer } from '@/realtime/socket-server';
 
 const logger = createLogger('emergency-routes');
 const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -53,14 +54,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
   const emergencyTypeRepo = createEmergencyTypeRepository();
   const mediaRepo = createMediaRepository();
   const db = getDatabase();
-  const io: SocketIOServer =
-    (fastify as any).io ??
-    ((fastify as any).io = new SocketIOServer(fastify.server, {
-      cors: {
-        origin: true,
-        credentials: true,
-      },
-    }));
+  const io: SocketIOServer = getOrCreateSocketServer(fastify);
 
   fastify.addHook('onClose', (_, done) => {
     io.close();

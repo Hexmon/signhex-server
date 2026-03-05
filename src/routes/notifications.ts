@@ -9,7 +9,7 @@ import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('notification-routes');
-const { BAD_REQUEST, FORBIDDEN, NO_CONTENT, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { NO_CONTENT } = HTTP_STATUS;
 
 const listNotificationsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
@@ -51,8 +51,8 @@ export async function notificationRoutes(fastify: FastifyInstance) {
             id: n.id,
             title: n.title,
             message: n.message,
-            type: null,
-            data: null,
+            type: (n as any).type ?? null,
+            data: (n as any).data ?? null,
             read: n.is_read,
             read_at: null,
             created_at: n.created_at.toISOString(),
@@ -103,8 +103,8 @@ export async function notificationRoutes(fastify: FastifyInstance) {
           id: notification.id,
           title: notification.title,
           message: notification.message,
-          type: null,
-          data: null,
+          type: (notification as any).type ?? null,
+          data: (notification as any).data ?? null,
           read: notification.is_read,
           read_at: null,
           created_at: notification.created_at.toISOString(),
@@ -151,8 +151,8 @@ export async function notificationRoutes(fastify: FastifyInstance) {
           id: updated!.id,
           title: updated!.title,
           message: updated!.message,
-          type: null,
-          data: null,
+          type: (updated as any).type ?? null,
+          data: (updated as any).data ?? null,
           read: updated!.is_read,
           read_at: null,
           created_at: updated!.created_at.toISOString(),

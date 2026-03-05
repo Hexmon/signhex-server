@@ -7,6 +7,7 @@ import {
   timestamp,
   boolean,
   integer,
+  bigint,
   jsonb,
   uniqueIndex,
   index,
@@ -27,6 +28,15 @@ export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
 export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN', 'TAKE_SCREENSHOT', 'SET_SCREENSHOT_INTERVAL']);
 export const commandStatusEnum = pgEnum('command_status', ['PENDING', 'SENT', 'ACKNOWLEDGED', 'COMPLETED', 'FAILED']);
+export const chatConversationTypeEnum = pgEnum('chat_conversation_type', ['DM', 'GROUP_CLOSED', 'FORUM_OPEN']);
+export const chatConversationStateEnum = pgEnum('chat_conversation_state', ['ACTIVE', 'ARCHIVED', 'DELETED']);
+export const chatInvitePolicyEnum = pgEnum('chat_invite_policy', [
+  'ANY_MEMBER_CAN_INVITE',
+  'ADMINS_ONLY_CAN_INVITE',
+  'INVITES_DISABLED',
+]);
+export const chatMemberRoleEnum = pgEnum('chat_member_role', ['OWNER', 'CHAT_ADMIN', 'MOD', 'MEMBER']);
+export const chatRevisionActionEnum = pgEnum('chat_revision_action', ['EDIT', 'DELETE']);
 
 // Users table
 export const roles = pgTable(
@@ -516,6 +526,8 @@ export const notifications = pgTable(
     user_id: uuid('user_id').notNull(),
     title: varchar('title', { length: 255 }).notNull(),
     message: text('message'),
+    type: varchar('type', { length: 32 }).notNull().default('INFO'),
+    data: jsonb('data'),
     is_read: boolean('is_read').notNull().default(false),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
@@ -751,6 +763,164 @@ export const conversationReads = pgTable(
       table.conversation_id,
       table.user_id
     ),
+  })
+);
+
+export const chatConversations = pgTable(
+  'chat_conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: chatConversationTypeEnum('type').notNull(),
+    dm_pair_key: varchar('dm_pair_key', { length: 255 }),
+    title: varchar('title', { length: 255 }),
+    topic: text('topic'),
+    purpose: text('purpose'),
+    created_by: uuid('created_by').notNull(),
+    state: chatConversationStateEnum('state').notNull().default('ACTIVE'),
+    invite_policy: chatInvitePolicyEnum('invite_policy').notNull().default('ANY_MEMBER_CAN_INVITE'),
+    last_seq: bigint('last_seq', { mode: 'number' }).notNull().default(0),
+    metadata: jsonb('metadata').notNull().default({}),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    archived_at: timestamp('archived_at'),
+    deleted_at: timestamp('deleted_at'),
+  },
+  (table) => ({
+    dmPairIdx: uniqueIndex('chat_conversations_dm_pair_key_idx').on(table.dm_pair_key),
+    stateTypeIdx: index('chat_conversations_state_type_idx').on(table.state, table.type),
+    updatedAtIdx: index('chat_conversations_updated_at_idx').on(table.updated_at),
+  })
+);
+
+export const chatMembers = pgTable(
+  'chat_members',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    role: chatMemberRoleEnum('role').notNull().default('MEMBER'),
+    is_system: boolean('is_system').notNull().default(false),
+    joined_at: timestamp('joined_at').notNull().defaultNow(),
+    left_at: timestamp('left_at'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationUserIdx: uniqueIndex('chat_members_conversation_user_idx').on(table.conversation_id, table.user_id),
+    userIdx: index('chat_members_user_idx').on(table.user_id),
+    conversationIdx: index('chat_members_conversation_idx').on(table.conversation_id),
+  })
+);
+
+export const chatMessages = pgTable(
+  'chat_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    sender_id: uuid('sender_id').notNull(),
+    body_text: text('body_text'),
+    body_rich: jsonb('body_rich'),
+    reply_to_message_id: uuid('reply_to_message_id'),
+    thread_root_id: uuid('thread_root_id'),
+    thread_reply_count: integer('thread_reply_count').notNull().default(0),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    edited_at: timestamp('edited_at'),
+    deleted_at: timestamp('deleted_at'),
+  },
+  (table) => ({
+    conversationSeqUniqueIdx: uniqueIndex('chat_messages_conversation_seq_idx').on(table.conversation_id, table.seq),
+    conversationIdx: index('chat_messages_conversation_idx').on(table.conversation_id),
+    replyToIdx: index('chat_messages_reply_to_idx').on(table.reply_to_message_id),
+    threadRootIdx: index('chat_messages_thread_root_idx').on(table.thread_root_id),
+  })
+);
+
+export const chatAttachments = pgTable(
+  'chat_attachments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    message_id: uuid('message_id').notNull(),
+    media_asset_id: uuid('media_asset_id').notNull(),
+    kind: varchar('kind', { length: 50 }),
+    ord: integer('ord').notNull().default(0),
+    metadata: jsonb('metadata'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    messageMediaIdx: uniqueIndex('chat_attachments_message_media_idx').on(table.message_id, table.media_asset_id),
+    mediaIdx: index('chat_attachments_media_idx').on(table.media_asset_id),
+    messageIdx: index('chat_attachments_message_idx').on(table.message_id),
+  })
+);
+
+export const chatReactions = pgTable(
+  'chat_reactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    message_id: uuid('message_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    emoji: varchar('emoji', { length: 64 }).notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    messageUserEmojiIdx: uniqueIndex('chat_reactions_message_user_emoji_idx').on(
+      table.message_id,
+      table.user_id,
+      table.emoji
+    ),
+    messageIdx: index('chat_reactions_message_idx').on(table.message_id),
+  })
+);
+
+export const chatReceipts = pgTable(
+  'chat_receipts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    last_read_seq: bigint('last_read_seq', { mode: 'number' }).notNull().default(0),
+    last_delivered_seq: bigint('last_delivered_seq', { mode: 'number' }).notNull().default(0),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationUserIdx: uniqueIndex('chat_receipts_conversation_user_idx').on(table.conversation_id, table.user_id),
+    userIdx: index('chat_receipts_user_idx').on(table.user_id),
+  })
+);
+
+export const chatModeration = pgTable(
+  'chat_moderation',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    muted_until: timestamp('muted_until'),
+    banned_until: timestamp('banned_until'),
+    reason: text('reason'),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationUserIdx: uniqueIndex('chat_moderation_conversation_user_idx').on(table.conversation_id, table.user_id),
+    userIdx: index('chat_moderation_user_idx').on(table.user_id),
+  })
+);
+
+export const chatMessageRevisions = pgTable(
+  'chat_message_revisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    message_id: uuid('message_id').notNull(),
+    editor_id: uuid('editor_id').notNull(),
+    action: chatRevisionActionEnum('action').notNull(),
+    old_body_text: text('old_body_text'),
+    old_body_rich: jsonb('old_body_rich'),
+    new_body_text: text('new_body_text'),
+    new_body_rich: jsonb('new_body_rich'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    messageIdx: index('chat_message_revisions_message_idx').on(table.message_id, table.created_at),
+    editorIdx: index('chat_message_revisions_editor_idx').on(table.editor_id, table.created_at),
   })
 );
 
