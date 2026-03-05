@@ -649,7 +649,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
           throw AppError.forbidden('Only super admin can hard delete conversations');
         }
         const conversationId = (request.params as any).id;
-        await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const conversation = await chatRepo.getConversationById(conversationId);
+        if (!conversation || conversation.state === 'DELETED') {
+          throw AppError.notFound('Conversation not found');
+        }
 
         const result = await chatRepo.hardDeleteConversation(conversationId);
         if (result.mediaAssetIds.length) {

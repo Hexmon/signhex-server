@@ -106,15 +106,20 @@ export class ChatRepository {
   async getOrCreateDm(userId: string, otherUserId: string) {
     const db = getDatabase();
     const pairKey = normalizeDmPair(userId, otherUserId);
-    const [existing] = await db
-      .select()
-      .from(schema.chatConversations)
-      .where(
-        and(
-          eq(schema.chatConversations.type, 'DM'),
-          eq(schema.chatConversations.dm_pair_key, pairKey)
+    const findActiveDm = async () => {
+      const [row] = await db
+        .select()
+        .from(schema.chatConversations)
+        .where(
+          and(
+            eq(schema.chatConversations.type, 'DM'),
+            eq(schema.chatConversations.dm_pair_key, pairKey),
+            eq(schema.chatConversations.state, 'ACTIVE')
+          )
         )
-      );
+        .limit(1);
+      return row || null;
+    };
 
     const upsertMembers = async (conversationId: string) => {
       await db
@@ -138,21 +143,37 @@ export class ChatRepository {
         });
     };
 
+    const existing = await findActiveDm();
     if (existing) {
       await upsertMembers(existing.id);
       return existing;
     }
 
-    const [created] = await db
-      .insert(schema.chatConversations)
-      .values({
-        type: 'DM',
-        dm_pair_key: pairKey,
-        created_by: userId,
-        invite_policy: 'INVITES_DISABLED',
-        metadata: {},
-      })
-      .returning();
+    let created: typeof schema.chatConversations.$inferSelect | null = null;
+    try {
+      const [inserted] = await db
+        .insert(schema.chatConversations)
+        .values({
+          type: 'DM',
+          dm_pair_key: pairKey,
+          created_by: userId,
+          invite_policy: 'INVITES_DISABLED',
+          metadata: {},
+        })
+        .returning();
+      created = inserted || null;
+    } catch (error: unknown) {
+      const pgCode =
+        typeof error === 'object' && error && 'code' in error
+          ? (error as { code?: string }).code
+          : undefined;
+      if (pgCode !== '23505') throw error;
+      created = await findActiveDm();
+    }
+
+    if (!created) {
+      throw AppError.internal('Failed to create DM conversation');
+    }
 
     await upsertMembers(created.id);
     return created;

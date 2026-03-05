@@ -10,6 +10,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { sql } from 'drizzle-orm';
 import { generateAccessToken } from '@/auth/jwt';
 import { createSessionRepository } from '@/db/repositories/session';
+import { hashPassword } from '@/auth/password';
 
 async function applyMigrationFile(filename: string) {
   const db = getDatabase();
@@ -25,14 +26,52 @@ async function applyMigrationFile(filename: string) {
   }
 }
 
+async function tableExists(tableName: string) {
+  const db = getDatabase();
+  const result = await db.execute<{ regclass: string | null }>(
+    sql`SELECT to_regclass(${`public.${tableName}`}) AS regclass`
+  );
+  const first = result.rows[0] as { regclass?: string | null } | undefined;
+  return Boolean(first?.regclass);
+}
+
+async function issueTokenForUser(user: { id: string; email: string; roleId: string; roleName: string }) {
+  const token = await generateAccessToken(user.id, user.email, user.roleId, user.roleName);
+  await createSessionRepository().create({
+    user_id: user.id,
+    access_jti: token.jti,
+    expires_at: token.expiresAt,
+  });
+  return token.token;
+}
+
+async function ensureRole(name: string) {
+  const db = getDatabase();
+  const [existing] = await db.select().from(schema.roles).where(eq(schema.roles.name, name)).limit(1);
+  if (existing) return existing;
+  const [created] = await db
+    .insert(schema.roles)
+    .values({
+      id: randomUUID(),
+      name,
+      permissions: {},
+      is_system: false,
+    })
+    .returning();
+  return created;
+}
+
 describe('Chat Routes - lifecycle and tombstone safety', () => {
   let server: FastifyInstance;
   let adminToken: string;
 
   beforeAll(async () => {
     server = await createTestServer();
-    await applyMigrationFile('0008_chat_core.sql');
+    if (!(await tableExists('chat_conversations'))) {
+      await applyMigrationFile('0008_chat_core.sql');
+    }
     await applyMigrationFile('0010_chat_message_revisions.sql');
+    await applyMigrationFile('0012_chat_dm_pair_active_unique.sql');
     const db = getDatabase();
     const [adminRole] = await db
       .select()
@@ -49,18 +88,12 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
       .set({ role_id: adminRole.id })
       .where(eq(schema.users.id, testUser.id));
 
-    const token = await generateAccessToken(
-      testUser.id,
-      testUser.email,
-      adminRole.id,
-      adminRole.name
-    );
-    await createSessionRepository().create({
-      user_id: testUser.id,
-      access_jti: token.jti,
-      expires_at: token.expiresAt,
+    adminToken = await issueTokenForUser({
+      id: testUser.id,
+      email: testUser.email,
+      roleId: adminRole.id,
+      roleName: adminRole.name,
     });
-    adminToken = token.token;
   });
 
   afterAll(async () => {
@@ -455,5 +488,106 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
       headers: { authorization: `Bearer ${adminToken}` },
     });
     expect(listAfterUnban.statusCode).toBe(HTTP_STATUS.OK);
+  });
+
+  it('recreates ACTIVE DM after hard delete and hides old deleted DM in list', async () => {
+    const db = getDatabase();
+    const operatorRole = await ensureRole('OPERATOR');
+    const superAdminRole = await ensureRole('SUPER_ADMIN');
+
+    const otherUserId = randomUUID();
+    const otherUserEmail = `chat-dm-user-${Date.now()}@example.com`;
+    const superAdminUserId = randomUUID();
+    const superAdminEmail = `chat-super-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword('Password123!');
+
+    await db.insert(schema.users).values({
+      id: otherUserId,
+      email: otherUserEmail,
+      password_hash: passwordHash,
+      first_name: 'Other',
+      last_name: 'User',
+      role_id: operatorRole.id,
+      is_active: true,
+    });
+
+    await db.insert(schema.users).values({
+      id: superAdminUserId,
+      email: superAdminEmail,
+      password_hash: passwordHash,
+      first_name: 'Super',
+      last_name: 'Admin',
+      role_id: superAdminRole.id,
+      is_active: true,
+    });
+
+    const otherUserToken = await issueTokenForUser({
+      id: otherUserId,
+      email: otherUserEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+    const superAdminToken = await issueTokenForUser({
+      id: superAdminUserId,
+      email: superAdminEmail,
+      roleId: superAdminRole.id,
+      roleName: superAdminRole.name,
+    });
+
+    const firstDmResponse = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/dm',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { otherUserId },
+    });
+    expect(firstDmResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const firstDm = JSON.parse(firstDmResponse.body).conversation;
+    expect(firstDm.state).toBe('ACTIVE');
+
+    const deleteDmResponse = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/chat/conversations/${firstDm.id}`,
+      headers: { authorization: `Bearer ${superAdminToken}` },
+    });
+    expect(deleteDmResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const recreateDmResponse = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/dm',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { otherUserId },
+    });
+    expect(recreateDmResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const recreatedDm = JSON.parse(recreateDmResponse.body).conversation;
+    expect(recreatedDm.state).toBe('ACTIVE');
+    expect(recreatedDm.id).not.toBe(firstDm.id);
+
+    const sendResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${recreatedDm.id}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'hello recreated dm' },
+    });
+    expect(sendResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const otherUserReadResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${recreatedDm.id}/messages?afterSeq=0&limit=20`,
+      headers: { authorization: `Bearer ${otherUserToken}` },
+    });
+    expect(otherUserReadResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const otherReadBody = JSON.parse(otherUserReadResponse.body);
+    expect(otherReadBody.items.length).toBeGreaterThanOrEqual(1);
+
+    const listResponse = await server.inject({
+      method: 'GET',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(listResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const listBody = JSON.parse(listResponse.body);
+    const listedIds = listBody.items.map((item: { id: string }) => item.id);
+    expect(listedIds).toContain(recreatedDm.id);
+    expect(listedIds).not.toContain(firstDm.id);
   });
 });

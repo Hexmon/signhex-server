@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 // Enums
 export const requestStatusEnum = pgEnum('request_status', [
@@ -786,7 +787,10 @@ export const chatConversations = pgTable(
     deleted_at: timestamp('deleted_at'),
   },
   (table) => ({
-    dmPairIdx: uniqueIndex('chat_conversations_dm_pair_key_idx').on(table.dm_pair_key),
+    // Keep DM pair uniqueness for non-deleted rows; DELETED tombstones may coexist for audit/history.
+    dmPairIdx: uniqueIndex('chat_conversations_dm_pair_key_active_idx')
+      .on(table.dm_pair_key)
+      .where(sql`"type" = 'DM' AND "state" <> 'DELETED'`),
     stateTypeIdx: index('chat_conversations_state_type_idx').on(table.state, table.type),
     updatedAtIdx: index('chat_conversations_updated_at_idx').on(table.updated_at),
   })
