@@ -42,10 +42,36 @@ describe('chat namespace auth resolution', () => {
     expect(result.source).toBe('handshake_auth');
   });
 
+  it('uses authorization header bearer token when handshake token is absent', () => {
+    const result = resolveSocketAuthToken({
+      authorizationHeader: 'Bearer header-token',
+      allowlist,
+    });
+    expect(result.token).toBe('header-token');
+    expect(result.source).toBe('authorization_header');
+  });
+
+  it('prefers handshake auth token over authorization header and cookie', () => {
+    const result = resolveSocketAuthToken({
+      authToken: 'preferred-token',
+      authorizationHeader: 'Bearer header-token',
+      cookieHeader: 'access_token=cookie-token',
+      origin: 'http://localhost:8080',
+      allowlist,
+    });
+    expect(result.token).toBe('preferred-token');
+    expect(result.source).toBe('handshake_auth');
+  });
+
   it('rejects socket subscription when user is actively banned', () => {
     const allowed = canSocketSubscribe(true, {
       banned_until: new Date(Date.now() + 60_000),
     });
+    expect(allowed).toBe(false);
+  });
+
+  it('rejects socket subscription when user cannot access the conversation', () => {
+    const allowed = canSocketSubscribe(false, null);
     expect(allowed).toBe(false);
   });
 

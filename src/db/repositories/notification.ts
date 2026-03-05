@@ -1,4 +1,4 @@
-import { eq, and, desc, lt } from 'drizzle-orm';
+import { eq, and, desc, lt, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class NotificationRepository {
@@ -38,10 +38,20 @@ export class NotificationRepository {
       conditions.push(eq(schema.notifications.is_read, options.read));
     }
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.notifications)
       .where(and(...conditions));
+
+    const [unreadRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.notifications)
+      .where(
+        and(
+          eq(schema.notifications.user_id, userId),
+          eq(schema.notifications.is_read, false)
+        )
+      );
 
     const items = await db
       .select()
@@ -53,7 +63,8 @@ export class NotificationRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
+      unread_total: Number(unreadRow?.count || 0),
       page,
       limit,
     };

@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { AppError } from '@/utils/app-error';
 import { createLogger } from '@/utils/logger';
@@ -40,6 +40,23 @@ export async function backfillLegacyConversationsToChat(): Promise<ChatLegacyBac
   };
 
   for (const legacyConversation of legacyConversations) {
+    const participantRows = await db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(
+        inArray(schema.users.id, [
+          legacyConversation.participant_a,
+          legacyConversation.participant_b,
+        ])
+      );
+    if (participantRows.length < 2) {
+      logger.warn(
+        { legacyConversationId: legacyConversation.id },
+        'Skipping legacy conversation with missing participants'
+      );
+      continue;
+    }
+
     const pairKey = dmPairKey(legacyConversation.participant_a, legacyConversation.participant_b);
 
     await db.transaction(async (tx) => {

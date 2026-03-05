@@ -45,6 +45,16 @@ async function issueTokenForUser(user: { id: string; email: string; roleId: stri
   return token.token;
 }
 
+async function issueTokenWithSession(user: { id: string; email: string; roleId: string; roleName: string }) {
+  const token = await generateAccessToken(user.id, user.email, user.roleId, user.roleName);
+  await createSessionRepository().create({
+    user_id: user.id,
+    access_jti: token.jti,
+    expires_at: token.expiresAt,
+  });
+  return token;
+}
+
 async function ensureRole(name: string) {
   const db = getDatabase();
   const [existing] = await db.select().from(schema.roles).where(eq(schema.roles.name, name)).limit(1);
@@ -70,8 +80,10 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
     if (!(await tableExists('chat_conversations'))) {
       await applyMigrationFile('0008_chat_core.sql');
     }
+    await applyMigrationFile('0011_notifications_payload_fields.sql');
     await applyMigrationFile('0010_chat_message_revisions.sql');
     await applyMigrationFile('0012_chat_dm_pair_active_unique.sql');
+    await applyMigrationFile('0013_chat_fk_integrity.sql');
     const db = getDatabase();
     const [adminRole] = await db
       .select()
@@ -250,10 +262,19 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
       },
     ]);
 
+    const mediaId = randomUUID();
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: 'Tombstone Attachment',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+    });
+
     await db.insert(schema.chatAttachments).values({
       id: randomUUID(),
       message_id: replyMessageId,
-      media_asset_id: randomUUID(),
+      media_asset_id: mediaId,
       ord: 0,
     });
 
@@ -490,6 +511,103 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
     expect(listAfterUnban.statusCode).toBe(HTTP_STATUS.OK);
   });
 
+  it('rejects revoked sessions on chat routes', async () => {
+    const db = getDatabase();
+    const [adminRole] = await db
+      .select()
+      .from(schema.roles)
+      .where(eq(schema.roles.name, 'ADMIN'))
+      .limit(1);
+    if (!adminRole) throw new Error('ADMIN role is required');
+
+    const issued = await issueTokenWithSession({
+      id: testUser.id,
+      email: testUser.email,
+      roleId: adminRole.id,
+      roleName: adminRole.name,
+    });
+    await createSessionRepository().revokeByJti(issued.jti);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${issued.token}` },
+    });
+    expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('rejects messages with too many attachments', async () => {
+    const db = getDatabase();
+    const conversationId = randomUUID();
+
+    await db.insert(schema.chatConversations).values({
+      id: conversationId,
+      type: 'FORUM_OPEN',
+      created_by: testUser.id,
+      state: 'ACTIVE',
+      invite_policy: 'ANY_MEMBER_CAN_INVITE',
+      title: 'Attachment Limit Forum',
+      metadata: {},
+      last_seq: 0,
+    });
+
+    const attachmentIds = Array.from({ length: 11 }, () => randomUUID());
+    const response = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        text: 'too many attachments',
+        attachmentMediaIds: attachmentIds,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('CHAT_TOO_MANY_ATTACHMENTS');
+  });
+
+  it('rejects non-ready media attachments', async () => {
+    const db = getDatabase();
+    const conversationId = randomUUID();
+    const mediaId = randomUUID();
+
+    await db.insert(schema.chatConversations).values({
+      id: conversationId,
+      type: 'FORUM_OPEN',
+      created_by: testUser.id,
+      state: 'ACTIVE',
+      invite_policy: 'ANY_MEMBER_CAN_INVITE',
+      title: 'Media Readiness Forum',
+      metadata: {},
+      last_seq: 0,
+    });
+
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: 'Not Ready Media',
+      type: 'IMAGE',
+      status: 'PROCESSING',
+      created_by: testUser.id,
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        text: 'media not ready',
+        attachmentMediaIds: [mediaId],
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.CONFLICT);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('MEDIA_NOT_READY');
+  });
+
   it('recreates ACTIVE DM after hard delete and hides old deleted DM in list', async () => {
     const db = getDatabase();
     const operatorRole = await ensureRole('OPERATOR');
@@ -589,5 +707,83 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
     const listedIds = listBody.items.map((item: { id: string }) => item.id);
     expect(listedIds).toContain(recreatedDm.id);
     expect(listedIds).not.toContain(firstDm.id);
+  });
+
+  it('enforces DM confidentiality for non-participant admins', async () => {
+    const db = getDatabase();
+    const operatorRole = await ensureRole('OPERATOR');
+    const adminRole = await ensureRole('ADMIN');
+
+    const participantUserId = randomUUID();
+    const participantEmail = `chat-dm-participant-${Date.now()}@example.com`;
+    const outsiderAdminId = randomUUID();
+    const outsiderAdminEmail = `chat-dm-outsider-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword('Password123!');
+
+    await db.insert(schema.users).values({
+      id: participantUserId,
+      email: participantEmail,
+      password_hash: passwordHash,
+      first_name: 'Participant',
+      last_name: 'User',
+      role_id: operatorRole.id,
+      is_active: true,
+    });
+
+    await db.insert(schema.users).values({
+      id: outsiderAdminId,
+      email: outsiderAdminEmail,
+      password_hash: passwordHash,
+      first_name: 'Outsider',
+      last_name: 'Admin',
+      role_id: adminRole.id,
+      is_active: true,
+    });
+
+    const participantToken = await issueTokenForUser({
+      id: participantUserId,
+      email: participantEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+    const outsiderAdminToken = await issueTokenForUser({
+      id: outsiderAdminId,
+      email: outsiderAdminEmail,
+      roleId: adminRole.id,
+      roleName: adminRole.name,
+    });
+
+    const dmResponse = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/dm',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { otherUserId: participantUserId },
+    });
+    expect(dmResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const dmConversation = JSON.parse(dmResponse.body).conversation;
+
+    const participantReadResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${dmConversation.id}/messages?afterSeq=0&limit=20`,
+      headers: { authorization: `Bearer ${participantToken}` },
+    });
+    expect(participantReadResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const outsiderReadResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${dmConversation.id}/messages?afterSeq=0&limit=20`,
+      headers: { authorization: `Bearer ${outsiderAdminToken}` },
+    });
+    expect(outsiderReadResponse.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+
+    const outsiderListResponse = await server.inject({
+      method: 'GET',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${outsiderAdminToken}` },
+    });
+    expect(outsiderListResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const outsiderList = JSON.parse(outsiderListResponse.body);
+    const outsiderConversationIds = outsiderList.items.map((item: { id: string }) => item.id);
+    expect(outsiderConversationIds).not.toContain(dmConversation.id);
   });
 });

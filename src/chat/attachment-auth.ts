@@ -8,6 +8,7 @@ type MediaScopeRow = {
   departmentId?: string | null;
   scope_department_id?: string | null;
   scopeDepartmentId?: string | null;
+  status?: string | null;
 };
 
 type AttachmentAuthInput = {
@@ -44,3 +45,18 @@ export function assertAttachmentAccess(input: AttachmentAuthInput): void {
   }
 }
 
+export function assertAttachmentMediaReady(
+  mediaRows: Array<Pick<MediaScopeRow, 'id' | 'status'>>,
+  allowedStatuses: string[] = ['READY']
+): void {
+  const allowed = new Set(allowedStatuses);
+  const notReady = mediaRows.filter((row) => !row.status || !allowed.has(row.status));
+  if (notReady.length === 0) return;
+
+  throw new AppError({
+    statusCode: 409,
+    code: 'MEDIA_NOT_READY',
+    message: 'One or more attachments are not ready',
+    details: { media_ids: notReady.map((row) => row.id) },
+  });
+}

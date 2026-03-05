@@ -2,8 +2,7 @@ import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { inArray } from 'drizzle-orm';
 import { apiEndpoints } from '@/config/apiEndpoints';
-import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
-import { defineAbilityFor } from '@/rbac';
+import { chatAuthPreHandler, getRequestAuthContext } from '@/auth/request-auth';
 import { createChatRepository } from '@/db/repositories/chat';
 import { createAuditLogRepository } from '@/db/repositories/audit-log';
 import { createLogger } from '@/utils/logger';
@@ -12,7 +11,7 @@ import { respondWithError } from '@/utils/errors';
 import { emitChatEvent, setupChatNamespace } from '@/realtime/chat-namespace';
 import { notifyMessageEvent } from '@/chat/notify';
 import { createRateLimiter } from '@/chat/rate-limit';
-import { assertAttachmentAccess } from '@/chat/attachment-auth';
+import { assertAttachmentAccess, assertAttachmentMediaReady } from '@/chat/attachment-auth';
 import { assertCanWriteToConversation, assertConversationWritable, assertNotBanned } from '@/chat/guard';
 import { getDatabase, schema } from '@/db';
 import { queueChatMediaCleanup } from '@/jobs';
@@ -20,6 +19,7 @@ import { queueChatMediaCleanup } from '@/jobs';
 const logger = createLogger('chat-routes');
 const chatRepo = createChatRepository();
 const auditRepo = createAuditLogRepository();
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
 const createDmSchema = z.object({
   otherUserId: z.string().uuid(),
@@ -124,12 +124,8 @@ async function appendAudit(
   }
 }
 
-async function authenticate(request: FastifyRequest) {
-  const token = extractTokenFromHeader(request.headers.authorization);
-  if (!token) throw AppError.unauthorized('Missing authorization header');
-  const payload = await verifyAccessToken(token);
-  const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-  return { payload, ability };
+function authenticate(request: FastifyRequest) {
+  return getRequestAuthContext(request);
 }
 
 async function getConversationForAccess(
@@ -152,7 +148,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Body: typeof createDmSchema._type }>(
     apiEndpoints.chat.createDm,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -171,7 +167,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Body: typeof createConversationSchema._type }>(
     apiEndpoints.chat.createConversation,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -200,7 +196,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     apiEndpoints.chat.listConversations,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -215,7 +211,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { id: string }; Querystring: typeof listMessagesQuerySchema._type }>(
     apiEndpoints.chat.listMessages,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -238,7 +234,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.get<{ Params: { id: string; parentMessageId: string }; Querystring: typeof listMessagesQuerySchema._type }>(
     apiEndpoints.chat.listThread,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -268,12 +264,20 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: typeof sendMessageSchema._type }>(
     apiEndpoints.chat.sendMessage,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload, ability } = await authenticate(request);
         const data = sendMessageSchema.parse(request.body);
         const conversationId = (request.params as any).id;
+        if (data.attachmentMediaIds?.length && data.attachmentMediaIds.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+          throw new AppError({
+            statusCode: 400,
+            code: 'CHAT_TOO_MANY_ATTACHMENTS',
+            message: `Maximum ${MAX_ATTACHMENTS_PER_MESSAGE} attachments allowed per message`,
+          });
+        }
+
         const conversation = await getConversationForAccess(conversationId, payload.sub, payload.role);
         const moderation = await chatRepo.getModeration(conversationId, payload.sub);
         assertCanWriteToConversation(conversation, moderation);
@@ -297,18 +301,24 @@ export async function chatRoutes(fastify: FastifyInstance) {
         }
 
         if (data.attachmentMediaIds?.length) {
+          const attachmentMediaIds = Array.from(new Set(data.attachmentMediaIds));
           const mediaRows = await db
             .select()
             .from(schema.media)
-            .where(inArray(schema.media.id, data.attachmentMediaIds));
+            .where(inArray(schema.media.id, attachmentMediaIds));
+
+          assertAttachmentMediaReady(mediaRows);
+
           assertAttachmentAccess({
-            requestedMediaIds: data.attachmentMediaIds,
+            requestedMediaIds: attachmentMediaIds,
             mediaRows: mediaRows as Array<{ id: string; created_by?: string | null }>,
             senderId: payload.sub,
             senderRole: payload.role,
             senderDepartmentId: payload.department_id,
             canOverrideMedia: ability.can('update', 'Media'),
           });
+
+          data.attachmentMediaIds = attachmentMediaIds;
         }
 
         const bodyRich = {
@@ -363,7 +373,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.patch<{ Params: { id: string }; Body: typeof editMessageSchema._type }>(
     apiEndpoints.chat.editMessage,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -401,7 +411,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.delete<{ Params: { id: string } }>(
     apiEndpoints.chat.deleteMessage,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -436,7 +446,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: typeof reactionSchema._type }>(
     apiEndpoints.chat.reactToMessage,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -477,7 +487,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: typeof readSchema._type }>(
     apiEndpoints.chat.markRead,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -498,7 +508,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: typeof inviteSchema._type }>(
     apiEndpoints.chat.inviteMembers,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -537,7 +547,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: typeof removeMemberSchema._type }>(
     apiEndpoints.chat.removeMember,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -564,7 +574,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.patch<{ Params: { id: string }; Body: typeof updateConversationSchema._type }>(
     apiEndpoints.chat.updateConversation,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -593,7 +603,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string } }>(
     apiEndpoints.chat.archiveConversation,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -617,7 +627,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string } }>(
     apiEndpoints.chat.unarchiveConversation,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -641,7 +651,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.delete<{ Params: { id: string } }>(
     apiEndpoints.chat.hardDeleteConversation,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);
@@ -677,7 +687,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
   fastify.post<{ Params: { id: string }; Body: typeof moderationSchema._type }>(
     apiEndpoints.chat.moderateConversation,
-    { schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
     async (request, reply) => {
       try {
         const { payload } = await authenticate(request);

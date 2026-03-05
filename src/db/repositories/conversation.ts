@@ -151,8 +151,17 @@ export class ConversationRepository {
   }
 
   async addMessage(conversationId: string, authorId: string, content: string, attachments?: any[]) {
+    const db = getDatabase();
     const conversation = await this.resolveDmConversationForUser(conversationId, authorId);
     const mediaIds = this.extractMediaIds(attachments);
+    const resolvedMediaIds = mediaIds.length
+      ? (
+          await db
+            .select({ id: schema.media.id })
+            .from(schema.media)
+            .where(inArray(schema.media.id, mediaIds))
+        ).map((row) => row.id)
+      : [];
     const richBody = attachments?.length ? { legacy_attachments: attachments } : undefined;
 
     const { message } = await this.chatRepo.sendMessageTx({
@@ -160,7 +169,7 @@ export class ConversationRepository {
       senderId: authorId,
       bodyText: content,
       bodyRich: richBody,
-      attachmentMediaIds: mediaIds,
+      attachmentMediaIds: resolvedMediaIds,
     });
 
     return {

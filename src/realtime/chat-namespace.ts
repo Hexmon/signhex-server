@@ -31,6 +31,15 @@ type SocketAuthResolution = {
   error?: string;
 };
 
+function isSessionValidForUser(
+  session: { user_id: string; expires_at: Date } | null,
+  userId: string
+): boolean {
+  if (!session) return false;
+  if (session.user_id !== userId) return false;
+  return session.expires_at.getTime() > Date.now();
+}
+
 export function resolveSocketAuthToken(input: {
   authToken?: string;
   authorizationHeader?: string;
@@ -111,7 +120,7 @@ export async function setupChatNamespace(fastify: FastifyInstance) {
 
       const payload = await verifyAccessToken(resolved.token);
       const session = await sessionRepo.findByJti(payload.jti);
-      if (!session) {
+      if (!isSessionValidForUser(session, payload.sub)) {
         return next(new Error('Token has been revoked'));
       }
 

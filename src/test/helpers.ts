@@ -3,7 +3,6 @@ import { createServer } from '@/server';
 import { initializeDatabase, closeDatabase, getDatabase, schema } from '@/db';
 import { generateAccessToken } from '@/auth/jwt';
 import { hashPassword } from '@/auth/password';
-import { eq } from 'drizzle-orm';
 import { createSessionRepository } from '@/db/repositories/session';
 
 export async function createTestServer(): Promise<FastifyInstance> {
@@ -61,18 +60,29 @@ export async function seedTestData() {
     ])
     .onConflictDoNothing();
 
-  await db.delete(schema.users).where(eq(schema.users.email, testUser.email));
-
   const passwordHash = await hashPassword(testUser.password);
-  await db.insert(schema.users).values({
-    id: testUser.id,
-    email: testUser.email,
-    password_hash: passwordHash,
-    first_name: testUser.first_name,
-    last_name: testUser.last_name,
-    role_id: testUser.role_id,
-    is_active: true,
-  });
+  await db
+    .insert(schema.users)
+    .values({
+      id: testUser.id,
+      email: testUser.email,
+      password_hash: passwordHash,
+      first_name: testUser.first_name,
+      last_name: testUser.last_name,
+      role_id: testUser.role_id,
+      is_active: true,
+    })
+    .onConflictDoUpdate({
+      target: schema.users.id,
+      set: {
+        email: testUser.email,
+        password_hash: passwordHash,
+        first_name: testUser.first_name,
+        last_name: testUser.last_name,
+        role_id: testUser.role_id,
+        is_active: true,
+      },
+    });
 }
 
 export async function closeTestServer(server: FastifyInstance) {

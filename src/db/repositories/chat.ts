@@ -290,72 +290,88 @@ export class ChatRepository {
 
   async listConversations(userId: string) {
     const db = getDatabase();
-    const memberRows = await db
-      .select({ conversation_id: schema.chatMembers.conversation_id })
-      .from(schema.chatMembers)
-      .where(
+    const baseRows = await db
+      .select({
+        conversation: schema.chatConversations,
+        member_role: schema.chatMembers.role,
+        member_user_id: schema.chatMembers.user_id,
+      })
+      .from(schema.chatConversations)
+      .leftJoin(
+        schema.chatMembers,
         and(
+          eq(schema.chatMembers.conversation_id, schema.chatConversations.id),
           eq(schema.chatMembers.user_id, userId),
           isNull(schema.chatMembers.left_at)
         )
-      );
-
-    const memberIds = memberRows.map((row) => row.conversation_id);
-    const conditions = [eq(schema.chatConversations.state, 'ACTIVE')];
-    if (memberIds.length) {
-      conditions.push(
-        or(
-          inArray(schema.chatConversations.id, memberIds),
-          eq(schema.chatConversations.type, 'FORUM_OPEN')
-        ) as any
-      );
-    } else {
-      conditions.push(eq(schema.chatConversations.type, 'FORUM_OPEN') as any);
-    }
-
-    const items = await db
-      .select()
-      .from(schema.chatConversations)
-      .where(and(...conditions))
+      )
+      .where(
+        and(
+          eq(schema.chatConversations.state, 'ACTIVE'),
+          or(
+            eq(schema.chatConversations.type, 'FORUM_OPEN'),
+            eq(schema.chatMembers.user_id, userId)
+          ) as any
+        )
+      )
       .orderBy(desc(schema.chatConversations.updated_at));
 
-    const conversations = [];
-    for (const conversation of items) {
-      const [lastMessage] = await db
-        .select()
-        .from(schema.chatMessages)
-        .where(eq(schema.chatMessages.conversation_id, conversation.id))
-        .orderBy(desc(schema.chatMessages.seq))
-        .limit(1);
-      const [receipt] = await db
-        .select()
-        .from(schema.chatReceipts)
-        .where(
-          and(
-            eq(schema.chatReceipts.conversation_id, conversation.id),
-            eq(schema.chatReceipts.user_id, userId)
-          )
-        );
-      const readSeq = receipt?.last_read_seq ?? 0;
-      const unreadRows = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(schema.chatMessages)
-        .where(
-          and(
-            eq(schema.chatMessages.conversation_id, conversation.id),
-            gt(schema.chatMessages.seq, readSeq),
-            isNull(schema.chatMessages.deleted_at)
-          )
-        );
+    const conversationIds = baseRows.map((row) => row.conversation.id);
+    if (!conversationIds.length) return [];
 
-      conversations.push({
-        ...conversation,
-        last_message: lastMessage || null,
-        unread_count: Number((unreadRows[0] as any)?.count || 0),
-      });
-    }
+    const lastSeqSubquery = db
+      .select({
+        conversation_id: schema.chatMessages.conversation_id,
+        max_seq: sql<number>`max(${schema.chatMessages.seq})`.as('max_seq'),
+      })
+      .from(schema.chatMessages)
+      .where(inArray(schema.chatMessages.conversation_id, conversationIds))
+      .groupBy(schema.chatMessages.conversation_id)
+      .as('last_seq_subquery');
 
-    return conversations;
+    const lastMessageRows = await db
+      .select({ message: schema.chatMessages })
+      .from(lastSeqSubquery)
+      .innerJoin(
+        schema.chatMessages,
+        and(
+          eq(schema.chatMessages.conversation_id, lastSeqSubquery.conversation_id),
+          eq(schema.chatMessages.seq, lastSeqSubquery.max_seq as any)
+        )
+      );
+    const lastMessageByConversation = new Map(
+      lastMessageRows.map((row) => [row.message.conversation_id, row.message])
+    );
+
+    const unreadRows = await db
+      .select({
+        conversation_id: schema.chatMessages.conversation_id,
+        unread_count: sql<number>`count(*) FILTER (
+          WHERE ${schema.chatMessages.deleted_at} IS NULL
+            AND ${schema.chatMessages.seq} > COALESCE(${schema.chatReceipts.last_read_seq}, 0)
+        )`,
+      })
+      .from(schema.chatMessages)
+      .leftJoin(
+        schema.chatReceipts,
+        and(
+          eq(schema.chatReceipts.conversation_id, schema.chatMessages.conversation_id),
+          eq(schema.chatReceipts.user_id, userId)
+        )
+      )
+      .where(inArray(schema.chatMessages.conversation_id, conversationIds))
+      .groupBy(schema.chatMessages.conversation_id, schema.chatReceipts.last_read_seq);
+    const unreadByConversation = new Map(
+      unreadRows.map((row) => [row.conversation_id, Number(row.unread_count || 0)])
+    );
+
+    return baseRows.map((row) => ({
+      ...row.conversation,
+      last_message: lastMessageByConversation.get(row.conversation.id) || null,
+      unread_count: unreadByConversation.get(row.conversation.id) || 0,
+      viewer_role: row.member_role ?? null,
+      viewer_is_member: Boolean(row.member_user_id),
+    }));
   }
 
   async listMessages(

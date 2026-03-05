@@ -61,6 +61,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
             page: result.page,
             limit: result.limit,
             total: result.total,
+            unread_total: (result as any).unread_total ?? undefined,
           },
         });
       } catch (error) {
