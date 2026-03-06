@@ -65,7 +65,7 @@ export async function defineAbilityFor(roleId: string, userId: string, departmen
   const roleRepo = createRoleRepository();
   const role = await roleRepo.findById(roleId);
   if (!role) {
-    throw AppError.forbidden('Role not found');
+    throw AppError.unauthorized('Authorization context is stale. Please sign in again.');
   }
 
   const { can, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
