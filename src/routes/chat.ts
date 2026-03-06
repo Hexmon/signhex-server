@@ -9,7 +9,9 @@ import { createLogger } from '@/utils/logger';
 import { AppError } from '@/utils/app-error';
 import { respondWithError } from '@/utils/errors';
 import { emitChatEvent, setupChatNamespace } from '@/realtime/chat-namespace';
+import { emitNotificationCountEvent } from '@/realtime/notifications-namespace';
 import { notifyMessageEvent } from '@/chat/notify';
+import { createNotificationCounterRepository } from '@/db/repositories/notification-counter';
 import { createRateLimiter } from '@/chat/rate-limit';
 import { assertAttachmentAccess, assertAttachmentMediaReady } from '@/chat/attachment-auth';
 import { assertCanWriteToConversation, assertConversationWritable, assertNotBanned } from '@/chat/guard';
@@ -19,6 +21,7 @@ import { queueChatMediaCleanup } from '@/jobs';
 const logger = createLogger('chat-routes');
 const chatRepo = createChatRepository();
 const auditRepo = createAuditLogRepository();
+const notificationCounterRepo = createNotificationCounterRepository();
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
 const createDmSchema = z.object({
@@ -34,6 +37,19 @@ const createConversationSchema = z.object({
   invite_policy: z
     .enum(['ANY_MEMBER_CAN_INVITE', 'ADMINS_ONLY_CAN_INVITE', 'INVITES_DISABLED'])
     .optional(),
+  settings: z
+    .object({
+      mention_policy: z
+        .object({
+          everyone: z.enum(['ANY_MEMBER', 'ADMINS_ONLY', 'DISABLED']).optional(),
+          channel: z.enum(['ANY_MEMBER', 'ADMINS_ONLY', 'DISABLED']).optional(),
+          here: z.enum(['ANY_MEMBER', 'ADMINS_ONLY', 'DISABLED']).optional(),
+        })
+        .optional(),
+      edit_policy: z.enum(['OWN', 'ADMINS_ONLY', 'DISABLED']).optional(),
+      delete_policy: z.enum(['OWN', 'ADMINS_ONLY', 'DISABLED']).optional(),
+    })
+    .optional(),
 });
 
 const listMessagesQuerySchema = z.object({
@@ -45,10 +61,14 @@ const sendMessageSchema = z
   .object({
     text: z.string().trim().min(1).optional(),
     replyTo: z.string().uuid().optional(),
+    alsoToChannel: z.boolean().optional(),
     attachmentMediaIds: z.array(z.string().uuid()).optional(),
   })
   .refine((value) => Boolean(value.text || value.attachmentMediaIds?.length), {
     message: 'text or attachmentMediaIds is required',
+  })
+  .refine((value) => !value.alsoToChannel || Boolean(value.replyTo), {
+    message: 'alsoToChannel is only valid for thread replies',
   });
 
 const editMessageSchema = z.object({
@@ -80,6 +100,19 @@ const updateConversationSchema = z.object({
     .enum(['ANY_MEMBER_CAN_INVITE', 'ADMINS_ONLY_CAN_INVITE', 'INVITES_DISABLED'])
     .optional(),
   state: z.enum(['ACTIVE', 'ARCHIVED']).optional(),
+  settings: z
+    .object({
+      mention_policy: z
+        .object({
+          everyone: z.enum(['ANY_MEMBER', 'ADMINS_ONLY', 'DISABLED']).optional(),
+          channel: z.enum(['ANY_MEMBER', 'ADMINS_ONLY', 'DISABLED']).optional(),
+          here: z.enum(['ANY_MEMBER', 'ADMINS_ONLY', 'DISABLED']).optional(),
+        })
+        .optional(),
+      edit_policy: z.enum(['OWN', 'ADMINS_ONLY', 'DISABLED']).optional(),
+      delete_policy: z.enum(['OWN', 'ADMINS_ONLY', 'DISABLED']).optional(),
+    })
+    .optional(),
 });
 
 const moderationSchema = z.object({
@@ -87,6 +120,16 @@ const moderationSchema = z.object({
   action: z.enum(['MUTE', 'BAN', 'UNMUTE', 'UNBAN']),
   until: z.string().datetime().optional(),
   reason: z.string().max(2000).optional(),
+});
+
+const bookmarkSchema = z.object({
+  type: z.enum(['LINK', 'FILE', 'MESSAGE']),
+  label: z.string().min(1).max(255),
+  emoji: z.string().max(32).optional(),
+  url: z.string().url().optional(),
+  mediaAssetId: z.string().uuid().optional(),
+  messageId: z.string().uuid().optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 function isAdminRole(roleName: string | undefined): boolean {
@@ -101,6 +144,124 @@ function parseMentionedUserIds(text?: string): string[] {
     if (match[1]) ids.add(match[1]);
   }
   return Array.from(ids);
+}
+
+type MentionPolicyValue = 'ANY_MEMBER' | 'ADMINS_ONLY' | 'DISABLED';
+type MutationPolicyValue = 'OWN' | 'ADMINS_ONLY' | 'DISABLED';
+type ConversationSettings = {
+  mention_policy: {
+    everyone: MentionPolicyValue;
+    channel: MentionPolicyValue;
+    here: MentionPolicyValue;
+  };
+  edit_policy: MutationPolicyValue;
+  delete_policy: MutationPolicyValue;
+};
+
+const DEFAULT_CONVERSATION_SETTINGS: ConversationSettings = {
+  mention_policy: {
+    everyone: 'ADMINS_ONLY',
+    channel: 'ADMINS_ONLY',
+    here: 'ANY_MEMBER',
+  },
+  edit_policy: 'OWN',
+  delete_policy: 'OWN',
+};
+
+function parseSpecialMentions(text?: string): Array<'everyone' | 'channel' | 'here'> {
+  if (!text) return [];
+  const found = new Set<'everyone' | 'channel' | 'here'>();
+  const regex = /@(?:everyone|channel|here)\b/gi;
+  for (const match of text.matchAll(regex)) {
+    const token = match[0].slice(1).toLowerCase();
+    if (token === 'everyone' || token === 'channel' || token === 'here') {
+      found.add(token);
+    }
+  }
+  return Array.from(found);
+}
+
+function getConversationSettings(conversation: {
+  metadata?: unknown;
+}): ConversationSettings {
+  const metadata =
+    conversation.metadata && typeof conversation.metadata === 'object'
+      ? (conversation.metadata as Record<string, unknown>)
+      : {};
+  const settings =
+    metadata.settings && typeof metadata.settings === 'object'
+      ? (metadata.settings as Record<string, unknown>)
+      : {};
+  const mentionPolicy =
+    settings.mention_policy && typeof settings.mention_policy === 'object'
+      ? (settings.mention_policy as Record<string, unknown>)
+      : {};
+
+  const normalizeMention = (key: 'everyone' | 'channel' | 'here'): MentionPolicyValue => {
+    const value = mentionPolicy[key];
+    return value === 'ANY_MEMBER' || value === 'ADMINS_ONLY' || value === 'DISABLED'
+      ? value
+      : DEFAULT_CONVERSATION_SETTINGS.mention_policy[key];
+  };
+
+  const normalizeMutation = (value: unknown, fallback: MutationPolicyValue): MutationPolicyValue =>
+    value === 'OWN' || value === 'ADMINS_ONLY' || value === 'DISABLED' ? value : fallback;
+
+  return {
+    mention_policy: {
+      everyone: normalizeMention('everyone'),
+      channel: normalizeMention('channel'),
+      here: normalizeMention('here'),
+    },
+    edit_policy: normalizeMutation(
+      settings.edit_policy,
+      DEFAULT_CONVERSATION_SETTINGS.edit_policy
+    ),
+    delete_policy: normalizeMutation(
+      settings.delete_policy,
+      DEFAULT_CONVERSATION_SETTINGS.delete_policy
+    ),
+  };
+}
+
+function mergeConversationMetadataSettings(
+  currentMetadata: unknown,
+  settingsPatch: z.infer<typeof updateConversationSchema>['settings'] | z.infer<typeof createConversationSchema>['settings'] | undefined
+) {
+  const baseMetadata =
+    currentMetadata && typeof currentMetadata === 'object'
+      ? ({ ...(currentMetadata as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+  if (!settingsPatch) return baseMetadata;
+
+  const currentSettings = getConversationSettings({ metadata: currentMetadata });
+  const nextSettings: ConversationSettings = {
+    mention_policy: {
+      everyone:
+        settingsPatch.mention_policy?.everyone ??
+        currentSettings.mention_policy.everyone,
+      channel:
+        settingsPatch.mention_policy?.channel ??
+        currentSettings.mention_policy.channel,
+      here:
+        settingsPatch.mention_policy?.here ??
+        currentSettings.mention_policy.here,
+    },
+    edit_policy: settingsPatch.edit_policy ?? currentSettings.edit_policy,
+    delete_policy: settingsPatch.delete_policy ?? currentSettings.delete_policy,
+  };
+  baseMetadata.settings = nextSettings;
+  return baseMetadata;
+}
+
+function canMutateMessageByPolicy(input: {
+  policy: MutationPolicyValue;
+  isOwner: boolean;
+  isConversationAdmin: boolean;
+}): boolean {
+  if (input.policy === 'DISABLED') return false;
+  if (input.policy === 'ADMINS_ONLY') return input.isConversationAdmin;
+  return input.isOwner;
 }
 
 async function appendAudit(
@@ -172,6 +333,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
       try {
         const { payload } = await authenticate(request);
         const data = createConversationSchema.parse(request.body);
+        const metadata = mergeConversationMetadataSettings({}, data.settings);
         const conversation = await chatRepo.createConversation({
           type: data.type,
           title: data.title,
@@ -180,6 +342,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           invite_policy: data.invite_policy,
           createdBy: payload.sub,
           members: data.members,
+          metadata,
         });
         await appendAudit(request, payload.sub, 'CHAT_CONVERSATION_CREATE', 'ChatConversation', conversation.id);
         emitChatEvent(fastify, conversation.id, 'chat:conversation:updated', {
@@ -281,6 +444,28 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const conversation = await getConversationForAccess(conversationId, payload.sub, payload.role);
         const moderation = await chatRepo.getModeration(conversationId, payload.sub);
         assertCanWriteToConversation(conversation, moderation);
+        const settings = getConversationSettings(conversation);
+        const specialMentions = parseSpecialMentions(data.text);
+        if (specialMentions.length && conversation.type !== 'DM') {
+          const canAdmin = await chatRepo.isConversationAdmin(conversationId, payload.sub, payload.role);
+          for (const mention of specialMentions) {
+            const policy = settings.mention_policy[mention];
+            if (policy === 'DISABLED') {
+              throw new AppError({
+                statusCode: 403,
+                code: 'CHAT_MENTION_POLICY_VIOLATION',
+                message: `@${mention} mentions are disabled in this conversation`,
+              });
+            }
+            if (policy === 'ADMINS_ONLY' && !canAdmin) {
+              throw new AppError({
+                statusCode: 403,
+                code: 'CHAT_MENTION_POLICY_VIOLATION',
+                message: `@${mention} mention is restricted to admins`,
+              });
+            }
+          }
+        }
 
         if (conversation.type === 'FORUM_OPEN') {
           const key = `${payload.sub}:${conversationId}:forum`;
@@ -331,6 +516,7 @@ export async function chatRoutes(fastify: FastifyInstance) {
           bodyText: data.text,
           bodyRich,
           replyToMessageId: data.replyTo,
+          alsoToChannel: data.alsoToChannel,
           attachmentMediaIds: data.attachmentMediaIds,
         });
 
@@ -352,6 +538,10 @@ export async function chatRoutes(fastify: FastifyInstance) {
           senderId: payload.sub,
           mentionedUserIds: bodyRich.mentions,
           threadRootSenderId,
+          onNotificationCreated: async ({ userId }) => {
+            const unread_total = await notificationCounterRepo.getUnreadTotal(userId);
+            emitNotificationCountEvent(fastify, userId, unread_total);
+          },
         }).catch((error) => {
           logger.warn(error, 'Notification dispatch failed');
         });
@@ -383,9 +573,51 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const conversation = await getConversationForAccess(row.conversation.id, payload.sub, payload.role);
         const moderation = await chatRepo.getModeration(row.conversation.id, payload.sub);
         assertCanWriteToConversation(conversation, moderation);
+        const settings = getConversationSettings(conversation);
         const isOwner = row.message.sender_id === payload.sub;
-        if (!isOwner && !isAdminRole(payload.role)) {
-          throw AppError.forbidden('You cannot edit this message');
+        const isConversationAdmin = await chatRepo.isConversationAdmin(
+          row.conversation.id,
+          payload.sub,
+          payload.role
+        );
+        const specialMentions = parseSpecialMentions(data.text);
+        if (specialMentions.length && conversation.type !== 'DM') {
+          for (const mention of specialMentions) {
+            const policy = settings.mention_policy[mention];
+            if (policy === 'DISABLED') {
+              throw new AppError({
+                statusCode: 403,
+                code: 'CHAT_MENTION_POLICY_VIOLATION',
+                message: `@${mention} mentions are disabled in this conversation`,
+              });
+            }
+            if (policy === 'ADMINS_ONLY' && !isConversationAdmin) {
+              throw new AppError({
+                statusCode: 403,
+                code: 'CHAT_MENTION_POLICY_VIOLATION',
+                message: `@${mention} mention is restricted to admins`,
+              });
+            }
+          }
+        }
+        const canEdit = canMutateMessageByPolicy({
+          policy: settings.edit_policy,
+          isOwner,
+          isConversationAdmin,
+        });
+        if (!canEdit) {
+          if (settings.edit_policy === 'DISABLED') {
+            throw new AppError({
+              statusCode: 403,
+              code: 'CHAT_EDIT_POLICY_DISABLED',
+              message: 'Message editing is disabled in this conversation',
+            });
+          }
+          throw new AppError({
+            statusCode: 403,
+            code: 'CHAT_EDIT_POLICY_FORBIDDEN',
+            message: 'You cannot edit this message',
+          });
         }
 
         const message = await chatRepo.editMessage({
@@ -420,9 +652,31 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const conversation = await getConversationForAccess(row.conversation.id, payload.sub, payload.role);
         const moderation = await chatRepo.getModeration(row.conversation.id, payload.sub);
         assertCanWriteToConversation(conversation, moderation);
+        const settings = getConversationSettings(conversation);
         const isOwner = row.message.sender_id === payload.sub;
-        if (!isOwner && !isAdminRole(payload.role)) {
-          throw AppError.forbidden('You cannot delete this message');
+        const isConversationAdmin = await chatRepo.isConversationAdmin(
+          row.conversation.id,
+          payload.sub,
+          payload.role
+        );
+        const canDelete = canMutateMessageByPolicy({
+          policy: settings.delete_policy,
+          isOwner,
+          isConversationAdmin,
+        });
+        if (!canDelete) {
+          if (settings.delete_policy === 'DISABLED') {
+            throw new AppError({
+              statusCode: 403,
+              code: 'CHAT_DELETE_POLICY_DISABLED',
+              message: 'Message deletion is disabled in this conversation',
+            });
+          }
+          throw new AppError({
+            statusCode: 403,
+            code: 'CHAT_DELETE_POLICY_FORBIDDEN',
+            message: 'You cannot delete this message',
+          });
         }
 
         const message = await chatRepo.softDeleteMessage({
@@ -480,6 +734,183 @@ export async function chatRoutes(fastify: FastifyInstance) {
         return reply.send(result);
       } catch (error) {
         logger.error(error, 'Reaction update error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    apiEndpoints.chat.pinMessage,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const row = await chatRepo.getConversationForMessage((request.params as any).id);
+        if (!row) throw AppError.notFound('Message not found');
+        const conversation = await getConversationForAccess(row.conversation.id, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(row.conversation.id, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
+
+        const pin = await chatRepo.pinMessage({
+          conversationId: row.conversation.id,
+          messageId: row.message.id,
+          pinnedBy: payload.sub,
+        });
+        await appendAudit(request, payload.sub, 'CHAT_PIN_ADD', 'ChatMessage', row.message.id);
+        emitChatEvent(fastify, row.conversation.id, 'chat:pin:update', {
+          conversationId: row.conversation.id,
+          messageId: row.message.id,
+          pinned: true,
+          pin,
+        });
+        return reply.send({ pin });
+      } catch (error) {
+        logger.error(error, 'Pin message error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    apiEndpoints.chat.unpinMessage,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const row = await chatRepo.getConversationForMessage((request.params as any).id);
+        if (!row) throw AppError.notFound('Message not found');
+        const conversation = await getConversationForAccess(row.conversation.id, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(row.conversation.id, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
+
+        const removed = await chatRepo.unpinMessage(row.conversation.id, row.message.id);
+        await appendAudit(request, payload.sub, 'CHAT_PIN_REMOVE', 'ChatMessage', row.message.id);
+        emitChatEvent(fastify, row.conversation.id, 'chat:pin:update', {
+          conversationId: row.conversation.id,
+          messageId: row.message.id,
+          pinned: false,
+        });
+        return reply.send({ success: removed });
+      } catch (error) {
+        logger.error(error, 'Unpin message error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    apiEndpoints.chat.listPins,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const conversationId = (request.params as any).id;
+        await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertNotBanned(moderation);
+        const items = await chatRepo.listPins(conversationId);
+        return reply.send({ items });
+      } catch (error) {
+        logger.error(error, 'List pins error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: typeof bookmarkSchema._type }>(
+    apiEndpoints.chat.createBookmark,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const data = bookmarkSchema.parse(request.body);
+        const conversationId = (request.params as any).id;
+        const conversation = await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
+
+        const { bookmark, created } = await chatRepo.createBookmark({
+          conversationId,
+          type: data.type,
+          label: data.label,
+          emoji: data.emoji,
+          url: data.url,
+          mediaAssetId: data.mediaAssetId,
+          messageId: data.messageId,
+          metadata: data.metadata,
+          createdBy: payload.sub,
+        });
+        if (created) {
+          await appendAudit(request, payload.sub, 'CHAT_BOOKMARK_ADD', 'ChatConversation', conversationId);
+          emitChatEvent(fastify, conversationId, 'chat:bookmark:update', {
+            conversationId,
+            bookmarkId: bookmark.id,
+            op: 'add',
+          });
+        }
+        return reply.send({ bookmark });
+      } catch (error) {
+        logger.error(error, 'Create bookmark error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    apiEndpoints.chat.listBookmarks,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const conversationId = (request.params as any).id;
+        await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertNotBanned(moderation);
+        const items = await chatRepo.listBookmarks(conversationId);
+        return reply.send({ items });
+      } catch (error) {
+        logger.error(error, 'List bookmarks error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.delete<{ Params: { id: string } }>(
+    apiEndpoints.chat.deleteBookmark,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const bookmarkId = (request.params as any).id;
+        const bookmark = await chatRepo.getBookmarkById(bookmarkId);
+        if (!bookmark) throw AppError.notFound('Bookmark not found');
+        const conversation = await getConversationForAccess(
+          bookmark.conversation_id,
+          payload.sub,
+          payload.role
+        );
+        const moderation = await chatRepo.getModeration(bookmark.conversation_id, payload.sub);
+        assertCanWriteToConversation(conversation, moderation);
+
+        const isConversationAdmin = await chatRepo.isConversationAdmin(
+          bookmark.conversation_id,
+          payload.sub,
+          payload.role
+        );
+        if (bookmark.created_by !== payload.sub && !isConversationAdmin) {
+          throw AppError.forbidden('Only creator or chat admin can remove bookmark');
+        }
+
+        const deleted = await chatRepo.deleteBookmark(bookmarkId);
+        await appendAudit(request, payload.sub, 'CHAT_BOOKMARK_REMOVE', 'ChatConversation', bookmark.conversation_id);
+        emitChatEvent(fastify, bookmark.conversation_id, 'chat:bookmark:update', {
+          conversationId: bookmark.conversation_id,
+          bookmarkId,
+          op: 'remove',
+        });
+        return reply.send({ success: Boolean(deleted) });
+      } catch (error) {
+        logger.error(error, 'Delete bookmark error');
         return respondWithError(reply, error);
       }
     }
@@ -586,7 +1017,21 @@ export async function chatRoutes(fastify: FastifyInstance) {
         const canAdmin = await chatRepo.isConversationAdmin(conversationId, payload.sub, payload.role);
         if (!canAdmin) throw AppError.forbidden('Only chat admins can update conversation');
 
-        const updated = await chatRepo.updateConversation(conversationId, data);
+        const metadata = data.settings
+          ? mergeConversationMetadataSettings(conversation.metadata, data.settings)
+          : conversation.metadata && typeof conversation.metadata === 'object'
+          ? (conversation.metadata as Record<string, unknown>)
+          : {};
+        const patch = {
+          title: data.title,
+          topic: data.topic,
+          purpose: data.purpose,
+          invite_policy: data.invite_policy,
+          state: data.state,
+          metadata,
+        };
+
+        const updated = await chatRepo.updateConversation(conversationId, patch);
         if (!updated) throw AppError.notFound('Conversation not found');
         await appendAudit(request, payload.sub, 'CHAT_CONVERSATION_UPDATE', 'ChatConversation', conversationId);
         emitChatEvent(fastify, conversationId, 'chat:conversation:updated', {

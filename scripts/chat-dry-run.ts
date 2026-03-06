@@ -282,14 +282,87 @@ async function run() {
 
     recordStep('WS fanout chat:message:new', Boolean(wsMessageEvent));
 
-    const replyResult = await apiRequest(baseUrl, member.token, 'POST', `/api/v1/chat/conversations/${dmId}/messages`, {
-      text: 'thread reply',
-      replyTo: firstMessageId,
-    });
-    assertStatus('Thread reply send', replyResult, 200);
-    const replyPayload = requireObject(replyResult.data, 'Thread reply');
-    const replyMessage = requireObject(replyPayload.message, 'Thread reply message');
-    const replyMessageId = requireString(replyMessage.id, 'reply message id');
+    const hiddenReplyResult = await apiRequest(
+      baseUrl,
+      member.token,
+      'POST',
+      `/api/v1/chat/conversations/${dmId}/messages`,
+      {
+        text: 'thread reply hidden from channel',
+        replyTo: firstMessageId,
+      }
+    );
+    assertStatus('Thread reply send (alsoToChannel=false)', hiddenReplyResult, 200);
+    const hiddenReplyPayload = requireObject(hiddenReplyResult.data, 'Hidden thread reply');
+    const hiddenReplyMessage = requireObject(hiddenReplyPayload.message, 'Hidden thread reply message');
+    const hiddenReplyMessageId = requireString(hiddenReplyMessage.id, 'hidden reply message id');
+
+    const listAfterHiddenReply = await apiRequest(
+      baseUrl,
+      admin.token,
+      'GET',
+      `/api/v1/chat/conversations/${dmId}/messages?afterSeq=0&limit=50`
+    );
+    assertStatus('List messages after hidden reply', listAfterHiddenReply, 200);
+    const hiddenListPayload = requireObject(listAfterHiddenReply.data, 'List messages after hidden reply');
+    const hiddenListItems = Array.isArray(hiddenListPayload.items)
+      ? (hiddenListPayload.items as Record<string, unknown>[])
+      : [];
+    const hiddenVisibleInChannel = hiddenListItems.some((item) => item.id === hiddenReplyMessageId);
+    recordStep('alsoToChannel=false hidden from channel list', !hiddenVisibleInChannel);
+    if (hiddenVisibleInChannel) {
+      throw new Error('Expected hidden thread reply to be excluded from channel list');
+    }
+
+    const threadListForHidden = await apiRequest(
+      baseUrl,
+      admin.token,
+      'GET',
+      `/api/v1/chat/conversations/${dmId}/thread/${firstMessageId}?afterSeq=0&limit=50`
+    );
+    assertStatus('List thread after hidden reply', threadListForHidden, 200);
+    const hiddenThreadPayload = requireObject(threadListForHidden.data, 'List thread after hidden reply');
+    const hiddenThreadItems = Array.isArray(hiddenThreadPayload.items)
+      ? (hiddenThreadPayload.items as Record<string, unknown>[])
+      : [];
+    const hiddenVisibleInThread = hiddenThreadItems.some((item) => item.id === hiddenReplyMessageId);
+    recordStep('alsoToChannel=false visible in thread list', hiddenVisibleInThread);
+    if (!hiddenVisibleInThread) {
+      throw new Error('Expected hidden thread reply to appear in thread list');
+    }
+
+    const broadcastReplyResult = await apiRequest(
+      baseUrl,
+      member.token,
+      'POST',
+      `/api/v1/chat/conversations/${dmId}/messages`,
+      {
+        text: 'thread reply also to channel',
+        replyTo: firstMessageId,
+        alsoToChannel: true,
+      }
+    );
+    assertStatus('Thread reply send (alsoToChannel=true)', broadcastReplyResult, 200);
+    const broadcastReplyPayload = requireObject(broadcastReplyResult.data, 'Broadcast thread reply');
+    const broadcastReplyMessage = requireObject(broadcastReplyPayload.message, 'Broadcast thread reply message');
+    const broadcastReplyMessageId = requireString(broadcastReplyMessage.id, 'broadcast reply message id');
+
+    const listAfterBroadcastReply = await apiRequest(
+      baseUrl,
+      admin.token,
+      'GET',
+      `/api/v1/chat/conversations/${dmId}/messages?afterSeq=0&limit=50`
+    );
+    assertStatus('List messages after broadcast reply', listAfterBroadcastReply, 200);
+    const broadcastListPayload = requireObject(listAfterBroadcastReply.data, 'List messages after broadcast reply');
+    const broadcastListItems = Array.isArray(broadcastListPayload.items)
+      ? (broadcastListPayload.items as Record<string, unknown>[])
+      : [];
+    const broadcastVisibleInChannel = broadcastListItems.some((item) => item.id === broadcastReplyMessageId);
+    recordStep('alsoToChannel=true visible in channel list', broadcastVisibleInChannel);
+    if (!broadcastVisibleInChannel) {
+      throw new Error('Expected broadcast thread reply to appear in channel list');
+    }
 
     const reactAdd = await apiRequest(baseUrl, admin.token, 'POST', `/api/v1/chat/messages/${firstMessageId}/reactions`, {
       emoji: ':thumbsup:',
@@ -297,12 +370,12 @@ async function run() {
     });
     assertStatus('Reaction add', reactAdd, 200);
 
-    const editReply = await apiRequest(baseUrl, member.token, 'PATCH', `/api/v1/chat/messages/${replyMessageId}`, {
+    const editReply = await apiRequest(baseUrl, member.token, 'PATCH', `/api/v1/chat/messages/${broadcastReplyMessageId}`, {
       text: 'thread reply edited',
     });
     assertStatus('Message edit', editReply, 200);
 
-    const deleteReply = await apiRequest(baseUrl, member.token, 'DELETE', `/api/v1/chat/messages/${replyMessageId}`);
+    const deleteReply = await apiRequest(baseUrl, member.token, 'DELETE', `/api/v1/chat/messages/${broadcastReplyMessageId}`);
     assertStatus('Message delete', deleteReply, 200);
 
     const listAfterDelete = await apiRequest(
@@ -314,7 +387,7 @@ async function run() {
     assertStatus('List messages after delete', listAfterDelete, 200);
     const listPayload = requireObject(listAfterDelete.data, 'List messages after delete');
     const listItems = Array.isArray(listPayload.items) ? (listPayload.items as Record<string, unknown>[]) : [];
-    const deletedMessage = listItems.find((item) => item.id === replyMessageId) || null;
+    const deletedMessage = listItems.find((item) => item.id === broadcastReplyMessageId) || null;
     const tombstoneSafe =
       deletedMessage !== null &&
       deletedMessage.body_text === null &&
@@ -327,6 +400,249 @@ async function run() {
     if (!tombstoneSafe) {
       throw new Error(`Deleted message payload is not tombstone-safe: ${JSON.stringify(deletedMessage)}`);
     }
+
+    const groupCreate = await apiRequest(baseUrl, admin.token, 'POST', '/api/v1/chat/conversations', {
+      type: 'GROUP_CLOSED',
+      title: 'Dry run group',
+      members: [member.user.id],
+    });
+    assertStatus('Create group', groupCreate, 200);
+    const groupPayload = requireObject(groupCreate.data, 'Create group');
+    const groupConversation = requireObject(groupPayload.conversation, 'Create group conversation');
+    const groupId = requireString(groupConversation.id, 'group conversation id');
+
+    const groupAdminSub = await subscribeSocket(adminSocket, groupId);
+    const groupMemberSub = await subscribeSocket(memberSocket, groupId);
+    const groupSubscribed = groupAdminSub.subscribed.includes(groupId) && groupMemberSub.subscribed.includes(groupId);
+    recordStep('WS subscribe group', groupSubscribed);
+    if (!groupSubscribed) {
+      throw new Error(`Group subscribe failed: ${JSON.stringify({ groupAdminSub, groupMemberSub })}`);
+    }
+
+    const groupSeedMessage = await apiRequest(
+      baseUrl,
+      member.token,
+      'POST',
+      `/api/v1/chat/conversations/${groupId}/messages`,
+      {
+        text: 'group seed message',
+      }
+    );
+    assertStatus('Group seed message', groupSeedMessage, 200);
+    const groupSeedPayload = requireObject(groupSeedMessage.data, 'Group seed message');
+    const groupSeed = requireObject(groupSeedPayload.message, 'Group seed payload');
+    const groupSeedMessageId = requireString(groupSeed.id, 'group seed message id');
+
+    const mentionBlocked = await apiRequest(
+      baseUrl,
+      member.token,
+      'POST',
+      `/api/v1/chat/conversations/${groupId}/messages`,
+      {
+        text: '@everyone this should be blocked for member',
+      }
+    );
+    assertStatus('Mention policy blocks member @everyone', mentionBlocked, 403);
+    const mentionBlockedPayload = requireObject(mentionBlocked.data, 'Mention policy blocks member @everyone');
+    const mentionBlockedError = requireObject(mentionBlockedPayload.error, 'Mention policy error');
+    const mentionCodeOk = mentionBlockedError.code === 'CHAT_MENTION_POLICY_VIOLATION';
+    recordStep('Mention policy error code', mentionCodeOk);
+    if (!mentionCodeOk) {
+      throw new Error(`Expected CHAT_MENTION_POLICY_VIOLATION, got ${JSON.stringify(mentionBlocked.data)}`);
+    }
+
+    const mentionAllowed = await apiRequest(
+      baseUrl,
+      admin.token,
+      'POST',
+      `/api/v1/chat/conversations/${groupId}/messages`,
+      {
+        text: '@everyone admin broadcast',
+      }
+    );
+    assertStatus('Mention policy allows admin @everyone', mentionAllowed, 200);
+
+    const policyUpdateEventPromise = waitForSocketEvent(
+      memberSocket,
+      'chat:conversation:updated',
+      (eventPayload) => eventPayload.conversationId === groupId
+    );
+    const updatePolicyResult = await apiRequest(baseUrl, admin.token, 'PATCH', `/api/v1/chat/conversations/${groupId}`, {
+      settings: {
+        edit_policy: 'ADMINS_ONLY',
+        delete_policy: 'DISABLED',
+      },
+    });
+    assertStatus('Update conversation policies', updatePolicyResult, 200);
+    const policyUpdateEvent = await policyUpdateEventPromise;
+    const policyEventOk =
+      policyUpdateEvent.conversationId === groupId &&
+      typeof policyUpdateEvent.patch === 'object' &&
+      policyUpdateEvent.patch !== null;
+    recordStep('WS chat:conversation:updated for policy change', policyEventOk);
+    if (!policyEventOk) {
+      throw new Error(`Missing conversation update event for policy change: ${JSON.stringify(policyUpdateEvent)}`);
+    }
+
+    const memberEditBlocked = await apiRequest(
+      baseUrl,
+      member.token,
+      'PATCH',
+      `/api/v1/chat/messages/${groupSeedMessageId}`,
+      {
+        text: 'member edit should be blocked',
+      }
+    );
+    assertStatus('Edit policy blocks member edit', memberEditBlocked, 403);
+    const memberEditBlockedPayload = requireObject(memberEditBlocked.data, 'Edit policy blocks member edit');
+    const memberEditBlockedError = requireObject(memberEditBlockedPayload.error, 'Edit policy error');
+    const editPolicyCodeOk = memberEditBlockedError.code === 'CHAT_EDIT_POLICY_FORBIDDEN';
+    recordStep('Edit policy error code', editPolicyCodeOk);
+    if (!editPolicyCodeOk) {
+      throw new Error(`Expected CHAT_EDIT_POLICY_FORBIDDEN, got ${JSON.stringify(memberEditBlocked.data)}`);
+    }
+
+    const adminEditAllowed = await apiRequest(
+      baseUrl,
+      admin.token,
+      'PATCH',
+      `/api/v1/chat/messages/${groupSeedMessageId}`,
+      {
+        text: 'admin edit is allowed by policy',
+      }
+    );
+    assertStatus('Edit policy allows admin edit', adminEditAllowed, 200);
+
+    const deleteBlockedByPolicy = await apiRequest(
+      baseUrl,
+      admin.token,
+      'DELETE',
+      `/api/v1/chat/messages/${groupSeedMessageId}`
+    );
+    assertStatus('Delete policy DISABLED blocks delete', deleteBlockedByPolicy, 403);
+    const deleteBlockedPayload = requireObject(deleteBlockedByPolicy.data, 'Delete policy DISABLED blocks delete');
+    const deleteBlockedError = requireObject(deleteBlockedPayload.error, 'Delete policy error');
+    const deletePolicyCodeOk = deleteBlockedError.code === 'CHAT_DELETE_POLICY_DISABLED';
+    recordStep('Delete policy error code', deletePolicyCodeOk);
+    if (!deletePolicyCodeOk) {
+      throw new Error(`Expected CHAT_DELETE_POLICY_DISABLED, got ${JSON.stringify(deleteBlockedByPolicy.data)}`);
+    }
+
+    const pinEventPromise = waitForSocketEvent(
+      memberSocket,
+      'chat:pin:update',
+      (eventPayload) =>
+        eventPayload.conversationId === groupId &&
+        eventPayload.messageId === groupSeedMessageId &&
+        eventPayload.pinned === true
+    );
+    const pinResult = await apiRequest(baseUrl, admin.token, 'POST', `/api/v1/chat/messages/${groupSeedMessageId}/pin`);
+    assertStatus('Pin message', pinResult, 200);
+    await pinEventPromise;
+    recordStep('WS chat:pin:update on pin', true);
+
+    const unpinEventPromise = waitForSocketEvent(
+      memberSocket,
+      'chat:pin:update',
+      (eventPayload) =>
+        eventPayload.conversationId === groupId &&
+        eventPayload.messageId === groupSeedMessageId &&
+        eventPayload.pinned === false
+    );
+    const unpinResult = await apiRequest(
+      baseUrl,
+      admin.token,
+      'POST',
+      `/api/v1/chat/messages/${groupSeedMessageId}/unpin`
+    );
+    assertStatus('Unpin message', unpinResult, 200);
+    await unpinEventPromise;
+    recordStep('WS chat:pin:update on unpin', true);
+
+    const bookmarkAddEventPromise = waitForSocketEvent(
+      memberSocket,
+      'chat:bookmark:update',
+      (eventPayload) =>
+        eventPayload.conversationId === groupId &&
+        eventPayload.op === 'add'
+    );
+    const createBookmark = await apiRequest(
+      baseUrl,
+      admin.token,
+      'POST',
+      `/api/v1/chat/conversations/${groupId}/bookmarks`,
+      {
+        type: 'MESSAGE',
+        label: 'Important',
+        messageId: groupSeedMessageId,
+      }
+    );
+    assertStatus('Create bookmark', createBookmark, 200);
+    const bookmarkPayload = requireObject(createBookmark.data, 'Create bookmark');
+    const bookmark = requireObject(bookmarkPayload.bookmark, 'Create bookmark payload');
+    const bookmarkId = requireString(bookmark.id, 'bookmark id');
+    const bookmarkAddEvent = await bookmarkAddEventPromise;
+    const bookmarkAddEventOk = bookmarkAddEvent.bookmarkId === bookmarkId;
+    recordStep('WS chat:bookmark:update on add', bookmarkAddEventOk);
+    if (!bookmarkAddEventOk) {
+      throw new Error(`Unexpected bookmark add event payload: ${JSON.stringify(bookmarkAddEvent)}`);
+    }
+
+    const bookmarkRemoveEventPromise = waitForSocketEvent(
+      memberSocket,
+      'chat:bookmark:update',
+      (eventPayload) =>
+        eventPayload.conversationId === groupId &&
+        eventPayload.op === 'remove' &&
+        eventPayload.bookmarkId === bookmarkId
+    );
+    const deleteBookmark = await apiRequest(
+      baseUrl,
+      admin.token,
+      'DELETE',
+      `/api/v1/chat/bookmarks/${bookmarkId}`
+    );
+    assertStatus('Delete bookmark', deleteBookmark, 200);
+    await bookmarkRemoveEventPromise;
+    recordStep('WS chat:bookmark:update on remove', true);
+
+    const archiveGroup = await apiRequest(baseUrl, admin.token, 'POST', `/api/v1/chat/conversations/${groupId}/archive`);
+    assertStatus('Archive group', archiveGroup, 200);
+
+    const pinBlockedWhenArchived = await apiRequest(
+      baseUrl,
+      admin.token,
+      'POST',
+      `/api/v1/chat/messages/${groupSeedMessageId}/pin`
+    );
+    assertStatus('Archived blocks pin mutation', pinBlockedWhenArchived, 409);
+    const pinBlockedPayload = requireObject(pinBlockedWhenArchived.data, 'Archived blocks pin mutation');
+    const pinBlockedError = requireObject(pinBlockedPayload.error, 'Archived blocks pin mutation error');
+    recordStep('Archived pin block code', pinBlockedError.code === 'CHAT_ARCHIVED');
+
+    const bookmarkBlockedWhenArchived = await apiRequest(
+      baseUrl,
+      admin.token,
+      'POST',
+      `/api/v1/chat/conversations/${groupId}/bookmarks`,
+      {
+        type: 'MESSAGE',
+        label: 'Blocked bookmark',
+        messageId: groupSeedMessageId,
+      }
+    );
+    assertStatus('Archived blocks bookmark mutation', bookmarkBlockedWhenArchived, 409);
+    const bookmarkBlockedPayload = requireObject(bookmarkBlockedWhenArchived.data, 'Archived blocks bookmark mutation');
+    const bookmarkBlockedError = requireObject(bookmarkBlockedPayload.error, 'Archived blocks bookmark mutation error');
+    recordStep('Archived bookmark block code', bookmarkBlockedError.code === 'CHAT_ARCHIVED');
+
+    const unarchiveGroup = await apiRequest(
+      baseUrl,
+      admin.token,
+      'POST',
+      `/api/v1/chat/conversations/${groupId}/unarchive`
+    );
+    assertStatus('Unarchive group', unarchiveGroup, 200);
 
     const forumCreate = await apiRequest(baseUrl, admin.token, 'POST', '/api/v1/chat/conversations', {
       type: 'FORUM_OPEN',

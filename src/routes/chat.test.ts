@@ -84,6 +84,7 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
     await applyMigrationFile('0010_chat_message_revisions.sql');
     await applyMigrationFile('0012_chat_dm_pair_active_unique.sql');
     await applyMigrationFile('0013_chat_fk_integrity.sql');
+    await applyMigrationFile('0014_chat_pins_bookmarks_and_also_to_channel.sql');
     const db = getDatabase();
     const [adminRole] = await db
       .select()
@@ -270,6 +271,7 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
         body_rich: { mentions: [randomUUID()] },
         reply_to_message_id: rootMessageId,
         thread_root_id: rootMessageId,
+        also_to_channel: true,
       },
     ]);
 
@@ -718,6 +720,453 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
     const listedIds = listBody.items.map((item: { id: string }) => item.id);
     expect(listedIds).toContain(recreatedDm.id);
     expect(listedIds).not.toContain(firstDm.id);
+  });
+
+  it('purges pins and bookmarks on hard delete', async () => {
+    const db = getDatabase();
+    const superAdminRole = await ensureRole('SUPER_ADMIN');
+    const superAdminUserId = randomUUID();
+    const superAdminEmail = `chat-hard-delete-super-${Date.now()}@example.com`;
+
+    await db.insert(schema.users).values({
+      id: superAdminUserId,
+      email: superAdminEmail,
+      password_hash: await hashPassword('Password123!'),
+      first_name: 'Super',
+      last_name: 'Delete',
+      role_id: superAdminRole.id,
+      is_active: true,
+    });
+
+    const superAdminToken = await issueTokenForUser({
+      id: superAdminUserId,
+      email: superAdminEmail,
+      roleId: superAdminRole.id,
+      roleName: superAdminRole.name,
+    });
+
+    const createConversation = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'GROUP_CLOSED',
+        title: 'Hard Delete Purge Group',
+      },
+    });
+    expect(createConversation.statusCode).toBe(HTTP_STATUS.OK);
+    const conversationId = JSON.parse(createConversation.body).conversation.id as string;
+
+    const sendMessage = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'message to pin and bookmark' },
+    });
+    expect(sendMessage.statusCode).toBe(HTTP_STATUS.OK);
+    const messageId = JSON.parse(sendMessage.body).message.id as string;
+
+    const pinResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/messages/${messageId}/pin`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(pinResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const bookmarkResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/bookmarks`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'LINK',
+        label: 'Reference',
+        url: 'https://example.com',
+      },
+    });
+    expect(bookmarkResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const pinsBefore = await db
+      .select()
+      .from(schema.chatPins)
+      .where(eq(schema.chatPins.conversation_id, conversationId));
+    const bookmarksBefore = await db
+      .select()
+      .from(schema.chatBookmarks)
+      .where(eq(schema.chatBookmarks.conversation_id, conversationId));
+    expect(pinsBefore.length).toBeGreaterThan(0);
+    expect(bookmarksBefore.length).toBeGreaterThan(0);
+
+    const hardDelete = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/chat/conversations/${conversationId}`,
+      headers: { authorization: `Bearer ${superAdminToken}` },
+    });
+    expect(hardDelete.statusCode).toBe(HTTP_STATUS.OK);
+
+    const pinsAfter = await db
+      .select()
+      .from(schema.chatPins)
+      .where(eq(schema.chatPins.conversation_id, conversationId));
+    const bookmarksAfter = await db
+      .select()
+      .from(schema.chatBookmarks)
+      .where(eq(schema.chatBookmarks.conversation_id, conversationId));
+    expect(pinsAfter.length).toBe(0);
+    expect(bookmarksAfter.length).toBe(0);
+  });
+
+  it('enforces special mention policy for @everyone/@channel and allows admin', async () => {
+    const db = getDatabase();
+    const operatorRole = await ensureRole('OPERATOR');
+    const operatorUserId = randomUUID();
+    const operatorEmail = `chat-mention-op-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword('Password123!');
+
+    await db.insert(schema.users).values({
+      id: operatorUserId,
+      email: operatorEmail,
+      password_hash: passwordHash,
+      first_name: 'Mention',
+      last_name: 'Operator',
+      role_id: operatorRole.id,
+      is_active: true,
+    });
+
+    const operatorToken = await issueTokenForUser({
+      id: operatorUserId,
+      email: operatorEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+
+    const createConversation = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'FORUM_OPEN',
+        title: 'Mention Policy Forum',
+      },
+    });
+    expect(createConversation.statusCode).toBe(HTTP_STATUS.OK);
+    const conversationId = JSON.parse(createConversation.body).conversation.id as string;
+
+    const operatorEveryone = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${operatorToken}` },
+      payload: { text: '@everyone hello team' },
+    });
+    expect(operatorEveryone.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+    expect(JSON.parse(operatorEveryone.body).error.code).toBe('CHAT_MENTION_POLICY_VIOLATION');
+
+    const operatorNormal = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${operatorToken}` },
+      payload: { text: 'normal operator message' },
+    });
+    expect(operatorNormal.statusCode).toBe(HTTP_STATUS.OK);
+    const operatorMessageId = JSON.parse(operatorNormal.body).message.id as string;
+
+    const operatorEditEveryone = await server.inject({
+      method: 'PATCH',
+      url: `/api/v1/chat/messages/${operatorMessageId}`,
+      headers: { authorization: `Bearer ${operatorToken}` },
+      payload: { text: '@everyone edited mention' },
+    });
+    expect(operatorEditEveryone.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+    expect(JSON.parse(operatorEditEveryone.body).error.code).toBe('CHAT_MENTION_POLICY_VIOLATION');
+
+    const adminEveryone = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: '@everyone hello from admin' },
+    });
+    expect(adminEveryone.statusCode).toBe(HTTP_STATUS.OK);
+  });
+
+  it('enforces edit/delete message policies from conversation settings', async () => {
+    const db = getDatabase();
+    const operatorRole = await ensureRole('OPERATOR');
+    const operatorUserId = randomUUID();
+    const operatorEmail = `chat-policy-op-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword('Password123!');
+
+    await db.insert(schema.users).values({
+      id: operatorUserId,
+      email: operatorEmail,
+      password_hash: passwordHash,
+      first_name: 'Policy',
+      last_name: 'Operator',
+      role_id: operatorRole.id,
+      is_active: true,
+    });
+
+    const operatorToken = await issueTokenForUser({
+      id: operatorUserId,
+      email: operatorEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+
+    const createConversation = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'GROUP_CLOSED',
+        title: 'Policy Group',
+        members: [operatorUserId],
+      },
+    });
+    expect(createConversation.statusCode).toBe(HTTP_STATUS.OK);
+    const conversationId = JSON.parse(createConversation.body).conversation.id as string;
+
+    const operatorSend = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${operatorToken}` },
+      payload: { text: 'operator message' },
+    });
+    expect(operatorSend.statusCode).toBe(HTTP_STATUS.OK);
+    const operatorMessageId = JSON.parse(operatorSend.body).message.id as string;
+
+    const adminEditBeforePolicyUpdate = await server.inject({
+      method: 'PATCH',
+      url: `/api/v1/chat/messages/${operatorMessageId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'admin edit should fail under OWN' },
+    });
+    expect(adminEditBeforePolicyUpdate.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+    expect(JSON.parse(adminEditBeforePolicyUpdate.body).error.code).toBe('CHAT_EDIT_POLICY_FORBIDDEN');
+
+    const updateConversation = await server.inject({
+      method: 'PATCH',
+      url: `/api/v1/chat/conversations/${conversationId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        settings: {
+          edit_policy: 'ADMINS_ONLY',
+          delete_policy: 'DISABLED',
+        },
+      },
+    });
+    expect(updateConversation.statusCode).toBe(HTTP_STATUS.OK);
+
+    const adminEditAfterPolicyUpdate = await server.inject({
+      method: 'PATCH',
+      url: `/api/v1/chat/messages/${operatorMessageId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'admin edit allowed now' },
+    });
+    expect(adminEditAfterPolicyUpdate.statusCode).toBe(HTTP_STATUS.OK);
+
+    const operatorDeleteDisabled = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/chat/messages/${operatorMessageId}`,
+      headers: { authorization: `Bearer ${operatorToken}` },
+    });
+    expect(operatorDeleteDisabled.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+    expect(JSON.parse(operatorDeleteDisabled.body).error.code).toBe('CHAT_DELETE_POLICY_DISABLED');
+  });
+
+  it('supports thread alsoToChannel visibility behavior', async () => {
+    const createConversation = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'GROUP_CLOSED',
+        title: 'Thread Visibility Group',
+      },
+    });
+    expect(createConversation.statusCode).toBe(HTTP_STATUS.OK);
+    const conversationId = JSON.parse(createConversation.body).conversation.id as string;
+
+    const rootMessage = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'root message' },
+    });
+    expect(rootMessage.statusCode).toBe(HTTP_STATUS.OK);
+    const rootId = JSON.parse(rootMessage.body).message.id as string;
+
+    const hiddenReply = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        text: 'thread reply hidden from channel',
+        replyTo: rootId,
+        alsoToChannel: false,
+      },
+    });
+    expect(hiddenReply.statusCode).toBe(HTTP_STATUS.OK);
+    const hiddenReplyId = JSON.parse(hiddenReply.body).message.id as string;
+
+    const channelList = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}/messages?afterSeq=0&limit=20`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(channelList.statusCode).toBe(HTTP_STATUS.OK);
+    const channelItems = JSON.parse(channelList.body).items as Array<{ id: string }>;
+    expect(channelItems.some((item) => item.id === hiddenReplyId)).toBe(false);
+
+    const threadList = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}/thread/${rootId}?afterSeq=0&limit=20`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(threadList.statusCode).toBe(HTTP_STATUS.OK);
+    const threadItems = JSON.parse(threadList.body).items as Array<{ id: string }>;
+    expect(threadItems.some((item) => item.id === hiddenReplyId)).toBe(true);
+
+    const visibleReply = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        text: 'thread reply visible in channel',
+        replyTo: rootId,
+        alsoToChannel: true,
+      },
+    });
+    expect(visibleReply.statusCode).toBe(HTTP_STATUS.OK);
+    const visibleReplyId = JSON.parse(visibleReply.body).message.id as string;
+
+    const channelListAfterVisibleReply = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}/messages?afterSeq=0&limit=50`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(channelListAfterVisibleReply.statusCode).toBe(HTTP_STATUS.OK);
+    const channelItemsAfter = JSON.parse(channelListAfterVisibleReply.body).items as Array<{ id: string }>;
+    expect(channelItemsAfter.some((item) => item.id === visibleReplyId)).toBe(true);
+  });
+
+  it('supports pin/unpin and bookmark CRUD', async () => {
+    const createConversation = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'GROUP_CLOSED',
+        title: 'Pins and Bookmarks Group',
+      },
+    });
+    expect(createConversation.statusCode).toBe(HTTP_STATUS.OK);
+    const conversationId = JSON.parse(createConversation.body).conversation.id as string;
+
+    const sendMessage = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'pin me' },
+    });
+    expect(sendMessage.statusCode).toBe(HTTP_STATUS.OK);
+    const messageId = JSON.parse(sendMessage.body).message.id as string;
+
+    const pinResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/messages/${messageId}/pin`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(pinResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const listPins = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}/pins`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(listPins.statusCode).toBe(HTTP_STATUS.OK);
+    const pinsBody = JSON.parse(listPins.body);
+    expect(pinsBody.items.some((item: { message_id: string }) => item.message_id === messageId)).toBe(true);
+
+    const unpinResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/messages/${messageId}/unpin`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(unpinResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const createBookmark = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/bookmarks`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'MESSAGE',
+        label: 'Important message',
+        messageId,
+      },
+    });
+    expect(createBookmark.statusCode).toBe(HTTP_STATUS.OK);
+    const bookmarkId = JSON.parse(createBookmark.body).bookmark.id as string;
+    const createBookmarkAgain = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/bookmarks`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'MESSAGE',
+        label: 'Important message duplicate',
+        messageId,
+      },
+    });
+    expect(createBookmarkAgain.statusCode).toBe(HTTP_STATUS.OK);
+    const bookmarkIdAgain = JSON.parse(createBookmarkAgain.body).bookmark.id as string;
+    expect(bookmarkIdAgain).toBe(bookmarkId);
+
+    const listBookmarks = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}/bookmarks`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(listBookmarks.statusCode).toBe(HTTP_STATUS.OK);
+    const bookmarksBody = JSON.parse(listBookmarks.body);
+    expect(bookmarksBody.items.some((item: { id: string }) => item.id === bookmarkId)).toBe(true);
+    const messageBookmarks = bookmarksBody.items.filter(
+      (item: { type: string; message_id: string | null }) =>
+        item.type === 'MESSAGE' && item.message_id === messageId
+    );
+    expect(messageBookmarks.length).toBe(1);
+
+    const deleteBookmark = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/chat/bookmarks/${bookmarkId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(deleteBookmark.statusCode).toBe(HTTP_STATUS.OK);
+
+    const archiveConversation = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/archive`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(archiveConversation.statusCode).toBe(HTTP_STATUS.OK);
+
+    const pinWhenArchived = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/messages/${messageId}/pin`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(pinWhenArchived.statusCode).toBe(HTTP_STATUS.CONFLICT);
+    expect(JSON.parse(pinWhenArchived.body).error.code).toBe('CHAT_ARCHIVED');
+
+    const bookmarkWhenArchived = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/bookmarks`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'MESSAGE',
+        label: 'Should not work',
+        messageId,
+      },
+    });
+    expect(bookmarkWhenArchived.statusCode).toBe(HTTP_STATUS.CONFLICT);
+    expect(JSON.parse(bookmarkWhenArchived.body).error.code).toBe('CHAT_ARCHIVED');
   });
 
   it('enforces DM confidentiality for non-participant admins', async () => {

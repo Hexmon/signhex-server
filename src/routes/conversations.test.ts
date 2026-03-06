@@ -50,26 +50,39 @@ describe('Conversation Routes - chat DM shim', () => {
     await applyMigrationFile('0012_chat_dm_pair_active_unique.sql');
 
     const db = getDatabase();
-    const ensureRole = async (name: string, fallbackId: string) => {
+    const ensureRole = async (
+      name: string,
+      fallbackId: string,
+      permissions: { grants: Array<{ action: string; subject: string }> } = { grants: [] }
+    ) => {
       const [existing] = await db
         .select()
         .from(schema.roles)
         .where(eq(schema.roles.name, name))
         .limit(1);
-      if (existing) return existing;
+      if (existing) {
+        const [updated] = await db
+          .update(schema.roles)
+          .set({ permissions })
+          .where(eq(schema.roles.id, existing.id))
+          .returning();
+        return updated ?? existing;
+      }
       const [created] = await db
         .insert(schema.roles)
         .values({
           id: fallbackId,
           name,
-          permissions: {},
+          permissions,
           is_system: true,
         })
         .returning();
       return created;
     };
 
-    const adminRole = await ensureRole('ADMIN', testRoles.ADMIN.id);
+    const adminRole = await ensureRole('ADMIN', testRoles.ADMIN.id, {
+      grants: [{ action: 'read', subject: 'Conversation' }],
+    });
     const operatorRole = await ensureRole('OPERATOR', testRoles.OPERATOR.id);
 
     const adminPassword = await hashPassword('Password123!');

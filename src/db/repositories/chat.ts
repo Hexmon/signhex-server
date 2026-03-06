@@ -15,6 +15,7 @@ type ConversationType = 'DM' | 'GROUP_CLOSED' | 'FORUM_OPEN';
 type ConversationState = 'ACTIVE' | 'ARCHIVED' | 'DELETED';
 type MemberRole = 'OWNER' | 'CHAT_ADMIN' | 'MOD' | 'MEMBER';
 type ModerationAction = 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
+type BookmarkType = 'LINK' | 'FILE' | 'MESSAGE';
 
 const INDEFINITE_UNTIL = new Date('9999-12-31T23:59:59.999Z');
 
@@ -217,6 +218,7 @@ export class ChatRepository {
     purpose?: string;
     invite_policy?: 'ANY_MEMBER_CAN_INVITE' | 'ADMINS_ONLY_CAN_INVITE' | 'INVITES_DISABLED';
     members?: string[];
+    metadata?: Record<string, unknown>;
   }) {
     const db = getDatabase();
     const [conversation] = await db
@@ -231,7 +233,7 @@ export class ChatRepository {
           input.type === 'DM'
             ? 'INVITES_DISABLED'
             : input.invite_policy || 'ANY_MEMBER_CAN_INVITE',
-        metadata: {},
+        metadata: input.metadata || {},
       })
       .returning();
 
@@ -388,6 +390,13 @@ export class ChatRepository {
     ];
     if (options.threadRootId) {
       conditions.push(eq(schema.chatMessages.thread_root_id, options.threadRootId));
+    } else {
+      conditions.push(
+        or(
+          isNull(schema.chatMessages.thread_root_id),
+          eq(schema.chatMessages.also_to_channel, true)
+        ) as any
+      );
     }
 
     const items = await db
@@ -450,6 +459,7 @@ export class ChatRepository {
     bodyText?: string;
     bodyRich?: unknown;
     replyToMessageId?: string;
+    alsoToChannel?: boolean;
     attachmentMediaIds?: string[];
   }) {
     const db = getDatabase();
@@ -495,6 +505,7 @@ export class ChatRepository {
           sender_id: input.senderId,
           body_text: input.bodyText,
           body_rich: input.bodyRich as any,
+          also_to_channel: Boolean(input.alsoToChannel),
           reply_to_message_id: input.replyToMessageId,
           thread_root_id: threadRootId,
         })
@@ -634,6 +645,183 @@ export class ChatRepository {
       .where(eq(schema.chatReactions.message_id, input.messageId));
 
     return { message, reactions };
+  }
+
+  async pinMessage(input: { conversationId: string; messageId: string; pinnedBy: string }) {
+    const db = getDatabase();
+    const [message] = await db
+      .select()
+      .from(schema.chatMessages)
+      .where(
+        and(
+          eq(schema.chatMessages.id, input.messageId),
+          eq(schema.chatMessages.conversation_id, input.conversationId)
+        )
+      );
+    if (!message) throw AppError.notFound('Message not found');
+    if (message.deleted_at) throw AppError.badRequest('Deleted message cannot be pinned');
+
+    const [pin] = await db
+      .insert(schema.chatPins)
+      .values({
+        conversation_id: input.conversationId,
+        message_id: input.messageId,
+        pinned_by: input.pinnedBy,
+      })
+      .onConflictDoUpdate({
+        target: [schema.chatPins.conversation_id, schema.chatPins.message_id],
+        set: {
+          pinned_by: input.pinnedBy,
+          pinned_at: new Date(),
+        },
+      })
+      .returning();
+
+    return pin;
+  }
+
+  async unpinMessage(conversationId: string, messageId: string) {
+    const db = getDatabase();
+    const rows = await db
+      .delete(schema.chatPins)
+      .where(
+        and(
+          eq(schema.chatPins.conversation_id, conversationId),
+          eq(schema.chatPins.message_id, messageId)
+        )
+      )
+      .returning({ id: schema.chatPins.id });
+    return rows.length > 0;
+  }
+
+  async listPins(conversationId: string) {
+    const db = getDatabase();
+    const rows = await db
+      .select({
+        pin: schema.chatPins,
+        message: schema.chatMessages,
+      })
+      .from(schema.chatPins)
+      .innerJoin(schema.chatMessages, eq(schema.chatPins.message_id, schema.chatMessages.id))
+      .where(eq(schema.chatPins.conversation_id, conversationId))
+      .orderBy(desc(schema.chatPins.pinned_at));
+
+    return rows.map((row) => ({
+      ...row.pin,
+      message: row.message.deleted_at
+        ? {
+            ...row.message,
+            body_text: null,
+            body_rich: null,
+          }
+        : row.message,
+    }));
+  }
+
+  async createBookmark(input: {
+    conversationId: string;
+    type: BookmarkType;
+    label: string;
+    emoji?: string;
+    url?: string;
+    mediaAssetId?: string;
+    messageId?: string;
+    createdBy: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{ bookmark: typeof schema.chatBookmarks.$inferSelect; created: boolean }> {
+    const db = getDatabase();
+    if (input.type === 'LINK' && !input.url) {
+      throw AppError.badRequest('url is required for LINK bookmark');
+    }
+    if (input.type === 'FILE' && !input.mediaAssetId) {
+      throw AppError.badRequest('mediaAssetId is required for FILE bookmark');
+    }
+    if (input.type === 'MESSAGE' && !input.messageId) {
+      throw AppError.badRequest('messageId is required for MESSAGE bookmark');
+    }
+
+    if (input.messageId) {
+      const [message] = await db
+        .select()
+        .from(schema.chatMessages)
+        .where(eq(schema.chatMessages.id, input.messageId));
+      if (!message || message.conversation_id !== input.conversationId) {
+        throw AppError.badRequest('messageId is invalid for this conversation');
+      }
+    }
+
+    const uniqueTargetCondition =
+      input.type === 'LINK'
+        ? and(
+            eq(schema.chatBookmarks.conversation_id, input.conversationId),
+            eq(schema.chatBookmarks.type, 'LINK'),
+            eq(schema.chatBookmarks.url, input.url!)
+          )
+        : input.type === 'FILE'
+          ? and(
+              eq(schema.chatBookmarks.conversation_id, input.conversationId),
+              eq(schema.chatBookmarks.type, 'FILE'),
+              eq(schema.chatBookmarks.media_asset_id, input.mediaAssetId!)
+            )
+          : and(
+              eq(schema.chatBookmarks.conversation_id, input.conversationId),
+              eq(schema.chatBookmarks.type, 'MESSAGE'),
+              eq(schema.chatBookmarks.message_id, input.messageId!)
+            );
+
+    const [existing] = await db
+      .select()
+      .from(schema.chatBookmarks)
+      .where(uniqueTargetCondition)
+      .orderBy(desc(schema.chatBookmarks.created_at))
+      .limit(1);
+    if (existing) {
+      return { bookmark: existing, created: false };
+    }
+
+    const [bookmark] = await db
+      .insert(schema.chatBookmarks)
+      .values({
+        conversation_id: input.conversationId,
+        type: input.type,
+        label: input.label,
+        emoji: input.emoji,
+        url: input.url,
+        media_asset_id: input.mediaAssetId,
+        message_id: input.messageId,
+        created_by: input.createdBy,
+        metadata: input.metadata,
+      })
+      .returning();
+
+    return { bookmark, created: true };
+  }
+
+  async listBookmarks(conversationId: string) {
+    const db = getDatabase();
+    return db
+      .select()
+      .from(schema.chatBookmarks)
+      .where(eq(schema.chatBookmarks.conversation_id, conversationId))
+      .orderBy(desc(schema.chatBookmarks.created_at));
+  }
+
+  async getBookmarkById(id: string) {
+    const db = getDatabase();
+    const [bookmark] = await db
+      .select()
+      .from(schema.chatBookmarks)
+      .where(eq(schema.chatBookmarks.id, id));
+    return bookmark || null;
+  }
+
+  async deleteBookmark(id: string) {
+    const db = getDatabase();
+    const [deleted] = await db
+      .delete(schema.chatBookmarks)
+      .where(eq(schema.chatBookmarks.id, id))
+      .returning();
+    return deleted || null;
   }
 
   async markRead(conversationId: string, userId: string, lastReadSeq: number) {
@@ -779,6 +967,7 @@ export class ChatRepository {
       purpose: string;
       invite_policy: 'ANY_MEMBER_CAN_INVITE' | 'ADMINS_ONLY_CAN_INVITE' | 'INVITES_DISABLED';
       state: ConversationState;
+      metadata: Record<string, unknown>;
     }>
   ) {
     const db = getDatabase();
@@ -869,6 +1058,12 @@ export class ChatRepository {
       await tx
         .delete(schema.chatMembers)
         .where(eq(schema.chatMembers.conversation_id, conversationId));
+      await tx
+        .delete(schema.chatPins)
+        .where(eq(schema.chatPins.conversation_id, conversationId));
+      await tx
+        .delete(schema.chatBookmarks)
+        .where(eq(schema.chatBookmarks.conversation_id, conversationId));
 
       const [updated] = await tx
         .update(schema.chatConversations)

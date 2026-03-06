@@ -38,6 +38,7 @@ export const chatInvitePolicyEnum = pgEnum('chat_invite_policy', [
 ]);
 export const chatMemberRoleEnum = pgEnum('chat_member_role', ['OWNER', 'CHAT_ADMIN', 'MOD', 'MEMBER']);
 export const chatRevisionActionEnum = pgEnum('chat_revision_action', ['EDIT', 'DELETE']);
+export const chatBookmarkTypeEnum = pgEnum('chat_bookmark_type', ['LINK', 'FILE', 'MESSAGE']);
 
 // Users table
 export const roles = pgTable(
@@ -536,7 +537,20 @@ export const notifications = pgTable(
     userIdIdx: index('notifications_user_id_idx').on(table.user_id),
     isReadIdx: index('notifications_is_read_idx').on(table.is_read),
     createdAtIdx: index('notifications_created_at_idx').on(table.created_at),
+    userUnreadIdx: index('notifications_user_unread_idx')
+      .on(table.user_id)
+      .where(sql`${table.is_read} = false`),
   })
+);
+
+export const userNotificationCounters = pgTable(
+  'user_notification_counters',
+  {
+    user_id: uuid('user_id').primaryKey().notNull(),
+    unread_total: integer('unread_total').notNull().default(0),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  () => ({})
 );
 
 // Audit logs
@@ -824,6 +838,7 @@ export const chatMessages = pgTable(
     sender_id: uuid('sender_id').notNull(),
     body_text: text('body_text'),
     body_rich: jsonb('body_rich'),
+    also_to_channel: boolean('also_to_channel').notNull().default(false),
     reply_to_message_id: uuid('reply_to_message_id'),
     thread_root_id: uuid('thread_root_id'),
     thread_reply_count: integer('thread_reply_count').notNull().default(0),
@@ -836,6 +851,25 @@ export const chatMessages = pgTable(
     conversationIdx: index('chat_messages_conversation_idx').on(table.conversation_id),
     replyToIdx: index('chat_messages_reply_to_idx').on(table.reply_to_message_id),
     threadRootIdx: index('chat_messages_thread_root_idx').on(table.thread_root_id),
+  })
+);
+
+export const chatPins = pgTable(
+  'chat_pins',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    message_id: uuid('message_id').notNull(),
+    pinned_by: uuid('pinned_by').notNull(),
+    pinned_at: timestamp('pinned_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationMessageIdx: uniqueIndex('chat_pins_conversation_message_idx').on(
+      table.conversation_id,
+      table.message_id
+    ),
+    conversationIdx: index('chat_pins_conversation_idx').on(table.conversation_id),
+    messageIdx: index('chat_pins_message_idx').on(table.message_id),
   })
 );
 
@@ -854,6 +888,29 @@ export const chatAttachments = pgTable(
     messageMediaIdx: uniqueIndex('chat_attachments_message_media_idx').on(table.message_id, table.media_asset_id),
     mediaIdx: index('chat_attachments_media_idx').on(table.media_asset_id),
     messageIdx: index('chat_attachments_message_idx').on(table.message_id),
+  })
+);
+
+export const chatBookmarks = pgTable(
+  'chat_bookmarks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    type: chatBookmarkTypeEnum('type').notNull(),
+    label: varchar('label', { length: 255 }).notNull(),
+    emoji: varchar('emoji', { length: 32 }),
+    url: text('url'),
+    media_asset_id: uuid('media_asset_id'),
+    message_id: uuid('message_id'),
+    created_by: uuid('created_by').notNull(),
+    metadata: jsonb('metadata'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationIdx: index('chat_bookmarks_conversation_idx').on(table.conversation_id),
+    messageIdx: index('chat_bookmarks_message_idx').on(table.message_id),
+    mediaIdx: index('chat_bookmarks_media_idx').on(table.media_asset_id),
+    creatorIdx: index('chat_bookmarks_created_by_idx').on(table.created_by),
   })
 );
 

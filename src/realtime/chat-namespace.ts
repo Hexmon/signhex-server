@@ -197,6 +197,8 @@ export function emitChatEvent(
     | 'chat:message:updated'
     | 'chat:message:deleted'
     | 'chat:conversation:updated'
+    | 'chat:pin:update'
+    | 'chat:bookmark:update'
     | 'chat:typing',
   payload: Record<string, unknown>
 ) {

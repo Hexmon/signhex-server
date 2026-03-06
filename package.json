@@ -21,7 +21,8 @@
     "check": "tsx scripts/check-services.ts",
     "verify": "tsx scripts/verify-build.ts",
     "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts",
-    "chat:dry-run": "tsx scripts/chat-dry-run.ts"
+    "chat:dry-run": "tsx scripts/chat-dry-run.ts",
+    "notifications:reconcile": "tsx scripts/notifications-reconcile.ts"
   },
   "keywords": [
     "signage",

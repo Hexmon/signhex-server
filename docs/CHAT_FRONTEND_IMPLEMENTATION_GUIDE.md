@@ -774,3 +774,88 @@ Guidance:
 1. CSRF middleware skips token-auth (Authorization header) requests.
 2. Chat route contracts are independent of legacy `/conversations/*` response shapes.
 3. Legacy `/conversations/*` remains compatibility surface mapped to chat DM domain; do not build new FE features on it.
+
+---
+
+## 18) Feature Delta: Pins, Bookmarks, Policies, `alsoToChannel`
+
+### New REST endpoints
+- `POST /api/v1/chat/messages/:id/pin` -> `{ pin }`
+- `POST /api/v1/chat/messages/:id/unpin` -> `{ success: boolean }`
+- `GET /api/v1/chat/conversations/:id/pins` -> `{ items: PinWithMessage[] }`
+- `POST /api/v1/chat/conversations/:id/bookmarks` -> `{ bookmark }`
+- `GET /api/v1/chat/conversations/:id/bookmarks` -> `{ items: Bookmark[] }`
+- `DELETE /api/v1/chat/bookmarks/:id` -> `{ success: boolean }`
+
+### Conversation policy fields (`metadata.settings`)
+- `mention_policy.everyone|channel|here`: `ANY_MEMBER | ADMINS_ONLY | DISABLED`
+- `edit_policy`: `OWN | ADMINS_ONLY | DISABLED`
+- `delete_policy`: `OWN | ADMINS_ONLY | DISABLED`
+
+Update policies via:
+- `PATCH /api/v1/chat/conversations/:id`
+```json
+{
+  "settings": {
+    "mention_policy": { "everyone": "ADMINS_ONLY", "channel": "ADMINS_ONLY", "here": "ANY_MEMBER" },
+    "edit_policy": "ADMINS_ONLY",
+    "delete_policy": "DISABLED"
+  }
+}
+```
+
+### `alsoToChannel` thread behavior
+- Send endpoint supports:
+```json
+{
+  "text": "reply text",
+  "replyTo": "<parentMessageId>",
+  "alsoToChannel": true
+}
+```
+- Rule: `alsoToChannel` is valid only when `replyTo` is present.
+- If `alsoToChannel=false` or omitted, thread reply is hidden from main channel list and available in thread list.
+- If `alsoToChannel=true`, thread reply is shown in both main list and thread list.
+
+### New WS events
+- `chat:pin:update`
+```json
+{
+  "conversationId": "<uuid>",
+  "messageId": "<uuid>",
+  "pinned": true,
+  "pin": { "id": "<uuid>", "conversation_id": "<uuid>", "message_id": "<uuid>", "pinned_by": "<uuid>", "pinned_at": "<iso>" }
+}
+```
+- `chat:bookmark:update`
+```json
+{
+  "conversationId": "<uuid>",
+  "bookmarkId": "<uuid>",
+  "op": "add"
+}
+```
+- Policy updates continue through existing:
+  - `chat:conversation:updated` with `patch.settings` from `PATCH /chat/conversations/:id`.
+
+### Error handling additions
+- `409 CHAT_ARCHIVED` for archived write attempts (includes pin/bookmark/policy-changing operations).
+- `403 CHAT_MENTION_POLICY_VIOLATION` with message:
+  - `@everyone mention is restricted to admins`
+  - `@channel mention is restricted to admins`
+  - `@here mentions are disabled in this conversation` (if disabled)
+- `403 CHAT_EDIT_POLICY_DISABLED` with message:
+  - `Message editing is disabled in this conversation`
+- `403 CHAT_EDIT_POLICY_FORBIDDEN` with message:
+  - `You cannot edit this message`
+- `403 CHAT_DELETE_POLICY_DISABLED` with message:
+  - `Message deletion is disabled in this conversation`
+- `403 CHAT_DELETE_POLICY_FORBIDDEN` with message:
+  - `You cannot delete this message`
+
+### FE behavior requirements
+1. Render pinned panel from `GET /chat/conversations/:id/pins`.
+2. Render bookmarks panel from `GET /chat/conversations/:id/bookmarks`.
+3. Use `chat:pin:update` and `chat:bookmark:update` for live cache updates.
+4. Read `metadata.settings` from conversation payload and pre-gate composer/message actions.
+5. Keep server responses authoritative; on policy conflicts, show toast + refresh conversation details.

@@ -10,8 +10,26 @@ export class NotificationRepository {
     data?: Record<string, any>;
   }) {
     const db = getDatabase();
-    const result = await db.insert(schema.notifications).values(data).returning();
-    return result[0];
+    return db.transaction(async (tx) => {
+      const [created] = await tx.insert(schema.notifications).values(data).returning();
+
+      await tx
+        .insert(schema.userNotificationCounters)
+        .values({
+          user_id: data.user_id,
+          unread_total: 1,
+          updated_at: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: schema.userNotificationCounters.user_id,
+          set: {
+            unread_total: sql`GREATEST(${schema.userNotificationCounters.unread_total} + 1, 0)`,
+            updated_at: new Date(),
+          },
+        });
+
+      return created;
+    });
   }
 
   async findById(id: string) {
@@ -71,29 +89,56 @@ export class NotificationRepository {
   }
 
   async markAsRead(id: string) {
+    const result = await this.markAsReadIfUnread(id);
+    return result.notification;
+  }
+
+  async markAsReadIfUnread(id: string) {
     const db = getDatabase();
-    const result = await db
-      .update(schema.notifications)
-      .set({ is_read: true })
-      .where(eq(schema.notifications.id, id))
-      .returning();
-    return result[0] || null;
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(schema.notifications)
+        .set({ is_read: true })
+        .where(
+          and(
+            eq(schema.notifications.id, id),
+            eq(schema.notifications.is_read, false)
+          )
+        )
+        .returning();
+
+      if (updated) {
+        return { notification: updated, changed: true };
+      }
+
+      const [existing] = await tx
+        .select()
+        .from(schema.notifications)
+        .where(eq(schema.notifications.id, id));
+      return { notification: existing || null, changed: false };
+    });
   }
 
   async markAllAsRead(userId: string) {
     const db = getDatabase();
-    await db
+    const rows = await db
       .update(schema.notifications)
       .set({ is_read: true })
       .where(and(
         eq(schema.notifications.user_id, userId),
         eq(schema.notifications.is_read, false)
-      ));
+      ))
+      .returning({ id: schema.notifications.id });
+    return rows.length;
   }
 
   async delete(id: string) {
     const db = getDatabase();
-    await db.delete(schema.notifications).where(eq(schema.notifications.id, id));
+    const [deleted] = await db
+      .delete(schema.notifications)
+      .where(eq(schema.notifications.id, id))
+      .returning();
+    return deleted || null;
   }
 
   async deleteOlderThan(days: number) {

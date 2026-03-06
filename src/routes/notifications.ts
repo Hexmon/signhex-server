@@ -1,12 +1,17 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { createNotificationRepository } from '@/db/repositories/notification';
-import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
+import { createNotificationCounterRepository } from '@/db/repositories/notification-counter';
+import { chatAuthPreHandler, getRequestAuthContext } from '@/auth/request-auth';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import {
+  emitNotificationCountEvent,
+  setupNotificationsNamespace,
+} from '@/realtime/notifications-namespace';
 
 const logger = createLogger('notification-routes');
 const { NO_CONTENT } = HTTP_STATUS;
@@ -17,13 +22,20 @@ const listNotificationsQuerySchema = z.object({
   read: z.enum(['true', 'false']).optional(),
 });
 
+function authenticate(request: FastifyRequest) {
+  return getRequestAuthContext(request);
+}
+
 export async function notificationRoutes(fastify: FastifyInstance) {
+  await setupNotificationsNamespace(fastify);
   const notifRepo = createNotificationRepository();
+  const counterRepo = createNotificationCounterRepository();
 
   // List notifications for current user
   fastify.get<{ Querystring: typeof listNotificationsQuerySchema._type }>(
     apiEndpoints.notifications.list,
     {
+      preHandler: chatAuthPreHandler,
       schema: {
         description: 'List notifications for current user',
         tags: ['Notifications'],
@@ -32,12 +44,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) {
-          throw AppError.unauthorized('Missing authorization header');
-        }
-
-        const payload = await verifyAccessToken(token);
+        const { payload } = await authenticate(request);
         const query = listNotificationsQuerySchema.parse(request.query);
 
         const result = await notifRepo.listByUser(payload.sub, {
@@ -71,10 +78,34 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     }
   );
 
+  fastify.get(
+    apiEndpoints.notifications.unreadCount,
+    {
+      preHandler: chatAuthPreHandler,
+      schema: {
+        description: 'Unread notification count for current user',
+        tags: ['Notifications'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const unread_total = await counterRepo.getUnreadTotal(payload.sub);
+        reply.header('Cache-Control', 'no-store');
+        return reply.send({ unread_total });
+      } catch (error) {
+        logger.error(error, 'Get unread notification count error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
   // Get notification by ID
   fastify.get<{ Params: { id: string } }>(
     apiEndpoints.notifications.get,
     {
+      preHandler: chatAuthPreHandler,
       schema: {
         description: 'Get notification by ID',
         tags: ['Notifications'],
@@ -83,12 +114,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) {
-          throw AppError.unauthorized('Missing authorization header');
-        }
-
-        const payload = await verifyAccessToken(token);
+        const { payload } = await authenticate(request);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
@@ -121,6 +147,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { id: string } }>(
     apiEndpoints.notifications.markRead,
     {
+      preHandler: chatAuthPreHandler,
       schema: {
         description: 'Mark notification as read',
         tags: ['Notifications'],
@@ -129,12 +156,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) {
-          throw AppError.unauthorized('Missing authorization header');
-        }
-
-        const payload = await verifyAccessToken(token);
+        const { payload } = await authenticate(request);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
@@ -146,17 +168,27 @@ export async function notificationRoutes(fastify: FastifyInstance) {
           throw AppError.forbidden('Forbidden');
         }
 
-        const updated = await notifRepo.markAsRead((request.params as any).id);
+        const { notification: updated, changed } = await notifRepo.markAsReadIfUnread(
+          (request.params as any).id
+        );
+        if (!updated) {
+          throw AppError.notFound('Notification not found');
+        }
+
+        if (changed) {
+          const unread_total = await counterRepo.decrement(payload.sub, 1);
+          emitNotificationCountEvent(fastify, payload.sub, unread_total);
+        }
 
         return reply.send({
-          id: updated!.id,
-          title: updated!.title,
-          message: updated!.message,
+          id: updated.id,
+          title: updated.title,
+          message: updated.message,
           type: (updated as any).type ?? null,
           data: (updated as any).data ?? null,
-          read: updated!.is_read,
+          read: updated.is_read,
           read_at: null,
-          created_at: updated!.created_at.toISOString(),
+          created_at: updated.created_at.toISOString(),
         });
       } catch (error) {
         logger.error(error, 'Mark notification as read error');
@@ -169,6 +201,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
   fastify.post(
     apiEndpoints.notifications.markAllRead,
     {
+      preHandler: chatAuthPreHandler,
       schema: {
         description: 'Mark all notifications as read',
         tags: ['Notifications'],
@@ -177,13 +210,10 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) {
-          throw AppError.unauthorized('Missing authorization header');
-        }
-
-        const payload = await verifyAccessToken(token);
+        const { payload } = await authenticate(request);
         await notifRepo.markAllAsRead(payload.sub);
+        await counterRepo.set(payload.sub, 0);
+        emitNotificationCountEvent(fastify, payload.sub, 0);
 
         return reply.send({ success: true });
       } catch (error) {
@@ -197,6 +227,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
   fastify.delete<{ Params: { id: string } }>(
     apiEndpoints.notifications.delete,
     {
+      preHandler: chatAuthPreHandler,
       schema: {
         description: 'Delete notification',
         tags: ['Notifications'],
@@ -205,12 +236,7 @@ export async function notificationRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) {
-          throw AppError.unauthorized('Missing authorization header');
-        }
-
-        const payload = await verifyAccessToken(token);
+        const { payload } = await authenticate(request);
         const notification = await notifRepo.findById((request.params as any).id);
 
         if (!notification) {
@@ -222,7 +248,11 @@ export async function notificationRoutes(fastify: FastifyInstance) {
           throw AppError.forbidden('Forbidden');
         }
 
-        await notifRepo.delete((request.params as any).id);
+        const deleted = await notifRepo.delete((request.params as any).id);
+        if (deleted?.is_read === false) {
+          const unread_total = await counterRepo.decrement(payload.sub, 1);
+          emitNotificationCountEvent(fastify, payload.sub, unread_total);
+        }
         return reply.status(NO_CONTENT).send();
       } catch (error) {
         logger.error(error, 'Delete notification error');

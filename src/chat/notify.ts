@@ -20,6 +20,7 @@ export type NotifyMessageEventInput = {
   senderId: string;
   mentionedUserIds?: string[];
   threadRootSenderId?: string | null;
+  onNotificationCreated?: (input: { userId: string; type: ChatNotificationType }) => Promise<void> | void;
 };
 
 function buildSnippet(text?: string | null, maxLength = 140): string {
@@ -87,6 +88,14 @@ export async function notifyMessageEvent(input: NotifyMessageEventInput): Promis
             snippet,
           },
         });
+
+        if (input.onNotificationCreated) {
+          try {
+            await input.onNotificationCreated({ userId, type });
+          } catch (error) {
+            logger.warn(error, 'Failed post-create notification hook');
+          }
+        }
       })
     );
   } catch (error) {

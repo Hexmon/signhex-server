@@ -119,6 +119,7 @@ export const apiEndpoints = {
   },
   notifications: {
     list: withBase('/notifications'),
+    unreadCount: withBase('/notifications/unread-count'),
     get: withBase('/notifications/:id'),
     markRead: withBase('/notifications/:id/read'),
     markAllRead: withBase('/notifications/read-all'),
@@ -203,8 +204,14 @@ export const apiEndpoints = {
     editMessage: withBase('/chat/messages/:id'),
     deleteMessage: withBase('/chat/messages/:id'),
     reactToMessage: withBase('/chat/messages/:id/reactions'),
+    pinMessage: withBase('/chat/messages/:id/pin'),
+    unpinMessage: withBase('/chat/messages/:id/unpin'),
     markRead: withBase('/chat/conversations/:id/read'),
     moderateConversation: withBase('/chat/conversations/:id/moderation'),
+    listPins: withBase('/chat/conversations/:id/pins'),
+    createBookmark: withBase('/chat/conversations/:id/bookmarks'),
+    listBookmarks: withBase('/chat/conversations/:id/bookmarks'),
+    deleteBookmark: withBase('/chat/bookmarks/:id'),
   },
   proofOfPlay: {
     list: withBase('/proof-of-play'),
