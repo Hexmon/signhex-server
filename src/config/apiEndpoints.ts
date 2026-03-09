@@ -192,6 +192,8 @@ export const apiEndpoints = {
     createDm: withBase('/chat/dm'),
     createConversation: withBase('/chat/conversations'),
     listConversations: withBase('/chat/conversations'),
+    getConversation: withBase('/chat/conversations/:id'),
+    shareLink: withBase('/chat/conversations/:id/share-link'),
     updateConversation: withBase('/chat/conversations/:id'),
     archiveConversation: withBase('/chat/conversations/:id/archive'),
     unarchiveConversation: withBase('/chat/conversations/:id/unarchive'),

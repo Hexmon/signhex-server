@@ -28,6 +28,14 @@ const envSchema = z.object({
   RATE_LIMIT_TIME_WINDOW: z.string().default('1 minute'),
   CORS_ORIGINS: z.string().default(''),
   SOCKET_ALLOWED_ORIGINS: z.string().default(''),
+  APP_PUBLIC_BASE_URL: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') return value;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    },
+    z.string().url().optional()
+  ),
   CSRF_ENABLED: z.enum(['true', 'false']).transform((v) => v === 'true').default('true'),
   REDIS_URL: z.string().url().optional(),
   PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).default(12),

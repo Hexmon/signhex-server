@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { inArray } from 'drizzle-orm';
+import { config as appConfig } from '@/config';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { chatAuthPreHandler, getRequestAuthContext } from '@/auth/request-auth';
 import { createChatRepository } from '@/db/repositories/chat';
@@ -301,6 +302,19 @@ async function getConversationForAccess(
   return conversation;
 }
 
+function buildConversationShareLink(conversationId: string): { path: string; url?: string } {
+  const path = `/chat/${conversationId}`;
+  if (!appConfig.APP_PUBLIC_BASE_URL) {
+    return { path };
+  }
+
+  const baseUrl = appConfig.APP_PUBLIC_BASE_URL.replace(/\/+$/, '');
+  return {
+    path,
+    url: `${baseUrl}${path}`,
+  };
+}
+
 export async function chatRoutes(fastify: FastifyInstance) {
   await setupChatNamespace(fastify);
   const forumLimiter = createRateLimiter({ capacity: 30, refillPerSecond: 1 });
@@ -367,6 +381,59 @@ export async function chatRoutes(fastify: FastifyInstance) {
         return reply.send({ items });
       } catch (error) {
         logger.error(error, 'List conversations error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    apiEndpoints.chat.getConversation,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const conversationId = (request.params as any).id;
+        const conversation = await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertNotBanned(moderation);
+        const member = await chatRepo.getMember(conversationId, payload.sub);
+
+        return reply.send({
+          conversation: {
+            id: conversation.id,
+            type: conversation.type,
+            state: conversation.state,
+            title: conversation.title,
+            topic: conversation.topic,
+            purpose: conversation.purpose,
+            invite_policy: conversation.invite_policy,
+            last_seq: conversation.last_seq,
+          },
+          viewer: {
+            is_member: Boolean(member),
+            role: member?.role ?? null,
+          },
+        });
+      } catch (error) {
+        logger.error(error, 'Get conversation error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    apiEndpoints.chat.shareLink,
+    { preHandler: chatAuthPreHandler, schema: { tags: ['Chat'], security: [{ bearerAuth: [] }] } },
+    async (request, reply) => {
+      try {
+        const { payload } = await authenticate(request);
+        const conversationId = (request.params as any).id;
+        await getConversationForAccess(conversationId, payload.sub, payload.role);
+        const moderation = await chatRepo.getModeration(conversationId, payload.sub);
+        assertNotBanned(moderation);
+        return reply.send(buildConversationShareLink(conversationId));
+      } catch (error) {
+        logger.error(error, 'Share link error');
         return respondWithError(reply, error);
       }
     }

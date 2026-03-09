@@ -1169,6 +1169,392 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
     expect(JSON.parse(bookmarkWhenArchived.body).error.code).toBe('CHAT_ARCHIVED');
   });
 
+  it('enforces deep-link resolve/share access rules for DM and closed groups', async () => {
+    const db = getDatabase();
+    const operatorRole = await ensureRole('OPERATOR');
+    const adminRole = await ensureRole('ADMIN');
+
+    const dmOtherUserId = randomUUID();
+    const dmOtherUserEmail = `chat-deeplink-dm-${Date.now()}@example.com`;
+    const outsiderAdminId = randomUUID();
+    const outsiderAdminEmail = `chat-deeplink-outsider-${Date.now()}@example.com`;
+    const groupMemberId = randomUUID();
+    const groupMemberEmail = `chat-deeplink-group-member-${Date.now()}@example.com`;
+    const groupOutsiderId = randomUUID();
+    const groupOutsiderEmail = `chat-deeplink-group-outsider-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword('Password123!');
+
+    await db.insert(schema.users).values([
+      {
+        id: dmOtherUserId,
+        email: dmOtherUserEmail,
+        password_hash: passwordHash,
+        first_name: 'DM',
+        last_name: 'Participant',
+        role_id: operatorRole.id,
+        is_active: true,
+      },
+      {
+        id: outsiderAdminId,
+        email: outsiderAdminEmail,
+        password_hash: passwordHash,
+        first_name: 'Outsider',
+        last_name: 'Admin',
+        role_id: adminRole.id,
+        is_active: true,
+      },
+      {
+        id: groupMemberId,
+        email: groupMemberEmail,
+        password_hash: passwordHash,
+        first_name: 'Group',
+        last_name: 'Member',
+        role_id: operatorRole.id,
+        is_active: true,
+      },
+      {
+        id: groupOutsiderId,
+        email: groupOutsiderEmail,
+        password_hash: passwordHash,
+        first_name: 'Group',
+        last_name: 'Outsider',
+        role_id: operatorRole.id,
+        is_active: true,
+      },
+    ]);
+
+    const dmOtherToken = await issueTokenForUser({
+      id: dmOtherUserId,
+      email: dmOtherUserEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+    const outsiderAdminToken = await issueTokenForUser({
+      id: outsiderAdminId,
+      email: outsiderAdminEmail,
+      roleId: adminRole.id,
+      roleName: adminRole.name,
+    });
+    const groupMemberToken = await issueTokenForUser({
+      id: groupMemberId,
+      email: groupMemberEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+    const groupOutsiderToken = await issueTokenForUser({
+      id: groupOutsiderId,
+      email: groupOutsiderEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+
+    const createDm = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/dm',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { otherUserId: dmOtherUserId },
+    });
+    expect(createDm.statusCode).toBe(HTTP_STATUS.OK);
+    const dmConversationId = JSON.parse(createDm.body).conversation.id as string;
+
+    const dmResolveAllowed = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${dmConversationId}`,
+      headers: { authorization: `Bearer ${dmOtherToken}` },
+    });
+    expect(dmResolveAllowed.statusCode).toBe(HTTP_STATUS.OK);
+    const dmResolveAllowedBody = JSON.parse(dmResolveAllowed.body);
+    expect(dmResolveAllowedBody.viewer.is_member).toBe(true);
+
+    const dmShareAllowed = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${dmConversationId}/share-link`,
+      headers: { authorization: `Bearer ${dmOtherToken}` },
+    });
+    expect(dmShareAllowed.statusCode).toBe(HTTP_STATUS.OK);
+    const dmShareBody = JSON.parse(dmShareAllowed.body);
+    expect(dmShareBody.path).toBe(`/chat/${dmConversationId}`);
+    if (typeof dmShareBody.url === 'string') {
+      expect(dmShareBody.url.endsWith(`/chat/${dmConversationId}`)).toBe(true);
+    }
+
+    const dmResolveForbidden = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${dmConversationId}`,
+      headers: { authorization: `Bearer ${outsiderAdminToken}` },
+    });
+    expect(dmResolveForbidden.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+
+    const dmShareForbidden = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${dmConversationId}/share-link`,
+      headers: { authorization: `Bearer ${outsiderAdminToken}` },
+    });
+    expect(dmShareForbidden.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+
+    const createGroup = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'GROUP_CLOSED',
+        title: 'Deep Link Group',
+        members: [groupMemberId],
+        invite_policy: 'ADMINS_ONLY_CAN_INVITE',
+      },
+    });
+    expect(createGroup.statusCode).toBe(HTTP_STATUS.OK);
+    const groupConversation = JSON.parse(createGroup.body).conversation as {
+      id: string;
+      invite_policy: string;
+    };
+
+    const groupResolveForbidden = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${groupConversation.id}`,
+      headers: { authorization: `Bearer ${groupOutsiderToken}` },
+    });
+    expect(groupResolveForbidden.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+
+    const groupShareForbidden = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${groupConversation.id}/share-link`,
+      headers: { authorization: `Bearer ${groupOutsiderToken}` },
+    });
+    expect(groupShareForbidden.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+
+    const [memberCountBefore] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.chatMembers)
+      .where(eq(schema.chatMembers.conversation_id, groupConversation.id));
+    const [groupBefore] = await db
+      .select({ invite_policy: schema.chatConversations.invite_policy })
+      .from(schema.chatConversations)
+      .where(eq(schema.chatConversations.id, groupConversation.id));
+
+    const groupResolveAllowed = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${groupConversation.id}`,
+      headers: { authorization: `Bearer ${groupMemberToken}` },
+    });
+    expect(groupResolveAllowed.statusCode).toBe(HTTP_STATUS.OK);
+    const groupResolveBody = JSON.parse(groupResolveAllowed.body);
+    expect(groupResolveBody.viewer.is_member).toBe(true);
+    expect(groupResolveBody.viewer.role).toBe('MEMBER');
+
+    const groupShareAllowed = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${groupConversation.id}/share-link`,
+      headers: { authorization: `Bearer ${groupMemberToken}` },
+    });
+    expect(groupShareAllowed.statusCode).toBe(HTTP_STATUS.OK);
+    const groupShareBody = JSON.parse(groupShareAllowed.body);
+    expect(groupShareBody.path).toBe(`/chat/${groupConversation.id}`);
+
+    const [memberCountAfter] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.chatMembers)
+      .where(eq(schema.chatMembers.conversation_id, groupConversation.id));
+    const [groupAfter] = await db
+      .select({ invite_policy: schema.chatConversations.invite_policy })
+      .from(schema.chatConversations)
+      .where(eq(schema.chatConversations.id, groupConversation.id));
+
+    expect(Number(memberCountAfter.count)).toBe(Number(memberCountBefore.count));
+    expect(groupAfter?.invite_policy).toBe(groupBefore?.invite_policy);
+  });
+
+  it('supports deep-link resolve/share for forum users and blocks banned users', async () => {
+    const db = getDatabase();
+    const operatorRole = await ensureRole('OPERATOR');
+
+    const forumUserId = randomUUID();
+    const forumUserEmail = `chat-forum-link-${Date.now()}@example.com`;
+    const bannedUserId = randomUUID();
+    const bannedUserEmail = `chat-forum-link-banned-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword('Password123!');
+
+    await db.insert(schema.users).values([
+      {
+        id: forumUserId,
+        email: forumUserEmail,
+        password_hash: passwordHash,
+        first_name: 'Forum',
+        last_name: 'Viewer',
+        role_id: operatorRole.id,
+        is_active: true,
+      },
+      {
+        id: bannedUserId,
+        email: bannedUserEmail,
+        password_hash: passwordHash,
+        first_name: 'Forum',
+        last_name: 'Banned',
+        role_id: operatorRole.id,
+        is_active: true,
+      },
+    ]);
+
+    const forumUserToken = await issueTokenForUser({
+      id: forumUserId,
+      email: forumUserEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+    const bannedUserToken = await issueTokenForUser({
+      id: bannedUserId,
+      email: bannedUserEmail,
+      roleId: operatorRole.id,
+      roleName: operatorRole.name,
+    });
+
+    const createForum = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'FORUM_OPEN',
+        title: 'Deep Link Forum',
+      },
+    });
+    expect(createForum.statusCode).toBe(HTTP_STATUS.OK);
+    const forumConversationId = JSON.parse(createForum.body).conversation.id as string;
+
+    const forumResolveAllowed = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${forumConversationId}`,
+      headers: { authorization: `Bearer ${forumUserToken}` },
+    });
+    expect(forumResolveAllowed.statusCode).toBe(HTTP_STATUS.OK);
+    const forumResolveBody = JSON.parse(forumResolveAllowed.body);
+    expect(forumResolveBody.viewer.is_member).toBe(false);
+    expect(forumResolveBody.viewer.role).toBeNull();
+
+    const forumShareAllowed = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${forumConversationId}/share-link`,
+      headers: { authorization: `Bearer ${forumUserToken}` },
+    });
+    expect(forumShareAllowed.statusCode).toBe(HTTP_STATUS.OK);
+
+    const banUser = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${forumConversationId}/moderation`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        userId: bannedUserId,
+        action: 'BAN',
+        until: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        reason: 'deep-link ban test',
+      },
+    });
+    expect(banUser.statusCode).toBe(HTTP_STATUS.OK);
+
+    const bannedResolve = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${forumConversationId}`,
+      headers: { authorization: `Bearer ${bannedUserToken}` },
+    });
+    expect(bannedResolve.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+    expect(JSON.parse(bannedResolve.body).error.code).toBe('CHAT_BANNED');
+
+    const bannedShare = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${forumConversationId}/share-link`,
+      headers: { authorization: `Bearer ${bannedUserToken}` },
+    });
+    expect(bannedShare.statusCode).toBe(HTTP_STATUS.FORBIDDEN);
+    expect(JSON.parse(bannedShare.body).error.code).toBe('CHAT_BANNED');
+  });
+
+  it('allows deep-link resolve/share for archived and returns not found for deleted conversations', async () => {
+    const db = getDatabase();
+    const superAdminRole = await ensureRole('SUPER_ADMIN');
+    const superAdminId = randomUUID();
+    const superAdminEmail = `chat-link-superadmin-${Date.now()}@example.com`;
+
+    await db.insert(schema.users).values({
+      id: superAdminId,
+      email: superAdminEmail,
+      password_hash: await hashPassword('Password123!'),
+      first_name: 'Super',
+      last_name: 'Admin',
+      role_id: superAdminRole.id,
+      is_active: true,
+    });
+
+    const superAdminToken = await issueTokenForUser({
+      id: superAdminId,
+      email: superAdminEmail,
+      roleId: superAdminRole.id,
+      roleName: superAdminRole.name,
+    });
+
+    const createGroup = await server.inject({
+      method: 'POST',
+      url: '/api/v1/chat/conversations',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        type: 'GROUP_CLOSED',
+        title: 'Archived/Deleted Link Group',
+      },
+    });
+    expect(createGroup.statusCode).toBe(HTTP_STATUS.OK);
+    const conversationId = JSON.parse(createGroup.body).conversation.id as string;
+
+    const archiveResponse = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/archive`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(archiveResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const archivedResolve = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(archivedResolve.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(archivedResolve.body).conversation.state).toBe('ARCHIVED');
+
+    const archivedShare = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/share-link`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(archivedShare.statusCode).toBe(HTTP_STATUS.OK);
+
+    const archivedSend = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/messages`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { text: 'should fail because archived' },
+    });
+    expect(archivedSend.statusCode).toBe(HTTP_STATUS.CONFLICT);
+    expect(JSON.parse(archivedSend.body).error.code).toBe('CHAT_ARCHIVED');
+
+    const hardDelete = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/chat/conversations/${conversationId}`,
+      headers: { authorization: `Bearer ${superAdminToken}` },
+    });
+    expect(hardDelete.statusCode).toBe(HTTP_STATUS.OK);
+
+    const deletedResolve = await server.inject({
+      method: 'GET',
+      url: `/api/v1/chat/conversations/${conversationId}`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(deletedResolve.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+
+    const deletedShare = await server.inject({
+      method: 'POST',
+      url: `/api/v1/chat/conversations/${conversationId}/share-link`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(deletedShare.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+  });
+
   it('enforces DM confidentiality for non-participant admins', async () => {
     const db = getDatabase();
     const operatorRole = await ensureRole('OPERATOR');
