@@ -12,6 +12,8 @@ import { defineAbilityFor } from '@/rbac';
 import { getDefaultMedia } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
+import { buildScreenPlaybackStateById } from '@/screens/playback';
+import { emitScreenStateUpdate } from '@/realtime/screens-namespace';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
@@ -443,6 +445,11 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           })
           .where(eq(schema.screens.id, data.device_id));
 
+        const playbackState = await buildScreenPlaybackStateById(data.device_id, { db });
+        if (playbackState) {
+          emitScreenStateUpdate(fastify, playbackState);
+        }
+
         logger.info(
           {
             deviceId: data.device_id,
@@ -524,6 +531,11 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           ended_at: endedAt,
           storage_object_id: storageObject?.id,
         });
+
+        const playbackState = await buildScreenPlaybackStateById(data.device_id, { db });
+        if (playbackState) {
+          emitScreenStateUpdate(fastify, playbackState);
+        }
 
         logger.info(
           {

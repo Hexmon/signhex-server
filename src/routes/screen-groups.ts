@@ -11,9 +11,10 @@ import { getDatabase, schema } from '@/db';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
+import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 
 const logger = createLogger('screen-group-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const screenGroupSchema = z.object({
   name: z.string().min(1).max(255),
@@ -120,6 +121,11 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
 
         const data = screenGroupSchema.parse(request.body);
         const group = await repo.create(data);
+        emitScreensRefreshRequired(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screen_ids: Array.from(new Set(data.screen_ids || [])),
+          group_ids: [group.id],
+        });
 
         return reply.status(CREATED).send({
           id: group.id,
@@ -656,9 +662,17 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         if (!ability.can('update', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const data = screenGroupSchema.partial().parse(request.body);
+        const before = await repo.findById((request.params as any).id);
+        if (!before) throw AppError.notFound('Screen group not found');
+        const beforeMembers = await repo.members(before.id);
         const group = await repo.update((request.params as any).id, data);
         if (!group) throw AppError.notFound('Screen group not found');
         const members = await repo.members(group.id);
+        emitScreensRefreshRequired(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screen_ids: Array.from(new Set([...beforeMembers.map((m: any) => m.screen_id), ...members.map((m: any) => m.screen_id)])),
+          group_ids: [group.id],
+        });
 
         return reply.send({
           id: group.id,
@@ -779,8 +793,14 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
 
         const group = await repo.findById((request.params as any).id);
         if (!group) throw AppError.notFound('Screen group not found');
+        const members = await repo.members(group.id);
 
         await repo.delete(group.id);
+        emitScreensRefreshRequired(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screen_ids: Array.from(new Set(members.map((m: any) => m.screen_id))),
+          group_ids: [group.id],
+        });
         return reply.status(204).send();
       } catch (error) {
         logger.error(error, 'Delete screen group error');

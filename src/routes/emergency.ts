@@ -14,9 +14,10 @@ import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
 import { getOrCreateSocketServer } from '@/realtime/socket-server';
+import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 
 const logger = createLogger('emergency-routes');
-const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const triggerEmergencySchema = z.object({
   emergency_type_id: z.string().uuid().optional(),
@@ -61,7 +62,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     done();
   });
 
-  const requireAdmin = (payload: any, reply: FastifyReply) => {
+  const requireAdmin = (payload: any, _reply: FastifyReply) => {
     if (payload.role !== 'ADMIN') {
       throw AppError.forbidden('Forbidden');
       return false;
@@ -106,6 +107,24 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         throw AppError.badRequest('One or more screen_group_ids are invalid');
       }
     }
+  };
+
+  const resolveTargetScreenIds = async (screenIds: string[], groupIds: string[], targetAll: boolean) => {
+    if (targetAll) {
+      const rows = await db.select({ id: schema.screens.id }).from(schema.screens);
+      return rows.map((row) => row.id);
+    }
+
+    const resolved = new Set(screenIds);
+    if (groupIds.length > 0) {
+      const memberRows = await db
+        .select({ screen_id: schema.screenGroupMembers.screen_id })
+        .from(schema.screenGroupMembers)
+        .where(inArray(schema.screenGroupMembers.group_id, groupIds as any));
+      memberRows.forEach((row) => resolved.add(row.screen_id));
+    }
+
+    return Array.from(resolved);
   };
 
   // Emergency types: create
@@ -376,6 +395,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           screen_group_ids: targetAll ? [] : uniqueGroupIds,
           target_all: targetAll,
         });
+        const affectedScreenIds = await resolveTargetScreenIds(uniqueScreenIds, uniqueGroupIds, targetAll);
 
         const mediaUrl = await resolveMediaUrl(mediaId);
         io.emit('emergency:triggered', {
@@ -390,6 +410,11 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           screen_ids: emergency.screen_ids || [],
           screen_group_ids: emergency.screen_group_ids || [],
           target_all: emergency.target_all ?? false,
+        });
+        emitScreensRefreshRequired(fastify, {
+          reason: 'EMERGENCY',
+          screen_ids: affectedScreenIds,
+          group_ids: uniqueGroupIds,
         });
         logger.warn(
           {
@@ -500,6 +525,11 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         if (!emergency) {
           throw AppError.notFound('Emergency not found');
         }
+        const affectedScreenIds = await resolveTargetScreenIds(
+          ((emergency as any).screen_ids || []) as string[],
+          ((emergency as any).screen_group_ids || []) as string[],
+          (emergency as any).target_all === true
+        );
 
         io.emit('emergency:cleared', {
           id: emergency.id,
@@ -514,6 +544,11 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           screen_ids: (emergency as any).screen_ids || [],
           screen_group_ids: (emergency as any).screen_group_ids || [],
           target_all: (emergency as any).target_all ?? false,
+        });
+        emitScreensRefreshRequired(fastify, {
+          reason: 'EMERGENCY',
+          screen_ids: affectedScreenIds,
+          group_ids: ((emergency as any).screen_group_ids || []) as string[],
         });
         logger.info(
           {

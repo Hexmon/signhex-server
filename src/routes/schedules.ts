@@ -17,11 +17,12 @@ import { createLogger } from '@/utils/logger';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { publishScheduleSnapshot, resolvePresentations } from '@/routes/schedule-publish-helper';
+import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 import z from 'zod';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('schedule-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const scheduleItemSchema = z.object({
   presentation_id: z.string().uuid(),
@@ -698,6 +699,12 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
             .set({ updated_at: new Date() })
             .where(eq(schema.scheduleRequests.id, scheduleRequest.id));
         }
+
+        emitScreensRefreshRequired(fastify, {
+          reason: 'PUBLISH',
+          screen_ids: publishResult.resolvedScreenIds,
+          group_ids: uniqueGroups,
+        });
 
         return reply.send({
           message: 'Schedule published successfully',

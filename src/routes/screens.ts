@@ -8,13 +8,19 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
-import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
+import { eq, desc, inArray, and, gte, lte, sql } from 'drizzle-orm';
 import { getPresignedUrl, getObject } from '@/s3';
 import { getDefaultMedia } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
+import {
+  buildScreenPlaybackStateById,
+  buildScreensOverviewPayload,
+  getActiveEmergencyForScreen,
+} from '@/screens/playback';
+import { setupScreensNamespace } from '@/realtime/screens-namespace';
 
 const logger = createLogger('screen-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED, OK } = HTTP_STATUS;
 
 const createScreenSchema = z.object({
   name: z.string().min(1).max(255),
@@ -49,6 +55,15 @@ const screenshotTriggerSchema = z.object({
   reason: z.string().optional(),
 });
 
+const overviewQuerySchema = z.object({
+  include_media: z.string().optional(),
+});
+
+const nowPlayingQuerySchema = z.object({
+  include_urls: z.string().optional(),
+  include_media: z.string().optional(),
+});
+
 const snapshotQuerySchema = z.object({
   include_urls: z.string().optional(),
 });
@@ -56,6 +71,7 @@ const snapshotQuerySchema = z.object({
 export async function screenRoutes(fastify: FastifyInstance) {
   const screenRepo = createScreenRepository();
   const db = getDatabase();
+  await setupScreensNamespace(fastify);
 
   const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
     const members = await db
@@ -73,68 +89,6 @@ export async function screenRoutes(fastify: FastifyInstance) {
     } catch {
       return null;
     }
-  };
-
-  const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
-    if (!mediaId) return null;
-    const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
-    if (!media) return null;
-    try {
-      if ((media as any).ready_object_id) {
-        const [stor] = await db
-          .select()
-          .from(schema.storageObjects)
-          .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
-        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
-      }
-      if ((media as any).source_bucket && (media as any).source_object_key) {
-        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  };
-
-  const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
-    const [emergency] = await db
-      .select()
-      .from(schema.emergencies)
-      .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
-      .orderBy(desc(schema.emergencies.created_at))
-      .limit(1);
-    if (!emergency) return null;
-
-    const emergencyScreenIds = ((emergency as any).screen_ids || []) as string[];
-    const emergencyGroupIds = ((emergency as any).screen_group_ids || []) as string[];
-    const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
-    const targetAll = (emergency as any).target_all === true || !hasTargets;
-
-    if (!targetAll) {
-      if (emergencyScreenIds.includes(screenId)) {
-        // ok
-      } else {
-        const groupIds = await getGroupIdsForScreen(screenId);
-        const groupMatch = emergencyGroupIds.some((gid) => groupIds.includes(gid));
-        if (!groupMatch) return null;
-      }
-    }
-
-    const mediaUrl = includeUrls ? await resolveEmergencyMediaUrl((emergency as any).media_id) : null;
-    return {
-      id: emergency.id,
-      emergency_type_id: (emergency as any).emergency_type_id ?? null,
-      triggered_by: emergency.triggered_by,
-      message: emergency.message,
-      severity: emergency.priority,
-      media_id: (emergency as any).media_id ?? null,
-      media_url: mediaUrl,
-      screen_ids: emergencyScreenIds,
-      screen_group_ids: emergencyGroupIds,
-      target_all: (emergency as any).target_all ?? false,
-      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
-      cleared_at: emergency.cleared_at?.toISOString?.() ?? emergency.cleared_at,
-    };
   };
 
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
@@ -167,25 +121,6 @@ export async function screenRoutes(fastify: FastifyInstance) {
       : null;
 
     return { activeItems, upcomingItems, bookedUntil };
-  };
-
-  const getLatestPublishForScreen = async (screenId: string) => {
-    const [latest] = await db
-      .select({
-        publish_id: schema.publishes.id,
-        schedule_id: schema.publishes.schedule_id,
-        snapshot_id: schema.publishes.snapshot_id,
-        published_at: schema.publishes.published_at,
-        payload: schema.scheduleSnapshots.payload,
-      })
-      .from(schema.publishTargets)
-      .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-      .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-      .where(eq(schema.publishTargets.screen_id, screenId))
-      .orderBy(desc(schema.publishes.published_at))
-      .limit(1);
-
-    return latest || null;
   };
 
   // Create screen
@@ -330,7 +265,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
   );
 
   // Combined overview of screens and groups with now-playing/availability/status
-  fastify.get(
+  fastify.get<{ Querystring: typeof overviewQuerySchema._type }>(
     apiEndpoints.screens.overview,
     {
       schema: {
@@ -339,104 +274,23 @@ export async function screenRoutes(fastify: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (_request: FastifyRequest, reply: FastifyReply) => {
+    async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const token = extractTokenFromHeader(_request.headers.authorization);
+        const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
+        const query = overviewQuerySchema.parse(request.query);
+        const includeMedia = query.include_media?.toLowerCase() === 'true';
 
-        const screens = await db.select().from(schema.screens);
-        const groups = await db.select().from(schema.screenGroups);
-
-        const screenSummaries = await Promise.all(
-          screens.map(async (s: any) => {
-            const latest = await getLatestPublishForScreen(s.id);
-            if (!latest) {
-              return {
-                id: s.id,
-                name: s.name,
-                status: s.status,
-                last_heartbeat_at: s.last_heartbeat_at?.toISOString?.() ?? s.last_heartbeat_at,
-                current_schedule_id: (s as any).current_schedule_id ?? null,
-                current_media_id: (s as any).current_media_id ?? null,
-                active_items: [],
-                upcoming_items: [],
-                booked_until: null,
-                publish: null,
-              };
-            }
-
-            const schedulePayload = (latest.payload as any)?.schedule;
-            const groupIds = await getGroupIdsForScreen(s.id);
-            const items = filterItemsForScreen((schedulePayload?.items || []) as any[], s.id, groupIds);
-            const { activeItems, upcomingItems, bookedUntil } = buildTimeline(items);
-
-            return {
-              id: s.id,
-              name: s.name,
-              status: s.status,
-              last_heartbeat_at: s.last_heartbeat_at?.toISOString?.() ?? s.last_heartbeat_at,
-              current_schedule_id: (s as any).current_schedule_id ?? null,
-              current_media_id: (s as any).current_media_id ?? null,
-              active_items: activeItems,
-              upcoming_items: upcomingItems,
-              booked_until: bookedUntil,
-              publish: {
-                publish_id: latest.publish_id,
-                schedule_id: latest.schedule_id,
-                snapshot_id: latest.snapshot_id,
-                published_at: latest.published_at.toISOString?.() ?? latest.published_at,
-                schedule_start_at: schedulePayload?.start_at ?? null,
-                schedule_end_at: schedulePayload?.end_at ?? null,
-              },
-            };
+        return reply.send(
+          await buildScreensOverviewPayload({
+            db,
+            includeMedia,
           })
         );
-
-        const groupSummaries = await Promise.all(
-          groups.map(async (g: any) => {
-            const members = await db
-              .select({ screen_id: schema.screenGroupMembers.screen_id })
-              .from(schema.screenGroupMembers)
-              .where(eq(schema.screenGroupMembers.group_id, g.id));
-
-            const memberIds = members.map((m) => m.screen_id);
-            const merged: Map<string, any> = new Map();
-
-            await Promise.all(
-              memberIds.map(async (screenId) => {
-                const latest = await getLatestPublishForScreen(screenId);
-                if (!latest) return;
-                const schedulePayload = (latest.payload as any)?.schedule;
-                const groupIds = await getGroupIdsForScreen(screenId);
-                const items = filterItemsForScreen((schedulePayload?.items || []) as any[], screenId, groupIds);
-                items.forEach((it: any) => {
-                  if (!merged.has(it.id)) merged.set(it.id, it);
-                });
-              })
-            );
-
-            const { activeItems, upcomingItems, bookedUntil } = buildTimeline(Array.from(merged.values()));
-
-            return {
-              id: g.id,
-              name: g.name,
-              description: g.description,
-              screen_ids: memberIds,
-              active_items: activeItems,
-              upcoming_items: upcomingItems,
-              booked_until: bookedUntil,
-            };
-          })
-        );
-
-        return reply.send({
-          screens: screenSummaries,
-          groups: groupSummaries,
-        });
       } catch (error) {
         logger.error(error, 'Get screens overview error');
         return respondWithError(reply, error);
@@ -782,50 +636,33 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
+        const query = nowPlayingQuerySchema.parse(request.query);
+        const includeUrls = query.include_urls?.toLowerCase() === 'true';
+        const includeMedia = query.include_media?.toLowerCase() === 'true';
 
-        const includeUrls =
-          typeof (request.query as any).include_urls === 'string' &&
-          ((request.query as any).include_urls as string).toLowerCase() === 'true';
+        const summary = await buildScreenPlaybackStateById(screenId, {
+          db,
+          includeMedia,
+          includeUrls,
+        });
 
-        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
-
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, screenId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
-
-        if (!latest) {
-          return reply.send({ screen_id: screenId, active_items: [], upcoming_items: [], booked_until: null, publish: null });
+        if (!summary) {
+          throw AppError.notFound('Screen not found');
         }
 
-        const schedulePayload = (latest.payload as any)?.schedule;
-        const groupIds = await getGroupIdsForScreen(screenId);
-        const items = filterItemsForScreen((schedulePayload?.items || []) as any[], screenId, groupIds);
-        const { activeItems, upcomingItems, bookedUntil } = buildTimeline(items);
-
         return reply.send({
+          server_time: new Date().toISOString(),
           screen_id: screenId,
-          publish: {
-            publish_id: latest.publish_id,
-            schedule_id: latest.schedule_id,
-            snapshot_id: latest.snapshot_id,
-            published_at: latest.published_at.toISOString?.() ?? latest.published_at,
-            schedule_start_at: schedulePayload?.start_at ?? null,
-            schedule_end_at: schedulePayload?.end_at ?? null,
-          },
-          active_items: activeItems,
-          upcoming_items: upcomingItems,
-          booked_until: bookedUntil,
+          status: summary.status,
+          last_heartbeat_at: summary.last_heartbeat_at,
+          current_schedule_id: summary.current_schedule_id,
+          current_media_id: summary.current_media_id,
+          publish: summary.publish,
+          active_items: summary.active_items,
+          upcoming_items: summary.upcoming_items,
+          booked_until: summary.booked_until,
+          playback: summary.playback,
+          emergency: summary.emergency,
         });
       } catch (error) {
         logger.error(error, 'Get screen now-playing error');
@@ -853,10 +690,6 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
-        const query = snapshotQuerySchema.parse(request.query);
-        const includeUrls = query.include_urls?.toLowerCase() === 'true';
-        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
-
         const [latest] = await db
           .select({
             publish_id: schema.publishes.id,
@@ -931,7 +764,10 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const screenId = (request.params as any).id;
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
-        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
+        const emergency = await getActiveEmergencyForScreen(screenId, {
+          db,
+          includeUrls,
+        });
 
         const [latest] = await db
           .select({

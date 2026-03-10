@@ -12,10 +12,11 @@ import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { publishScheduleSnapshot } from '@/routes/schedule-publish-helper';
+import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('schedule-request-routes');
-const { CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED, BAD_REQUEST } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const createRequestSchema = z.object({
   schedule_id: z.string().uuid(),
@@ -320,7 +321,6 @@ async function expandScheduleRequests(
     include.has('media') && mediaIds.length
       ? await db.select().from(schema.media).where(inArray(schema.media.id, mediaIds as any))
       : [];
-  const mediaMap = new Map(media.map((m) => [m.id, m]));
 
   const screenIds = include.has('screens')
     ? Array.from(new Set(scheduleItems.flatMap((i) => i.screen_ids || [])))
@@ -807,6 +807,12 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           .update(schema.scheduleRequests)
           .set({ updated_at: new Date() })
           .where(eq(schema.scheduleRequests.id, req.id));
+
+        emitScreensRefreshRequired(fastify, {
+          reason: 'PUBLISH',
+          screen_ids: publishResult.resolvedScreenIds,
+          group_ids: [],
+        });
 
         return reply.send({
           message: 'Schedule published from request',
