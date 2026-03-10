@@ -400,4 +400,60 @@ describe('Media Routes - delete ownership and usage protection', () => {
     const body = JSON.parse(response.body);
     expect(body.error.code).toBe('NOT_FOUND');
   });
+
+  it('filters broken READY media out of READY list responses', async () => {
+    const media = await insertMedia(ownerUserId);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/media?page=1&limit=20&status=READY`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    const listed = body.items.find((item: { id: string }) => item.id === media.id);
+    expect(listed).toBeUndefined();
+  });
+
+  it('downgrades READY to FAILED in unfiltered list response when media object is missing', async () => {
+    const media = await insertMedia(ownerUserId);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/media?page=1&limit=20`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    const listed = body.items.find((item: { id: string }) => item.id === media.id);
+    expect(listed).toBeTruthy();
+    expect(listed.status).toBe('FAILED');
+    expect(listed.status_reason).toBe('MEDIA_OBJECT_MISSING');
+    expect(listed.media_url).toBeNull();
+  });
+
+  it('downgrades READY to FAILED in get response when media object is missing', async () => {
+    const media = await insertMedia(ownerUserId);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/media/${media.id}`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(body.id).toBe(media.id);
+    expect(body.status).toBe('FAILED');
+    expect(body.status_reason).toBe('MEDIA_OBJECT_MISSING');
+    expect(body.media_url).toBeNull();
+  });
 });

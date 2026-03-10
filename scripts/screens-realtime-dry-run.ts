@@ -6,7 +6,7 @@ import { io as createSocketClient, type Socket } from 'socket.io-client';
 import { AddressInfo } from 'net';
 import { initializeDatabase, closeDatabase, getDatabase, schema } from '../src/db/index.js';
 import { createServer } from '../src/server/index.js';
-import { initializeS3, createBucketIfNotExists } from '../src/s3/index.js';
+import { initializeS3, createBucketIfNotExists, putObject } from '../src/s3/index.js';
 import { createSessionRepository } from '../src/db/repositories/session.js';
 import { generateAccessToken } from '../src/auth/jwt.js';
 import { hashPassword } from '../src/auth/password.js';
@@ -195,6 +195,7 @@ async function run() {
   await createBucketIfNotExists('logs-heartbeats');
   await createBucketIfNotExists('logs-proof-of-play');
   await createBucketIfNotExists('device-screenshots');
+  await createBucketIfNotExists('media-source');
 
   try {
     server = await createServer();
@@ -221,6 +222,7 @@ async function run() {
     const startAt = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
     const endAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
     const serial = `dry-run-${Date.now()}`;
+    const mediaObjectKey = `${mediaId}/realtime-dry-run.mp4`;
 
     const db = getDatabase();
     await db.insert(schema.screens).values({
@@ -228,12 +230,17 @@ async function run() {
       name: 'Realtime Dry Run Screen',
       status: 'OFFLINE',
     });
+    await putObject('media-source', mediaObjectKey, Buffer.from('dry-run-video-payload'), 'video/mp4');
     await db.insert(schema.media).values({
       id: mediaId,
       name: 'Realtime Dry Run Media',
       type: 'VIDEO',
       status: 'READY',
       created_by: adminUser.id,
+      source_bucket: 'media-source',
+      source_object_key: mediaObjectKey,
+      source_content_type: 'video/mp4',
+      source_size: Buffer.byteLength('dry-run-video-payload'),
       duration_seconds: 15,
     });
     await db.insert(schema.schedules).values({

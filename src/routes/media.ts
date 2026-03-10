@@ -60,6 +60,23 @@ export async function mediaRoutes(fastify: FastifyInstance) {
     proof_of_play: 'Media cannot be deleted because it is referenced by playback history.',
   };
 
+  const resolveApiStatus = (
+    media: { status: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' },
+    mediaUrl: string | null
+  ) => {
+    if (media.status === 'READY' && !mediaUrl) {
+      return {
+        status: 'FAILED' as const,
+        status_reason: 'MEDIA_OBJECT_MISSING' as const,
+      };
+    }
+
+    return {
+      status: media.status,
+      status_reason: null,
+    };
+  };
+
   const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
     try {
       if (media.ready_object_id) {
@@ -232,14 +249,16 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           : [];
         const readyMap = new Map(readyObjects.map((o: any) => [o.id, o]));
 
-        const items = await Promise.all(
+        const rawItems = await Promise.all(
           result.items.map(async (m) => {
             const media_url = await resolveMediaUrl(m, readyMap);
+            const statusState = resolveApiStatus(m, media_url);
             return {
               id: m.id,
               name: m.name,
               type: m.type,
-              status: m.status,
+              status: statusState.status,
+              status_reason: statusState.status_reason,
               source_bucket: m.source_bucket,
               source_object_key: m.source_object_key,
               source_content_type: m.source_content_type,
@@ -257,12 +276,17 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           })
         );
 
+        const items =
+          query.status === 'READY'
+            ? rawItems.filter((item) => item.status === 'READY')
+            : rawItems;
+
         return reply.send({
           items,
           pagination: {
             page: result.page,
             limit: result.limit,
-            total: result.total,
+            total: query.status === 'READY' ? items.length : result.total,
           },
         });
       } catch (error) {
@@ -298,12 +322,14 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const media_url = await resolveMediaUrl(media);
+        const statusState = resolveApiStatus(media, media_url);
 
         return reply.send({
           id: media.id,
           name: media.name,
           type: media.type,
-          status: media.status,
+          status: statusState.status,
+          status_reason: statusState.status_reason,
           source_bucket: media.source_bucket,
           source_object_key: media.source_object_key,
           source_content_type: media.source_content_type,
