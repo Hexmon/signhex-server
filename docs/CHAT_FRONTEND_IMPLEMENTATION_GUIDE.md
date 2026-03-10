@@ -497,6 +497,8 @@ Edit/delete compliance:
 Tombstone semantics:
 - Deleted messages remain in stream with `deleted_at`.
 - Content and social metadata are stripped from payload.
+- Attachment rows are detached at delete time.
+- If detached attachment media is no longer referenced anywhere else, backend deletes that media asynchronously from DB/object storage after the message delete succeeds.
 
 ---
 
@@ -529,6 +531,11 @@ Error contracts:
 - `400 CHAT_TOO_MANY_ATTACHMENTS`
 - `409 MEDIA_NOT_READY`
 - `403 FORBIDDEN` for unauthorized attachment usage.
+
+Delete behavior:
+- `DELETE /api/v1/chat/messages/:id` keeps the message tombstone response contract unchanged.
+- Attached files disappear from the deleted message immediately because attachment links are removed in the same delete transaction.
+- Physical file cleanup is async; FE should not expect attachment media IDs from a deleted message to remain valid indefinitely after delete.
 
 FE preview trust rules:
 - Render via backend-provided signed media URLs from media APIs.

@@ -2,6 +2,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import path from 'path';
 import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/schemas/media';
 import { createMediaRepository } from '@/db/repositories/media';
+import type { MediaUsageReference } from '@/db/repositories/media';
+import { createUserRepository } from '@/db/repositories/user';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { getPresignedPutUrl, createBucketIfNotExists, headObject, getPresignedUrl } from '@/s3';
@@ -17,7 +19,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('media-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
 
 const completeUploadSchema = z.object({
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']).optional().default('READY'),
@@ -30,7 +32,33 @@ const completeUploadSchema = z.object({
 
 export async function mediaRoutes(fastify: FastifyInstance) {
   const mediaRepo = createMediaRepository();
+  const userRepo = createUserRepository();
   const db = getDatabase();
+
+  const isDeleteBypassRole = (roleName?: string) =>
+    roleName === 'ADMIN' || roleName === 'SUPER_ADMIN';
+
+  const resolveOwnerDisplayName = (user: {
+    first_name?: string | null;
+    last_name?: string | null;
+    email?: string | null;
+  } | null) => {
+    if (!user) return 'another user';
+    const fullName = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim();
+    if (fullName.length > 0) return fullName;
+    if (user.email) return user.email;
+    return 'another user';
+  };
+
+  const mediaUsageMessageByReference: Record<MediaUsageReference, string> = {
+    chat_attachments: 'Media cannot be deleted because it is still used by chat messages.',
+    chat_bookmarks: 'Media cannot be deleted because it is still bookmarked in chat.',
+    presentations: 'Media cannot be deleted because it is still used in presentations.',
+    screens: 'Media cannot be deleted because it is currently assigned to a screen.',
+    emergencies: 'Media cannot be deleted because it is used by emergency content.',
+    settings: 'Media cannot be deleted because it is configured as the default media.',
+    proof_of_play: 'Media cannot be deleted because it is referenced by playback history.',
+  };
 
   const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
     try {
@@ -395,9 +423,37 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           throw AppError.notFound('Media not found');
         }
 
+        const owner = media.created_by ? await userRepo.findById(media.created_by) : null;
+        const canDeleteThisMedia =
+          media.created_by === payload.sub || isDeleteBypassRole(payload.role);
+        if (!canDeleteThisMedia) {
+          throw new AppError({
+            statusCode: FORBIDDEN,
+            code: 'MEDIA_DELETE_FORBIDDEN_OWNER',
+            message: `You can only delete media you uploaded. This media was uploaded by ${resolveOwnerDisplayName(owner)}.`,
+            details: {
+              owner_user_id: media.created_by,
+              owner_display_name: resolveOwnerDisplayName(owner),
+            },
+          });
+        }
+
         const hardDelete =
           typeof (request.query as any).hard === 'string' &&
           ((request.query as any).hard as string).toLowerCase() === 'true';
+
+        const usageSummary = await mediaRepo.getUsageSummary(media.id);
+        if (usageSummary.inUse) {
+          throw new AppError({
+            statusCode: 409,
+            code: 'MEDIA_IN_USE',
+            message:
+              mediaUsageMessageByReference[usageSummary.primaryReason ?? 'chat_attachments'],
+            details: {
+              references: usageSummary.references,
+            },
+          });
+        }
 
         const db = getDatabase();
         const storageObjects: { bucket: string; key: string; id?: string }[] = [];

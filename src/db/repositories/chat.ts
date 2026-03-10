@@ -576,6 +576,14 @@ export class ChatRepository {
         .where(eq(schema.chatMessages.id, input.messageId));
       if (!message) throw AppError.notFound('Message not found');
 
+      const attachments = await tx
+        .select({ media_asset_id: schema.chatAttachments.media_asset_id })
+        .from(schema.chatAttachments)
+        .where(eq(schema.chatAttachments.message_id, input.messageId));
+      const detachedMediaAssetIds = Array.from(
+        new Set(attachments.map((attachment) => attachment.media_asset_id))
+      );
+
       await tx.insert(schema.chatMessageRevisions).values({
         message_id: message.id,
         editor_id: input.editorId,
@@ -595,7 +603,16 @@ export class ChatRepository {
         .where(eq(schema.chatMessages.id, input.messageId))
         .returning();
 
-      return updated;
+      if (attachments.length > 0) {
+        await tx
+          .delete(schema.chatAttachments)
+          .where(eq(schema.chatAttachments.message_id, input.messageId));
+      }
+
+      return {
+        message: updated,
+        detachedMediaAssetIds,
+      };
     });
   }
 

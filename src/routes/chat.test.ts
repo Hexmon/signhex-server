@@ -11,6 +11,7 @@ import { sql } from 'drizzle-orm';
 import { generateAccessToken } from '@/auth/jwt';
 import { createSessionRepository } from '@/db/repositories/session';
 import { hashPassword } from '@/auth/password';
+import { cleanupChatMediaAssets } from '@/jobs';
 
 async function applyMigrationFile(filename: string) {
   const db = getDatabase();
@@ -346,6 +347,88 @@ describe('Chat Routes - lifecycle and tombstone safety', () => {
       .where(eq(schema.chatMessageRevisions.message_id, replyMessageId));
     expect(revisions.length).toBe(1);
     expect(revisions[0].action).toBe('DELETE');
+
+    const remainingAttachments = await db
+      .select()
+      .from(schema.chatAttachments)
+      .where(eq(schema.chatAttachments.message_id, replyMessageId));
+    expect(remainingAttachments).toEqual([]);
+  });
+
+  it('detaches deleted message attachments and allows async cleanup of exclusive media', async () => {
+    const db = getDatabase();
+    const conversationId = randomUUID();
+    const messageId = randomUUID();
+    const mediaId = randomUUID();
+
+    await db.insert(schema.chatConversations).values({
+      id: conversationId,
+      type: 'GROUP_CLOSED',
+      created_by: testUser.id,
+      state: 'ACTIVE',
+      invite_policy: 'ANY_MEMBER_CAN_INVITE',
+      title: 'Cleanup Group',
+      metadata: {},
+      last_seq: 1,
+    });
+
+    await db.insert(schema.chatMembers).values({
+      conversation_id: conversationId,
+      user_id: testUser.id,
+      role: 'OWNER',
+      is_system: false,
+    });
+
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: 'Exclusive Chat Media',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+    });
+
+    await db.insert(schema.chatMessages).values({
+      id: messageId,
+      conversation_id: conversationId,
+      seq: 1,
+      sender_id: testUser.id,
+      body_text: 'message with exclusive media',
+    });
+
+    await db.insert(schema.chatAttachments).values({
+      id: randomUUID(),
+      message_id: messageId,
+      media_asset_id: mediaId,
+      ord: 0,
+    });
+
+    const deleteResponse = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/chat/messages/${messageId}`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+    expect(deleteResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const attachmentsAfterDelete = await db
+      .select()
+      .from(schema.chatAttachments)
+      .where(eq(schema.chatAttachments.message_id, messageId));
+    expect(attachmentsAfterDelete).toEqual([]);
+
+    await cleanupChatMediaAssets({
+      mediaAssetIds: [mediaId],
+      conversationId,
+      source: 'message-delete',
+      messageId,
+    });
+
+    const [deletedMedia] = await db
+      .select()
+      .from(schema.media)
+      .where(eq(schema.media.id, mediaId));
+    expect(deletedMedia).toBeUndefined();
   });
 
   it('allows admin to mute/unmute and enforces muted write restrictions', async () => {

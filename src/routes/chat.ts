@@ -17,7 +17,7 @@ import { createRateLimiter } from '@/chat/rate-limit';
 import { assertAttachmentAccess, assertAttachmentMediaReady } from '@/chat/attachment-auth';
 import { assertCanWriteToConversation, assertConversationWritable, assertNotBanned } from '@/chat/guard';
 import { getDatabase, schema } from '@/db';
-import { queueChatMediaCleanup } from '@/jobs';
+import { queueChatMediaCleanup, queueCleanup } from '@/jobs';
 
 const logger = createLogger('chat-routes');
 const chatRepo = createChatRepository();
@@ -746,10 +746,34 @@ export async function chatRoutes(fastify: FastifyInstance) {
           });
         }
 
-        const message = await chatRepo.softDeleteMessage({
+        const result = await chatRepo.softDeleteMessage({
           messageId: row.message.id,
           editorId: payload.sub,
         });
+        const message = result.message;
+
+        if (result.detachedMediaAssetIds.length) {
+          try {
+            await queueChatMediaCleanup({
+              conversationId: row.conversation.id,
+              mediaAssetIds: result.detachedMediaAssetIds,
+              source: 'message-delete',
+              messageId: row.message.id,
+            });
+          } catch (queueError) {
+            logger.warn(queueError, 'Failed to enqueue chat media cleanup for deleted message');
+            try {
+              await queueCleanup({
+                type: 'chat_orphaned_media',
+                mediaAssetIds: result.detachedMediaAssetIds,
+                conversationId: row.conversation.id,
+                messageId: row.message.id,
+              });
+            } catch (fallbackError) {
+              logger.warn(fallbackError, 'Failed to enqueue fallback chat media cleanup');
+            }
+          }
+        }
 
         await appendAudit(request, payload.sub, 'CHAT_MESSAGE_DELETE', 'ChatMessage', row.message.id);
         emitChatEvent(fastify, row.conversation.id, 'chat:message:deleted', {
@@ -1178,10 +1202,24 @@ export async function chatRoutes(fastify: FastifyInstance) {
 
         const result = await chatRepo.hardDeleteConversation(conversationId);
         if (result.mediaAssetIds.length) {
-          await queueChatMediaCleanup({
-            conversationId,
-            mediaAssetIds: result.mediaAssetIds,
-          });
+          try {
+            await queueChatMediaCleanup({
+              conversationId,
+              mediaAssetIds: result.mediaAssetIds,
+              source: 'conversation-delete',
+            });
+          } catch (queueError) {
+            logger.warn(queueError, 'Failed to enqueue chat media cleanup for hard-deleted conversation');
+            try {
+              await queueCleanup({
+                type: 'chat_orphaned_media',
+                mediaAssetIds: result.mediaAssetIds,
+                conversationId,
+              });
+            } catch (fallbackError) {
+              logger.warn(fallbackError, 'Failed to enqueue fallback chat media cleanup');
+            }
+          }
         }
 
         await appendAudit(request, payload.sub, 'CHAT_CONVERSATION_DELETE', 'ChatConversation', conversationId);
