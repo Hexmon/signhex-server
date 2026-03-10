@@ -1,12 +1,13 @@
 import { randomUUID } from 'crypto';
 import { FastifyInstance } from 'fastify';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { createSessionRepository } from '@/db/repositories/session';
 import { generateAccessToken } from '@/auth/jwt';
 import { closeTestServer, createTestServer, testUser } from '@/test/helpers';
 import { getDatabase, schema } from '@/db';
 import { HTTP_STATUS } from '@/http-status-codes';
+import * as s3 from '@/s3';
 
 async function issueAdminToken() {
   const db = getDatabase();
@@ -14,6 +15,25 @@ async function issueAdminToken() {
   if (!adminRole) {
     throw new Error('ADMIN role is required for screens route tests');
   }
+
+  const currentPermissions =
+    adminRole.permissions && typeof adminRole.permissions === 'object'
+      ? (adminRole.permissions as { grants?: Array<{ action: string; subject: string }> })
+      : {};
+  const mergedGrants = [...(currentPermissions.grants || [])];
+  for (const grant of [
+    { action: 'read', subject: 'Screen' },
+    { action: 'delete', subject: 'Screen' },
+  ]) {
+    if (!mergedGrants.some((current) => current.action === grant.action && current.subject === grant.subject)) {
+      mergedGrants.push(grant);
+    }
+  }
+
+  await db
+    .update(schema.roles)
+    .set({ permissions: { grants: mergedGrants } })
+    .where(eq(schema.roles.id, adminRole.id));
 
   const token = await generateAccessToken(testUser.id, testUser.email, adminRole.id, adminRole.name);
   await createSessionRepository().create({
@@ -81,6 +101,7 @@ describe('Screens routes realtime playback bootstrap', () => {
   });
 
   afterAll(async () => {
+    vi.restoreAllMocks();
     await closeTestServer(server);
   });
 
@@ -266,5 +287,107 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(body.playback.ends_at).toBe(endAt);
     expect(body.active_items).toHaveLength(1);
     expect(body.publish.publish_id).toBe(publishId);
+  });
+
+  it('returns 404 when deleting a missing screen', async () => {
+    const response = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/screens/${randomUUID()}`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+    const body = JSON.parse(response.body) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+    expect(body.error.message).toBe('Screen not found');
+  });
+
+  it('deletes related screen storage objects and removes storage rows on screen delete', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const heartbeatStorageId = randomUUID();
+    const popStorageId = randomUUID();
+    const screenshotStorageId = randomUUID();
+
+    const deleteObjectSpy = vi.spyOn(s3, 'deleteObject').mockResolvedValue(undefined);
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Delete Screen',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.storageObjects).values([
+      {
+        id: heartbeatStorageId,
+        bucket: 'logs-heartbeats',
+        object_key: `heartbeats/${screenId}/1.json`,
+        content_type: 'application/json',
+        size: 10,
+      },
+      {
+        id: popStorageId,
+        bucket: 'logs-proof-of-play',
+        object_key: `proof-of-play/${screenId}/1.json`,
+        content_type: 'application/json',
+        size: 10,
+      },
+      {
+        id: screenshotStorageId,
+        bucket: 'device-screenshots',
+        object_key: `screenshots/${screenId}/1.png`,
+        content_type: 'image/png',
+        size: 10,
+      },
+    ]);
+
+    await db.insert(schema.heartbeats).values({
+      screen_id: screenId,
+      status: 'ONLINE',
+      storage_object_id: heartbeatStorageId,
+    });
+    await db.insert(schema.proofOfPlay).values({
+      screen_id: screenId,
+      storage_object_id: popStorageId,
+      started_at: new Date(),
+    });
+    await db.insert(schema.screenshots).values({
+      screen_id: screenId,
+      storage_object_id: screenshotStorageId,
+    });
+
+    const response = await server.inject({
+      method: 'DELETE',
+      url: `/api/v1/screens/${screenId}`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as {
+      id: string;
+      message: string;
+      storage_cleanup: {
+        deleted: Array<{ id: string }>;
+        failed: Array<{ id: string }>;
+      };
+    };
+    expect(body.id).toBe(screenId);
+    expect(body.message).toContain('Screen deleted');
+    expect(body.storage_cleanup.deleted).toHaveLength(3);
+    expect(body.storage_cleanup.failed).toHaveLength(0);
+    expect(deleteObjectSpy).toHaveBeenCalledTimes(3);
+
+    const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId));
+    expect(screen).toBeUndefined();
+
+    const storageRows = await db
+      .select()
+      .from(schema.storageObjects)
+      .where(eq(schema.storageObjects.bucket, 'logs-heartbeats'));
+    expect(storageRows.some((row) => row.id === heartbeatStorageId)).toBe(false);
   });
 });

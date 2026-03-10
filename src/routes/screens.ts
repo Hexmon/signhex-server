@@ -9,7 +9,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, gte, lte, sql } from 'drizzle-orm';
-import { getPresignedUrl, getObject } from '@/s3';
+import { deleteObject, getPresignedUrl, getObject } from '@/s3';
 import { getDefaultMedia } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import {
@@ -17,7 +17,7 @@ import {
   buildScreensOverviewPayload,
   getActiveEmergencyForScreen,
 } from '@/screens/playback';
-import { setupScreensNamespace } from '@/realtime/screens-namespace';
+import { emitScreensRefreshRequired, setupScreensNamespace } from '@/realtime/screens-namespace';
 
 const logger = createLogger('screen-routes');
 const { CREATED, OK } = HTTP_STATUS;
@@ -983,25 +983,62 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         const screenId = (request.params as any).id;
 
-        const commandsDeleted = await db.delete(schema.deviceCommands).where(eq(schema.deviceCommands.screen_id, screenId));
-        const heartbeatsDeleted = await db.delete(schema.heartbeats).where(eq(schema.heartbeats.screen_id, screenId));
-        const popDeleted = await db.delete(schema.proofOfPlay).where(eq(schema.proofOfPlay.screen_id, screenId));
-        const screenshotsDeleted = await db.delete(schema.screenshots).where(eq(schema.screenshots.screen_id, screenId));
-        const publishTargetsDeleted = await db
-          .delete(schema.publishTargets)
-          .where(eq(schema.publishTargets.screen_id, screenId));
-        const pairingsDeleted = await db.delete(schema.devicePairings).where(eq(schema.devicePairings.device_id, screenId));
-        const certsDeleted = await db.delete(schema.deviceCertificates).where(eq(schema.deviceCertificates.screen_id, screenId));
-        const groupMembersDeleted = await db
-          .delete(schema.screenGroupMembers)
-          .where(eq(schema.screenGroupMembers.screen_id, screenId));
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          throw AppError.notFound('Screen not found');
+        }
 
-        await screenRepo.delete(screenId);
+        const [heartbeatStorageRefs, proofOfPlayStorageRefs, screenshotStorageRefs] = await Promise.all([
+          db
+            .select({ storage_object_id: schema.heartbeats.storage_object_id })
+            .from(schema.heartbeats)
+            .where(eq(schema.heartbeats.screen_id, screenId)),
+          db
+            .select({ storage_object_id: schema.proofOfPlay.storage_object_id })
+            .from(schema.proofOfPlay)
+            .where(eq(schema.proofOfPlay.screen_id, screenId)),
+          db
+            .select({ storage_object_id: schema.screenshots.storage_object_id })
+            .from(schema.screenshots)
+            .where(eq(schema.screenshots.screen_id, screenId)),
+        ]);
 
-        return reply.status(OK).send({
-          message: 'Screen deleted with related data cleaned up',
-          id: screenId,
-          cleanup: {
+        const storageObjectIds = Array.from(
+          new Set(
+            [...heartbeatStorageRefs, ...proofOfPlayStorageRefs, ...screenshotStorageRefs]
+              .map((row) => row.storage_object_id)
+              .filter((value): value is string => Boolean(value))
+          )
+        );
+
+        const storageRows = storageObjectIds.length
+          ? await db
+              .select({
+                id: schema.storageObjects.id,
+                bucket: schema.storageObjects.bucket,
+                object_key: schema.storageObjects.object_key,
+              })
+              .from(schema.storageObjects)
+              .where(inArray(schema.storageObjects.id, storageObjectIds))
+          : [];
+
+        const cleanup = await db.transaction(async (tx) => {
+          const commandsDeleted = await tx.delete(schema.deviceCommands).where(eq(schema.deviceCommands.screen_id, screenId));
+          const heartbeatsDeleted = await tx.delete(schema.heartbeats).where(eq(schema.heartbeats.screen_id, screenId));
+          const popDeleted = await tx.delete(schema.proofOfPlay).where(eq(schema.proofOfPlay.screen_id, screenId));
+          const screenshotsDeleted = await tx.delete(schema.screenshots).where(eq(schema.screenshots.screen_id, screenId));
+          const publishTargetsDeleted = await tx
+            .delete(schema.publishTargets)
+            .where(eq(schema.publishTargets.screen_id, screenId));
+          const pairingsDeleted = await tx.delete(schema.devicePairings).where(eq(schema.devicePairings.device_id, screenId));
+          const certsDeleted = await tx.delete(schema.deviceCertificates).where(eq(schema.deviceCertificates.screen_id, screenId));
+          const groupMembersDeleted = await tx
+            .delete(schema.screenGroupMembers)
+            .where(eq(schema.screenGroupMembers.screen_id, screenId));
+
+          await tx.delete(schema.screens).where(eq(schema.screens.id, screenId));
+
+          return {
             device_commands: (commandsDeleted as any)?.length ?? 0,
             heartbeats: (heartbeatsDeleted as any)?.length ?? 0,
             proof_of_play: (popDeleted as any)?.length ?? 0,
@@ -1010,6 +1047,60 @@ export async function screenRoutes(fastify: FastifyInstance) {
             device_pairings: (pairingsDeleted as any)?.length ?? 0,
             device_certificates: (certsDeleted as any)?.length ?? 0,
             screen_group_members: (groupMembersDeleted as any)?.length ?? 0,
+          };
+        });
+
+        const uniqueStorageRows = Array.from(
+          new Map(storageRows.map((row) => [row.id, row])).values()
+        );
+        const storageDeleted: Array<{ id: string; bucket: string; object_key: string }> = [];
+        const storageFailed: Array<{ id: string; bucket: string; object_key: string; message: string }> = [];
+
+        for (const storageRow of uniqueStorageRows) {
+          try {
+            await deleteObject(storageRow.bucket, storageRow.object_key);
+            storageDeleted.push(storageRow);
+          } catch (error) {
+            request.log.warn(
+              {
+                storageObjectId: storageRow.id,
+                bucket: storageRow.bucket,
+                objectKey: storageRow.object_key,
+                err: error,
+              },
+              'Failed to delete screen-linked storage object'
+            );
+            storageFailed.push({
+              ...storageRow,
+              message: error instanceof Error ? error.message : 'Storage deletion failed',
+            });
+          }
+        }
+
+        if (storageDeleted.length > 0) {
+          await db
+            .delete(schema.storageObjects)
+            .where(
+              inArray(
+                schema.storageObjects.id,
+                storageDeleted.map((row) => row.id) as string[]
+              )
+            );
+        }
+
+        emitScreensRefreshRequired(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screen_ids: [screenId],
+          group_ids: [],
+        });
+
+        return reply.status(OK).send({
+          message: 'Screen deleted with related data cleaned up',
+          id: screenId,
+          cleanup,
+          storage_cleanup: {
+            deleted: storageDeleted,
+            failed: storageFailed,
           },
         });
       } catch (error) {

@@ -22,6 +22,7 @@
     "verify": "tsx scripts/verify-build.ts",
     "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts",
     "chat:dry-run": "tsx scripts/chat-dry-run.ts",
+    "screens:dry-run": "tsx scripts/screens-realtime-dry-run.ts",
     "notifications:reconcile": "tsx scripts/notifications-reconcile.ts"
   },
   "keywords": [

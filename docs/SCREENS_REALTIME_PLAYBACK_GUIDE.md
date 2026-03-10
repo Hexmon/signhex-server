@@ -12,6 +12,24 @@ Implemented behavior:
 
 This is zero-downtime relative to existing consumers because old fields remain in place.
 
+## Verified End-to-End
+This flow has been verified against real backend mutations, not only unit tests.
+
+Verified path:
+- dashboard bootstrap via `GET /api/v1/screens/overview?include_media=true`
+- detail bootstrap via `GET /api/v1/screens/:id/now-playing?include_media=true`
+- `POST /api/v1/device/heartbeat` emits `screens:state:update`
+- `POST /api/v1/emergency/trigger` emits `screens:refresh:required`
+- `DELETE /api/v1/screens/:id` emits `screens:refresh:required`
+- dashboard refetch after delete no longer includes the deleted screen
+
+Repro:
+```bash
+npm run screens:dry-run
+```
+
+The dry-run script seeds a temporary screen, media, schedule snapshot, publish target, and device certificate, then opens a real Socket.IO client to `/screens` and verifies the full dashboard/detail lifecycle.
+
 ## REST
 
 ### 1) Dashboard bootstrap
@@ -283,6 +301,7 @@ Emitted after:
 - schedule publish
 - emergency trigger/clear
 - screen-group membership changes
+- screen delete
 
 Payload:
 ```json
@@ -297,6 +316,19 @@ Frontend use:
 - if dashboard page is open: refetch `GET /api/v1/screens/overview`
 - if per-screen page is open and its `screen_id` is included: refetch `GET /api/v1/screens/:id/now-playing`
 - if reason is `EMERGENCY`, show the emergency badge/banner immediately while refetch is in progress
+
+## Backend Trigger Matrix
+Use this as the operational source of truth for what actually emits realtime screen events.
+
+| Backend action | Source | WS event |
+| --- | --- | --- |
+| Device heartbeat | `POST /api/v1/device/heartbeat` | `screens:state:update` |
+| Proof-of-play ingest | proof-of-play write path | `screens:state:update` |
+| Schedule publish | schedule publish route | `screens:refresh:required` |
+| Emergency trigger | `POST /api/v1/emergency/trigger` | `screens:refresh:required` |
+| Emergency clear | `POST /api/v1/emergency/:id/clear` | `screens:refresh:required` |
+| Screen-group membership change | screen-group routes | `screens:refresh:required` |
+| Screen delete | `DELETE /api/v1/screens/:id` | `screens:refresh:required` |
 
 ## Frontend integration algorithm
 
