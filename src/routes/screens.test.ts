@@ -390,4 +390,96 @@ describe('Screens routes realtime playback bootstrap', () => {
       .where(eq(schema.storageObjects.bucket, 'logs-heartbeats'));
     expect(storageRows.some((row) => row.id === heartbeatStorageId)).toBe(false);
   });
+
+  it('returns resolved aspect ratios with defaults catalog', async () => {
+    const db = getDatabase();
+    const explicitScreenId = randomUUID();
+    const derivedScreenId = randomUUID();
+    const unresolvedScreenId = randomUUID();
+
+    await db.insert(schema.screens).values([
+      {
+        id: explicitScreenId,
+        name: 'Explicit Ratio Screen',
+        aspect_ratio: '21:9',
+        status: 'ACTIVE',
+      },
+      {
+        id: derivedScreenId,
+        name: 'Derived Ratio Screen',
+        width: 1920,
+        height: 1080,
+        status: 'ACTIVE',
+      },
+      {
+        id: unresolvedScreenId,
+        name: 'Unresolved Ratio Screen',
+        status: 'OFFLINE',
+      },
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/screens/aspect-ratios',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as any;
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(Array.isArray(body.defaults)).toBe(true);
+
+    const explicit = body.items.find((entry: any) => entry.id === explicitScreenId);
+    expect(explicit.aspect_ratio).toBe('21:9');
+    expect(explicit.aspect_ratio_name).toBe('Ultrawide');
+    expect(explicit.is_fallback).toBe(false);
+
+    const derived = body.items.find((entry: any) => entry.id === derivedScreenId);
+    expect(derived.aspect_ratio).toBe('16:9');
+    expect(derived.aspect_ratio_name).toBe('Widescreen');
+
+    const unresolved = body.items.find((entry: any) => entry.id === unresolvedScreenId);
+    expect(unresolved.aspect_ratio).toBeNull();
+    expect(unresolved.aspect_ratio_name).toBeNull();
+
+    expect(body.defaults.some((entry: any) => entry.aspect_ratio === '16:9')).toBe(true);
+    expect(body.defaults.some((entry: any) => entry.aspect_ratio === '1:1')).toBe(true);
+    expect(body.defaults.every((entry: any) => entry.id === null && entry.is_fallback === true)).toBe(true);
+  });
+
+  it('filters unresolved aspect ratios when configured_only=true', async () => {
+    const db = getDatabase();
+    const derivedScreenId = randomUUID();
+    const unresolvedScreenId = randomUUID();
+
+    await db.insert(schema.screens).values([
+      {
+        id: derivedScreenId,
+        name: 'Configured Ratio Screen',
+        width: 1080,
+        height: 1920,
+        status: 'ACTIVE',
+      },
+      {
+        id: unresolvedScreenId,
+        name: 'No Ratio Screen',
+        status: 'OFFLINE',
+      },
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/screens/aspect-ratios?configured_only=true',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as any;
+    expect(body.items.some((entry: any) => entry.id === derivedScreenId && entry.aspect_ratio === '9:16')).toBe(true);
+    expect(body.items.some((entry: any) => entry.id === unresolvedScreenId)).toBe(false);
+  });
 });

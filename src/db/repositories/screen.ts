@@ -79,6 +79,8 @@ export class ScreenRepository {
         id: schema.screens.id,
         name: schema.screens.name,
         aspect_ratio: schema.screens.aspect_ratio,
+        width: schema.screens.width,
+        height: schema.screens.height,
       })
       .from(schema.screens);
 

@@ -35,6 +35,7 @@ const listScreensQuerySchema = z.object({
 
 const aspectRatiosQuerySchema = z.object({
   search: z.string().min(1).optional(),
+  configured_only: z.enum(['true', 'false']).optional(),
 });
 
 const listHeartbeatsQuerySchema = z.object({
@@ -72,6 +73,60 @@ export async function screenRoutes(fastify: FastifyInstance) {
   const screenRepo = createScreenRepository();
   const db = getDatabase();
   await setupScreensNamespace(fastify);
+
+  const knownAspectRatios = [
+    { aspect_ratio: '16:9', name: 'Widescreen' },
+    { aspect_ratio: '1:1', name: 'Square' },
+    { aspect_ratio: '4:3', name: 'Standard' },
+    { aspect_ratio: '9:16', name: 'Portrait' },
+    { aspect_ratio: '21:9', name: 'Ultrawide' },
+    { aspect_ratio: '3:2', name: 'Classic' },
+    { aspect_ratio: '5:4', name: 'SXGA' },
+    { aspect_ratio: '32:9', name: 'Super Ultrawide' },
+  ] as const;
+
+  const gcd = (a: number, b: number): number => {
+    let x = Math.abs(a);
+    let y = Math.abs(b);
+    while (y !== 0) {
+      const temp = y;
+      y = x % y;
+      x = temp;
+    }
+    return x || 1;
+  };
+
+  const deriveAspectRatio = (screen: {
+    aspect_ratio?: string | null;
+    width?: number | null;
+    height?: number | null;
+  }) => {
+    if (screen.aspect_ratio?.trim()) {
+      return screen.aspect_ratio.trim();
+    }
+
+    if (!screen.width || !screen.height || screen.width <= 0 || screen.height <= 0) {
+      return null;
+    }
+
+    const ratio = screen.width / screen.height;
+    const knownMatch = knownAspectRatios.find((entry) => {
+      const [w, h] = entry.aspect_ratio.split(':').map(Number);
+      return Math.abs(ratio - w / h) <= 0.03;
+    });
+
+    if (knownMatch) {
+      return knownMatch.aspect_ratio;
+    }
+
+    const divisor = gcd(screen.width, screen.height);
+    return `${screen.width / divisor}:${screen.height / divisor}`;
+  };
+
+  const getAspectRatioName = (aspectRatio: string | null) => {
+    if (!aspectRatio) return null;
+    return knownAspectRatios.find((entry) => entry.aspect_ratio === aspectRatio)?.name ?? 'Custom';
+  };
 
   const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
     const members = await db
@@ -250,11 +305,28 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         const query = aspectRatiosQuerySchema.parse(request.query);
         const screens = await screenRepo.listAspectRatios({ search: query.search });
+        const configuredOnly = query.configured_only === 'true';
+        const resolvedItems = screens
+          .map((s) => {
+            const aspectRatio = deriveAspectRatio(s);
+            return {
+              id: s.id,
+              name: s.name,
+              aspect_ratio: aspectRatio,
+              aspect_ratio_name: getAspectRatioName(aspectRatio),
+              is_fallback: false,
+            };
+          })
+          .filter((item) => (configuredOnly ? item.aspect_ratio !== null : true));
+
         return reply.send({
-          items: screens.map((s) => ({
-            id: s.id,
-            name: s.name,
-            aspect_ratio: s.aspect_ratio ?? null,
+          items: resolvedItems,
+          defaults: knownAspectRatios.map((entry) => ({
+            id: null,
+            name: entry.name,
+            aspect_ratio: entry.aspect_ratio,
+            aspect_ratio_name: entry.name,
+            is_fallback: true,
           })),
         });
       } catch (error) {
