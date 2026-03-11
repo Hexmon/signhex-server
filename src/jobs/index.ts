@@ -1,5 +1,6 @@
 import PgBoss from 'pg-boss';
 import ffmpeg from 'fluent-ffmpeg';
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -81,6 +82,80 @@ async function cleanupTempDir(dir: string | null) {
 }
 
 let boss: PgBoss | null = null;
+
+type PgBossError = Error & {
+  code?: string;
+};
+
+const RECURRING_QUEUE_NAMES = ['cleanup', 'archive', 'chat:media-cleanup'] as const;
+
+function getPgBossSchemaSql() {
+  return `"${appConfig.PG_BOSS_SCHEMA.replace(/"/g, '""')}"`;
+}
+
+function getPgBossPartitionName(queueName: string) {
+  return `j${createHash('sha224').update(queueName).digest('hex')}`;
+}
+
+async function queuePartitionExists(queueName: string) {
+  const db = getDatabase();
+  const partitionName = getPgBossPartitionName(queueName);
+  const result = await db.execute(sql.raw(`
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_tables
+      WHERE schemaname = '${appConfig.PG_BOSS_SCHEMA.replace(/'/g, "''")}'
+        AND tablename = '${partitionName}'
+    ) AS exists
+  `));
+
+  return Boolean((result as { rows?: Array<{ exists?: boolean }> }).rows?.[0]?.exists);
+}
+
+async function repairQueueMetadata(queueName: string) {
+  const db = getDatabase();
+  const schemaSql = getPgBossSchemaSql();
+  const partitionName = getPgBossPartitionName(queueName);
+
+  await db.execute(sql.raw(`
+    INSERT INTO ${schemaSql}.queue (
+      name,
+      policy,
+      partition_name
+    )
+    VALUES (
+      '${queueName.replace(/'/g, "''")}',
+      'standard',
+      '${partitionName}'
+    )
+    ON CONFLICT (name) DO NOTHING
+  `));
+}
+
+async function ensureQueueExists(jobs: PgBoss, queueName: string) {
+  try {
+    await jobs.createQueue(queueName);
+    return;
+  } catch (error) {
+    const pgBossError = error as PgBossError;
+    const partitionAlreadyExists = pgBossError.code === '42P07' && await queuePartitionExists(queueName);
+
+    if (!partitionAlreadyExists) {
+      logger.error({ err: error, queueName }, 'Failed to create pg-boss queue');
+      throw error;
+    }
+
+    logger.warn({ queueName }, 'Detected orphaned pg-boss queue metadata. Repairing queue row.');
+    await repairQueueMetadata(queueName);
+
+    const queue = await jobs.getQueue(queueName);
+    if (!queue) {
+      throw new Error(`Failed to repair pg-boss queue metadata for ${queueName}`);
+    }
+
+    logger.info({ queueName }, 'Repaired orphaned pg-boss queue metadata');
+  }
+}
 
 export async function initializeJobs(): Promise<PgBoss> {
   if (boss) {
@@ -782,14 +857,9 @@ export async function scheduleRecurringJobs() {
   const jobs = getJobs();
 
   try {
-    // Ensure queues exist BEFORE scheduling
-    await jobs.createQueue('cleanup').catch(() => { }); // ignore "already exists"
-    await jobs.createQueue('archive').catch(() => { });
-    await jobs.createQueue('chat:media-cleanup').catch(() => { });
-
-    // (Optional) also ensure worker queues exist if you schedule them too later on:
-    // await jobs.createQueue('ffmpeg:transcode').catch(() => {});
-    // await jobs.createQueue('ffmpeg:thumbnail').catch(() => {});
+    for (const queueName of RECURRING_QUEUE_NAMES) {
+      await ensureQueueExists(jobs, queueName);
+    }
 
     // Clean any prior schedules
     await jobs.unschedule('cleanup').catch(() => { });

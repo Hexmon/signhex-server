@@ -44,6 +44,22 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
+  async findActiveByDeviceId(deviceId: string) {
+    const db = getDatabase();
+    const result = await db
+      .select()
+      .from(schema.devicePairings)
+      .where(
+        and(
+          eq(schema.devicePairings.device_id, deviceId),
+          eq(schema.devicePairings.used, false),
+          gt(schema.devicePairings.expires_at, new Date())
+        )
+      )
+      .orderBy(desc(schema.devicePairings.created_at));
+    return result[0] || null;
+  }
+
   async markAsUsed(id: string) {
     const db = getDatabase();
     const result = await db

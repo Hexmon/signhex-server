@@ -22,6 +22,7 @@ async function issueAdminToken() {
       : {};
   const mergedGrants = [...(currentPermissions.grants || [])];
   for (const grant of [
+    { action: 'create', subject: 'Screen' },
     { action: 'read', subject: 'Screen' },
     { action: 'delete', subject: 'Screen' },
   ]) {
@@ -103,6 +104,26 @@ describe('Screens routes realtime playback bootstrap', () => {
   afterAll(async () => {
     vi.restoreAllMocks();
     await closeTestServer(server);
+  });
+
+  it('blocks manual screen creation and requires device pairing flow', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/screens',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        name: 'Manual Screen',
+        location: 'Lobby',
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.CONFLICT);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('CONFLICT');
+    expect(body.error.message).toContain('device completes pairing');
   });
 
   it('returns server_time and playback in screens overview while preserving existing fields', async () => {

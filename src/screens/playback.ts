@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { getDefaultMedia, resolveMediaUrl } from '@/utils/default-media';
 
@@ -6,6 +6,7 @@ type ScreenRecord = typeof schema.screens.$inferSelect;
 type ScreenGroupRecord = typeof schema.screenGroups.$inferSelect;
 
 type PlaybackSource = 'HEARTBEAT' | 'SCHEDULE' | 'EMERGENCY' | 'DEFAULT' | 'UNKNOWN';
+export type ScreenHealthState = 'ONLINE' | 'OFFLINE' | 'STALE' | 'ERROR' | 'RECOVERY_REQUIRED';
 
 type BuildScreenPlaybackStateOptions = {
   db?: ReturnType<typeof getDatabase>;
@@ -22,6 +23,8 @@ function toIso(value: Date | string | null | undefined): string | null {
   if (value instanceof Date) return value.toISOString();
   return value;
 }
+
+const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
 
 function pickPrimaryMediaIdFromPresentation(presentation: any): string | null {
   if (!presentation || typeof presentation !== 'object') return null;
@@ -191,6 +194,135 @@ async function getMediaSummary(id: string, db = getDatabase()) {
   };
 }
 
+async function getScreenRecoveryState(screenId: string, db = getDatabase()) {
+  const [activePairing] = await db
+    .select({
+      id: schema.devicePairings.id,
+      created_at: schema.devicePairings.created_at,
+      expires_at: schema.devicePairings.expires_at,
+      device_info: schema.devicePairings.device_info,
+    })
+    .from(schema.devicePairings)
+    .where(
+      and(
+        eq(schema.devicePairings.device_id, screenId),
+        eq(schema.devicePairings.used, false),
+        gt(schema.devicePairings.expires_at, new Date())
+      )
+    )
+    .orderBy(desc(schema.devicePairings.created_at))
+    .limit(1);
+
+  const [latestCertificate] = await db
+    .select({
+      id: schema.deviceCertificates.id,
+      serial: schema.deviceCertificates.serial,
+      expires_at: schema.deviceCertificates.expires_at,
+      revoked_at: schema.deviceCertificates.revoked_at,
+      is_revoked: schema.deviceCertificates.is_revoked,
+      created_at: schema.deviceCertificates.created_at,
+    })
+    .from(schema.deviceCertificates)
+    .where(eq(schema.deviceCertificates.screen_id, screenId))
+    .orderBy(desc(schema.deviceCertificates.created_at))
+    .limit(1);
+
+  const pairingInfo = ((activePairing?.device_info as Record<string, unknown> | null) || {}) as Record<string, any>;
+  const pairingMeta = (pairingInfo?.pairing || {}) as Record<string, any>;
+  const activePairingMode =
+    typeof pairingMeta.mode === 'string' && pairingMeta.mode.trim().length > 0 ? pairingMeta.mode.trim() : null;
+  const activePairingConfirmed = pairingMeta.confirmed === true;
+  const activePairingState = activePairing
+    ? {
+        id: activePairing.id,
+        created_at: toIso(activePairing.created_at),
+        expires_at: toIso(activePairing.expires_at),
+        confirmed: activePairingConfirmed,
+        mode: activePairingMode,
+      }
+    : null;
+
+  let authState: 'VALID' | 'MISSING_CERTIFICATE' | 'EXPIRED_CERTIFICATE' | 'REVOKED_CERTIFICATE' = 'VALID';
+  let authReason = 'Device credentials are valid.';
+
+  if (!latestCertificate) {
+    authState = 'MISSING_CERTIFICATE';
+    authReason = 'No device certificate exists for this screen.';
+  } else if (latestCertificate.is_revoked || latestCertificate.revoked_at) {
+    authState = 'REVOKED_CERTIFICATE';
+    authReason = 'The latest device certificate has been revoked.';
+  } else if (latestCertificate.expires_at && latestCertificate.expires_at.getTime() <= Date.now()) {
+    authState = 'EXPIRED_CERTIFICATE';
+    authReason = 'The latest device certificate has expired.';
+  }
+
+  return {
+    active_pairing: activePairingState,
+    auth_diagnostics: {
+      state: authState,
+      reason: authReason,
+      latest_certificate_expires_at: toIso(latestCertificate?.expires_at),
+      latest_certificate_revoked_at: toIso(latestCertificate?.revoked_at),
+      latest_certificate_serial: latestCertificate?.serial ?? null,
+    },
+  };
+}
+
+function deriveHealthState(params: {
+  screen: ScreenRecord;
+  authDiagnostics: {
+    state: 'VALID' | 'MISSING_CERTIFICATE' | 'EXPIRED_CERTIFICATE' | 'REVOKED_CERTIFICATE';
+  };
+  activePairing: { mode?: string | null } | null;
+  now: Date;
+}) {
+  if (
+    params.authDiagnostics.state !== 'VALID' ||
+    (params.activePairing?.mode === 'RECOVERY' && params.activePairing)
+  ) {
+    return {
+      health_state: 'RECOVERY_REQUIRED' as ScreenHealthState,
+      health_reason:
+        params.activePairing?.mode === 'RECOVERY'
+          ? 'Recovery pairing is in progress for this screen.'
+          : 'The screen requires credential recovery before it can authenticate again.',
+    };
+  }
+
+  if (params.screen.status === 'OFFLINE') {
+    return {
+      health_state: 'OFFLINE' as ScreenHealthState,
+      health_reason: 'The screen is reporting offline.',
+    };
+  }
+
+  if (params.screen.status === 'INACTIVE') {
+    return {
+      health_state: 'ERROR' as ScreenHealthState,
+      health_reason: 'The screen reported an error or inactive state.',
+    };
+  }
+
+  if (!params.screen.last_heartbeat_at) {
+    return {
+      health_state: 'STALE' as ScreenHealthState,
+      health_reason: 'The screen has not reported a heartbeat yet.',
+    };
+  }
+
+  if (params.now.getTime() - params.screen.last_heartbeat_at.getTime() > HEARTBEAT_STALE_MS) {
+    return {
+      health_state: 'STALE' as ScreenHealthState,
+      health_reason: 'The last heartbeat is older than the freshness threshold.',
+    };
+  }
+
+  return {
+    health_state: 'ONLINE' as ScreenHealthState,
+    health_reason: 'The screen is healthy and reporting recent heartbeats.',
+  };
+}
+
 export async function getLastProofOfPlayMap(
   screenIds: string[],
   db = getDatabase()
@@ -290,11 +422,28 @@ export async function buildScreenPlaybackState(
     null;
   const currentMedia =
     options.includeMedia && currentMediaId ? await getMediaSummary(currentMediaId, db) : null;
+  const recoveryState = await getScreenRecoveryState(screen.id, db);
+  const health = deriveHealthState({
+    screen,
+    authDiagnostics: recoveryState.auth_diagnostics,
+    activePairing: recoveryState.active_pairing,
+    now,
+  });
 
   return {
     id: screen.id,
     name: screen.name,
+    location: screen.location ?? null,
+    aspect_ratio: (screen as any).aspect_ratio ?? null,
+    width: (screen as any).width ?? null,
+    height: (screen as any).height ?? null,
+    orientation: (screen as any).orientation ?? null,
+    device_info: (screen as any).device_info ?? null,
     status: screen.status,
+    health_state: health.health_state,
+    health_reason: health.health_reason,
+    auth_diagnostics: recoveryState.auth_diagnostics,
+    active_pairing: recoveryState.active_pairing,
     last_heartbeat_at: toIso(screen.last_heartbeat_at),
     current_schedule_id: screen.current_schedule_id ?? null,
     current_media_id: screen.current_media_id ?? null,
@@ -323,6 +472,8 @@ export async function buildScreenPlaybackState(
       currentMedia,
     }),
     emergency,
+    created_at: screen.created_at,
+    updated_at: screen.updated_at,
   };
 }
 

@@ -36,28 +36,28 @@ export class AppError extends Error {
     });
   }
 
-  static unauthorized(message = 'Unauthorized.') {
-    return new AppError({ statusCode: 401, code: 'UNAUTHORIZED', message, details: null });
+  static unauthorized(message = 'Unauthorized.', details?: ErrorDetails) {
+    return new AppError({ statusCode: 401, code: 'UNAUTHORIZED', message, details });
   }
 
-  static forbidden(message = 'Forbidden.') {
-    return new AppError({ statusCode: 403, code: 'FORBIDDEN', message, details: null });
+  static forbidden(message = 'Forbidden.', details?: ErrorDetails) {
+    return new AppError({ statusCode: 403, code: 'FORBIDDEN', message, details });
   }
 
-  static notFound(message = 'Not found.') {
-    return new AppError({ statusCode: 404, code: 'NOT_FOUND', message, details: null });
+  static notFound(message = 'Not found.', details?: ErrorDetails) {
+    return new AppError({ statusCode: 404, code: 'NOT_FOUND', message, details });
   }
 
-  static conflict(message = 'Conflict.') {
-    return new AppError({ statusCode: 409, code: 'CONFLICT', message, details: null });
+  static conflict(message = 'Conflict.', details?: ErrorDetails) {
+    return new AppError({ statusCode: 409, code: 'CONFLICT', message, details });
   }
 
-  static rateLimited(message = 'Too many requests. Please try again later.') {
-    return new AppError({ statusCode: 429, code: 'RATE_LIMITED', message, details: null });
+  static rateLimited(message = 'Too many requests. Please try again later.', details?: ErrorDetails) {
+    return new AppError({ statusCode: 429, code: 'RATE_LIMITED', message, details });
   }
 
-  static internal(message = 'Unexpected error.') {
-    return new AppError({ statusCode: 500, code: 'INTERNAL_ERROR', message, details: null });
+  static internal(message = 'Unexpected error.', details?: ErrorDetails) {
+    return new AppError({ statusCode: 500, code: 'INTERNAL_ERROR', message, details });
   }
 
   static caCertMissing(message = 'CA certificate is missing. Please configure CA_CERT_PATH correctly.') {

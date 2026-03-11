@@ -377,12 +377,14 @@ export const deviceCertificates = pgTable(
     serial: varchar('serial', { length: 255 }).notNull().unique(),
     certificate_pem: text('certificate_pem').notNull(),
     is_revoked: boolean('is_revoked').notNull().default(false),
+    expires_at: timestamp('expires_at').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
     revoked_at: timestamp('revoked_at'),
   },
   (table) => ({
     screenIdIdx: index('device_certificates_screen_id_idx').on(table.screen_id),
     serialIdx: uniqueIndex('device_certificates_serial_idx').on(table.serial),
+    expiresAtIdx: index('device_certificates_expires_at_idx').on(table.expires_at),
   })
 );
 

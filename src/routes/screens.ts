@@ -202,25 +202,9 @@ export async function screenRoutes(fastify: FastifyInstance) {
           throw AppError.forbidden('Forbidden');
         }
 
-        const data = createScreenSchema.parse(request.body);
-        const screen = await screenRepo.create(data);
-
-        return reply.status(CREATED).send({
-          id: screen.id,
-          name: screen.name,
-          location: screen.location,
-          aspect_ratio: (screen as any).aspect_ratio ?? null,
-          width: (screen as any).width ?? null,
-          height: (screen as any).height ?? null,
-          orientation: (screen as any).orientation ?? null,
-          device_info: (screen as any).device_info ?? null,
-          status: screen.status,
-          last_heartbeat_at: screen.last_heartbeat_at?.toISOString(),
-          current_schedule_id: (screen as any).current_schedule_id ?? null,
-          current_media_id: (screen as any).current_media_id ?? null,
-          created_at: screen.created_at.toISOString(),
-          updated_at: screen.updated_at.toISOString(),
-        });
+        throw AppError.conflict(
+          'Screens can only be created after a device completes pairing. Use the device pairing flow instead of creating screens manually.'
+        );
       } catch (error) {
         logger.error(error, 'Create screen error');
         return respondWithError(reply, error);
@@ -389,26 +373,30 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
 
-        const screen = await screenRepo.findById((request.params as any).id);
-        if (!screen) {
+        const summary = await buildScreenPlaybackStateById((request.params as any).id, { db });
+        if (!summary) {
           throw AppError.notFound('Screen not found');
         }
 
         return reply.send({
-          id: screen.id,
-          name: screen.name,
-          location: screen.location,
-          aspect_ratio: (screen as any).aspect_ratio ?? null,
-          width: (screen as any).width ?? null,
-          height: (screen as any).height ?? null,
-          orientation: (screen as any).orientation ?? null,
-          device_info: (screen as any).device_info ?? null,
-          status: screen.status,
-          last_heartbeat_at: screen.last_heartbeat_at?.toISOString(),
-          current_schedule_id: (screen as any).current_schedule_id ?? null,
-          current_media_id: (screen as any).current_media_id ?? null,
-          created_at: screen.created_at.toISOString(),
-          updated_at: screen.updated_at.toISOString(),
+          id: summary.id,
+          name: summary.name,
+          location: (summary as any).location ?? null,
+          aspect_ratio: (summary as any).aspect_ratio ?? null,
+          width: (summary as any).width ?? null,
+          height: (summary as any).height ?? null,
+          orientation: (summary as any).orientation ?? null,
+          device_info: (summary as any).device_info ?? null,
+          status: summary.status,
+          health_state: (summary as any).health_state ?? null,
+          health_reason: (summary as any).health_reason ?? null,
+          auth_diagnostics: (summary as any).auth_diagnostics ?? null,
+          active_pairing: (summary as any).active_pairing ?? null,
+          last_heartbeat_at: summary.last_heartbeat_at,
+          current_schedule_id: summary.current_schedule_id,
+          current_media_id: summary.current_media_id,
+          created_at: (summary as any).created_at?.toISOString?.() ?? (summary as any).created_at,
+          updated_at: (summary as any).updated_at?.toISOString?.() ?? (summary as any).updated_at,
         });
       } catch (error) {
         logger.error(error, 'Get screen error');
@@ -460,10 +448,16 @@ export async function screenRoutes(fastify: FastifyInstance) {
           (latestHeartbeat as any)?.object_key
         );
 
+        const summary = await buildScreenPlaybackStateById(screen.id, { db });
+
         return reply.send({
           id: screen.id,
           name: screen.name,
           status: screen.status,
+          health_state: (summary as any)?.health_state ?? null,
+          health_reason: (summary as any)?.health_reason ?? null,
+          auth_diagnostics: (summary as any)?.auth_diagnostics ?? null,
+          active_pairing: (summary as any)?.active_pairing ?? null,
           last_heartbeat_at: screen.last_heartbeat_at?.toISOString(),
           current_schedule_id: (screen as any).current_schedule_id ?? null,
           current_media_id: (screen as any).current_media_id ?? null,
@@ -726,6 +720,10 @@ export async function screenRoutes(fastify: FastifyInstance) {
           server_time: new Date().toISOString(),
           screen_id: screenId,
           status: summary.status,
+          health_state: (summary as any).health_state ?? null,
+          health_reason: (summary as any).health_reason ?? null,
+          auth_diagnostics: (summary as any).auth_diagnostics ?? null,
+          active_pairing: (summary as any).active_pairing ?? null,
           last_heartbeat_at: summary.last_heartbeat_at,
           current_schedule_id: summary.current_schedule_id,
           current_media_id: summary.current_media_id,

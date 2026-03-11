@@ -6,6 +6,21 @@ import { AppError } from '@/utils/app-error';
 
 type DB = ReturnType<typeof getDatabase>;
 
+function normalizeCodecList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim().toLowerCase() : ''))
+    .filter(Boolean);
+}
+
+function inferRequiredCodecs(media: any): string[] {
+  const contentType = typeof media?.source_content_type === 'string' ? media.source_content_type.toLowerCase() : '';
+  if (!contentType.startsWith('video/')) return [];
+  if (contentType.includes('webm')) return ['vp9', 'vp8'];
+  if (contentType.includes('mp4') || contentType.includes('quicktime')) return ['h264'];
+  return [];
+}
+
 export async function resolvePresentations(presentationIds: string[], db: DB = getDatabase()) {
   const unique = Array.from(new Set(presentationIds));
   if (unique.length === 0) return new Map<string, any>();
@@ -156,6 +171,81 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
 
   if (resolvedScreenIds.size === 0) {
     throw AppError.badRequest('No target screens found for publish');
+  }
+
+  const screenRows = await db
+    .select({
+      id: schema.screens.id,
+      name: schema.screens.name,
+      device_info: schema.screens.device_info,
+    })
+    .from(schema.screens)
+    .where(inArray(schema.screens.id, Array.from(resolvedScreenIds) as any));
+
+  const screenMap = new Map(
+    screenRows.map((row) => [
+      row.id,
+      {
+        id: row.id,
+        name: row.name,
+        codecs: normalizeCodecList((row.device_info as Record<string, unknown> | null)?.codecs),
+      },
+    ])
+  );
+
+  const unsupportedTargets: Array<{
+    screen_id: string;
+    screen_name: string;
+    media_id: string;
+    media_name: string;
+    required_codecs: string[];
+  }> = [];
+
+  scheduleItems.forEach((item: any) => {
+    const targetedScreens = new Set<string>();
+    (item.screen_ids || []).forEach((screenId: string) => targetedScreens.add(screenId));
+    resolveGroupScreens(item.screen_group_ids || []).forEach((screenId) => targetedScreens.add(screenId));
+    if (targetedScreens.size === 0) {
+      resolvedScreenIds.forEach((screenId) => targetedScreens.add(screenId));
+    }
+
+    const presentation = presMap.get(item.presentation_id);
+    const presentationMedia = [
+      ...((presentation?.items || []) as any[]),
+      ...((presentation?.slots || []) as any[]),
+    ]
+      .map((entry) => entry?.media)
+      .filter(Boolean);
+
+    presentationMedia.forEach((media: any) => {
+      const requiredCodecs = inferRequiredCodecs(media);
+      if (requiredCodecs.length === 0) return;
+
+      targetedScreens.forEach((screenId) => {
+        const screenInfo = screenMap.get(screenId);
+        if (!screenInfo || screenInfo.codecs.length === 0) return;
+        const supportsCodec = requiredCodecs.some((codec) => screenInfo.codecs.includes(codec));
+        if (supportsCodec) return;
+
+        unsupportedTargets.push({
+          screen_id: screenInfo.id,
+          screen_name: screenInfo.name,
+          media_id: media.id,
+          media_name: media.name,
+          required_codecs: requiredCodecs,
+        });
+      });
+    });
+  });
+
+  if (unsupportedTargets.length > 0) {
+    throw AppError.conflict(
+      'One or more target screens do not support the required media codec for this publish.',
+      {
+        reason: 'UNSUPPORTED_SCREEN_CODEC',
+        unsupported_targets: unsupportedTargets,
+      }
+    );
   }
 
   const snapshotPayload = {

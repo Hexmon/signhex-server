@@ -23,7 +23,8 @@
     "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts",
     "chat:dry-run": "tsx scripts/chat-dry-run.ts",
     "screens:dry-run": "tsx scripts/screens-realtime-dry-run.ts",
-    "notifications:reconcile": "tsx scripts/notifications-reconcile.ts"
+    "notifications:reconcile": "tsx scripts/notifications-reconcile.ts",
+    "jobs:repair-pgboss-queues": "tsx scripts/repair-pgboss-queues.ts"
   },
   "keywords": [
     "signage",

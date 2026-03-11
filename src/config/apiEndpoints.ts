@@ -150,6 +150,8 @@ export const apiEndpoints = {
     request: withBase('/device-pairing/request'),
     status: withBase('/device-pairing/status'),
     confirm: withBase('/device-pairing/confirm'),
+    recovery: withBase('/device-pairing/recovery/:deviceId'),
+    startRecovery: withBase('/device-pairing/recovery/:deviceId'),
   },
   emergency: {
     trigger: withBase('/emergency/trigger'),
