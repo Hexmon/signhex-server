@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createUserSchema, updateUserSchema, listUsersQuerySchema } from '@/schemas/user';
-import { createUserRepository } from '@/db/repositories/user';
+import { createUserRepository, type UserRepository } from '@/db/repositories/user';
 import { hashPassword } from '@/auth/password';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
@@ -17,6 +17,16 @@ const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 export async function userRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
   const roleRepo = createRoleRepository();
+  const resolveUserLabel = (user: {
+    first_name?: string | null;
+    last_name?: string | null;
+    email?: string | null;
+  }) => {
+    const fullName = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim();
+    if (fullName.length > 0) return fullName;
+    if (user.email) return user.email;
+    return 'this user';
+  };
 
   // Create user (admin only)
   fastify.post<{ Body: typeof createUserSchema._type }>(
@@ -29,6 +39,20 @@ export async function userRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      let user:
+        | {
+            id: string;
+            email: string;
+            first_name: string | null;
+            last_name: string | null;
+            role_id: string;
+            department_id: string | null;
+            is_active: boolean;
+            created_at: Date;
+            updated_at: Date;
+          }
+        | null = null;
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
@@ -89,6 +113,20 @@ export async function userRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      let user:
+        | {
+            id: string;
+            email: string;
+            first_name: string | null;
+            last_name: string | null;
+            role_id: string;
+            department_id: string | null;
+            is_active: boolean;
+            created_at: Date;
+            updated_at: Date;
+          }
+        | null = null;
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
@@ -101,18 +139,11 @@ export async function userRoutes(fastify: FastifyInstance) {
         const result = await userRepo.list({
           page: query.page,
           limit: query.limit,
+          role: query.role,
           role_id: query.role_id,
           department_id: query.department_id,
           is_active: query.is_active === 'true' ? true : query.is_active === 'false' ? false : undefined,
         });
-
-        const rolesById = new Map<string, any>();
-        for (const item of result.items) {
-          if (!rolesById.has(item.role_id)) {
-            const role = await roleRepo.findById(item.role_id);
-            rolesById.set(item.role_id, role);
-          }
-        }
 
         return reply.send({
           items: result.items.map((user) => ({
@@ -120,7 +151,7 @@ export async function userRoutes(fastify: FastifyInstance) {
             email: user.email,
             first_name: user.first_name,
             last_name: user.last_name,
-            role: rolesById.get(user.role_id)?.name ?? null,
+            role: (user as any).role ?? null,
             role_id: user.role_id,
             department_id: user.department_id,
             is_active: user.is_active,
@@ -254,6 +285,12 @@ export async function userRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      let user: {
+        first_name?: string | null;
+        last_name?: string | null;
+        email?: string | null;
+      } | null = null;
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
@@ -268,7 +305,7 @@ export async function userRoutes(fastify: FastifyInstance) {
         }
 
         const userId = (request.params as any).id;
-        const user = await userRepo.findById(userId);
+        user = await userRepo.findById(userId);
         if (!user) {
           throw AppError.notFound('User not found');
         }
@@ -276,6 +313,27 @@ export async function userRoutes(fastify: FastifyInstance) {
         await userRepo.delete(userId);
         return reply.status(OK).send({ message: 'User deleted successfully', id: userId });
       } catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === '23503') {
+          const usageSummary = user
+            ? await userRepo.getDeleteUsageSummary((request.params as any).id)
+            : { inUse: false, primaryReason: null, references: [] as Array<{ key: string; label: string; count: number }> };
+          const primaryLabel = usageSummary.references[0]?.label ?? 'existing records';
+          const hasMore = usageSummary.references.length > 1;
+          const conflictError = new AppError({
+            statusCode: 409,
+            code: 'CONFLICT',
+            message: `${resolveUserLabel(user ?? {})} cannot be deleted because they are still linked to ${primaryLabel}${hasMore ? ' and other records' : ''}. Reassign or remove those records first, or deactivate the user instead.`,
+            details:
+              usageSummary.references.length > 0
+                ? {
+                    references: usageSummary.references,
+                  }
+                : null,
+          });
+          logger.error(conflictError, 'Delete user error');
+          return respondWithError(reply, conflictError);
+        }
+
         logger.error(error, 'Delete user error');
         return respondWithError(reply, error);
       }
