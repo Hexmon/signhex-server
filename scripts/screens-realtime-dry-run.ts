@@ -308,6 +308,7 @@ async function run() {
       serial,
       certificate_pem: 'dry-run-cert',
       is_revoked: false,
+      expires_at: new Date(Date.now() + 1000 * 60 * 60 * 24 * 365),
     });
     recordStep('Seed screen/playback data', true, screenId);
 

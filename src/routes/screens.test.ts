@@ -503,4 +503,117 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(body.items.some((entry: any) => entry.id === derivedScreenId && entry.aspect_ratio === '9:16')).toBe(true);
     expect(body.items.some((entry: any) => entry.id === unresolvedScreenId)).toBe(false);
   });
+
+  it('derives canonical health states across overview responses', async () => {
+    const db = getDatabase();
+    const recentHeartbeat = new Date();
+    const staleHeartbeat = new Date(Date.now() - 10 * 60 * 1000);
+
+    const onlineScreenId = randomUUID();
+    const offlineScreenId = randomUUID();
+    const staleScreenId = randomUUID();
+    const errorScreenId = randomUUID();
+    const recoveryScreenId = randomUUID();
+
+    await db.insert(schema.screens).values([
+      {
+        id: onlineScreenId,
+        name: 'Online Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: recentHeartbeat,
+      },
+      {
+        id: offlineScreenId,
+        name: 'Offline Screen',
+        status: 'OFFLINE',
+        last_heartbeat_at: recentHeartbeat,
+      },
+      {
+        id: staleScreenId,
+        name: 'Stale Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: staleHeartbeat,
+      },
+      {
+        id: errorScreenId,
+        name: 'Error Screen',
+        status: 'INACTIVE',
+        last_heartbeat_at: recentHeartbeat,
+      },
+      {
+        id: recoveryScreenId,
+        name: 'Recovery Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: recentHeartbeat,
+      },
+    ]);
+
+    await db.insert(schema.deviceCertificates).values([
+      {
+        screen_id: onlineScreenId,
+        serial: `serial-${onlineScreenId}`,
+        certificate_pem: 'online-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+      {
+        screen_id: offlineScreenId,
+        serial: `serial-${offlineScreenId}`,
+        certificate_pem: 'offline-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+      {
+        screen_id: staleScreenId,
+        serial: `serial-${staleScreenId}`,
+        certificate_pem: 'stale-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+      {
+        screen_id: errorScreenId,
+        serial: `serial-${errorScreenId}`,
+        certificate_pem: 'error-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+      {
+        screen_id: recoveryScreenId,
+        serial: `serial-${recoveryScreenId}`,
+        certificate_pem: 'recovery-cert',
+        expires_at: new Date(Date.now() - 60_000),
+      },
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/screens/overview',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as {
+      screens: Array<{
+        id: string;
+        health_state: string;
+        health_reason: string | null;
+        auth_diagnostics?: { state?: string; reason?: string } | null;
+      }>;
+    };
+
+    const getScreen = (id: string) => body.screens.find((screen) => screen.id === id);
+
+    expect(getScreen(onlineScreenId)?.health_state).toBe('ONLINE');
+    expect(getScreen(onlineScreenId)?.health_reason).toContain('healthy');
+
+    expect(getScreen(offlineScreenId)?.health_state).toBe('OFFLINE');
+    expect(getScreen(offlineScreenId)?.health_reason).toContain('offline');
+
+    expect(getScreen(staleScreenId)?.health_state).toBe('STALE');
+    expect(getScreen(staleScreenId)?.health_reason).toContain('heartbeat is older');
+
+    expect(getScreen(errorScreenId)?.health_state).toBe('ERROR');
+    expect(getScreen(errorScreenId)?.health_reason).toContain('error or inactive');
+
+    expect(getScreen(recoveryScreenId)?.health_state).toBe('RECOVERY_REQUIRED');
+    expect(getScreen(recoveryScreenId)?.auth_diagnostics?.state).toBe('EXPIRED_CERTIFICATE');
+  });
 });

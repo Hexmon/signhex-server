@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import { createTestServer, closeTestServer } from '@/test/helpers';
@@ -151,6 +152,49 @@ describe('Device Pairing Routes', () => {
     expect(body.error.message).toBe('CSR deviceId does not match pairing deviceId');
   });
 
+  it('should return 404 when a pairing code expires before device completion', async () => {
+    const requestRes = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device-pairing/request',
+      payload: { device_label: 'Expired Device', expires_in: 600 },
+    });
+    const requestBody = JSON.parse(requestRes.body);
+
+    const confirmRes = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device-pairing/confirm',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        pairing_code: requestBody.pairing_code,
+        name: 'Expired Screen',
+      },
+    });
+    expect(confirmRes.statusCode).toBe(HTTP_STATUS.OK);
+
+    const db = getDatabase();
+    await db
+      .update(schema.devicePairings)
+      .set({ expires_at: new Date(Date.now() - 60_000) })
+      .where(eq(schema.devicePairings.id, requestBody.id));
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device-pairing/complete',
+      payload: {
+        pairing_code: requestBody.pairing_code,
+        csr: buildCsrWithDeviceId(requestBody.device_id),
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('NOT_FOUND');
+    expect(body.error.message).toBe('Invalid or expired pairing code');
+  });
+
   it('returns active pairing metadata for a confirmed recovery pairing on the same device id', async () => {
     const requestRes = await server.inject({
       method: 'POST',
@@ -207,5 +251,41 @@ describe('Device Pairing Routes', () => {
     expect(statusBody.active_pairing).toBeTruthy();
     expect(statusBody.active_pairing.confirmed).toBe(true);
     expect(statusBody.active_pairing.mode).toBe('RECOVERY');
+  });
+
+  it('returns structured recovery diagnostics for an expired device certificate', async () => {
+    const deviceId = randomUUID();
+    const serial = `expired-cert-${randomUUID()}`;
+    const db = getDatabase();
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Expired Diagnostics Screen',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'expired-cert',
+      expires_at: new Date(Date.now() - 60_000),
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device-pairing/recovery/${deviceId}`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(body.device_id).toBe(deviceId);
+    expect(body.screen.id).toBe(deviceId);
+    expect(body.certificate.serial).toBe(serial);
+    expect(body.recovery.auth_state).toBe('EXPIRED_CERTIFICATE');
+    expect(body.recovery.reason).toContain('expired');
+    expect(body.recovery.recommended_action).toBe('RECOVER_IN_PLACE');
   });
 });

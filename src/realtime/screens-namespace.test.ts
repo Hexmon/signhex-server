@@ -168,6 +168,7 @@ describe('screens namespace realtime updates', () => {
       serial,
       certificate_pem: 'test-cert',
       is_revoked: false,
+      expires_at: new Date(Date.now() + 60_000),
     });
 
     if (socket) {
