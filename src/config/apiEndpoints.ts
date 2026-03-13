@@ -80,6 +80,7 @@ export const apiEndpoints = {
     aspectRatios: withBase('/screens/aspect-ratios'),
     overview: withBase('/screens/overview'),
     get: withBase('/screens/:id'),
+    defaultMedia: withBase('/screens/:id/default-media'),
     update: withBase('/screens/:id'),
     delete: withBase('/screens/:id'),
     status: withBase('/screens/:id/status'),
@@ -142,6 +143,7 @@ export const apiEndpoints = {
     commands: withBase('/device/:deviceId/commands'),
     ackCommand: withBase('/device/:deviceId/commands/:commandId/ack'),
     snapshot: withBase('/device/:deviceId/snapshot'),
+    defaultMedia: withBase('/device/:deviceId/default-media'),
   },
   devicePairing: {
     generate: withBase('/device-pairing/generate'),
@@ -182,6 +184,7 @@ export const apiEndpoints = {
     list: withBase('/settings'),
     upsert: withBase('/settings'),
     defaultMedia: withBase('/settings/default-media'),
+    defaultMediaVariants: withBase('/settings/default-media/variants'),
   },
   conversations: {
     start: withBase('/conversations'),

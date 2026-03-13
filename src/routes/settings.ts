@@ -3,12 +3,18 @@ import { z } from 'zod';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { getDatabase, schema } from '@/db';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
-import { DEFAULT_MEDIA_SETTING_KEY, getDefaultMedia, resolveMediaUrl } from '@/utils/default-media';
+import {
+  DEFAULT_MEDIA_SETTING_KEY,
+  DEFAULT_MEDIA_VARIANTS_SETTING_KEY,
+  getDefaultMedia,
+  getDefaultMediaVariants,
+  resolveMediaUrl,
+} from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('settings-routes');
@@ -21,6 +27,10 @@ const upsertSettingSchema = z.object({
 
 const defaultMediaUpdateSchema = z.object({
   media_id: z.string().uuid().nullable(),
+});
+
+const defaultMediaVariantsUpdateSchema = z.object({
+  variants: z.record(z.string().uuid().nullable()),
 });
 
 export async function settingsRoutes(fastify: FastifyInstance) {
@@ -45,6 +55,21 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     updated_at: media.updated_at.toISOString?.() ?? media.updated_at,
     media_url,
   });
+
+  const serializeDefaultMediaVariants = async () => {
+    const payload = await getDefaultMediaVariants(db);
+    return {
+      global_media_id: payload.global_media_id,
+      global_media: payload.global_media
+        ? serializeMedia(payload.global_media, payload.global_media_url)
+        : null,
+      variants: payload.variants.map((entry) => ({
+        aspect_ratio: entry.aspect_ratio,
+        media_id: entry.media_id,
+        media: entry.media ? serializeMedia(entry.media, entry.media_url) : null,
+      })),
+    };
+  };
 
   fastify.get(
     apiEndpoints.settings.list,
@@ -144,6 +169,82 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Update default media setting error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.defaultMediaVariants,
+    {
+      schema: {
+        description: 'Get default media variants by aspect ratio (admin only)',
+        tags: ['Settings'],
+      },
+    },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        return reply.send(await serializeDefaultMediaVariants());
+      } catch (error) {
+        logger.error(error, 'Get default media variants error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: typeof defaultMediaVariantsUpdateSchema._type }>(
+    apiEndpoints.settings.defaultMediaVariants,
+    {
+      schema: {
+        description: 'Update default media variants by aspect ratio (admin only)',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('update', 'OrgSettings')) throw AppError.forbidden('Forbidden');
+
+        const data = defaultMediaVariantsUpdateSchema.parse(request.body);
+        const requestedIds = Array.from(
+          new Set(Object.values(data.variants).filter((value): value is string => typeof value === 'string' && value.length > 0))
+        );
+
+        if (requestedIds.length > 0) {
+          const medias = await db.select({ id: schema.media.id }).from(schema.media).where(inArray(schema.media.id, requestedIds as any));
+          const found = new Set(medias.map((media) => media.id));
+          const missing = requestedIds.find((mediaId) => !found.has(mediaId));
+          if (missing) {
+            throw AppError.notFound('Media not found');
+          }
+        }
+
+        const normalized = Object.entries(data.variants).reduce<Record<string, string>>((acc, [aspectRatio, mediaId]) => {
+          if (mediaId) {
+            acc[aspectRatio.trim()] = mediaId;
+          }
+          return acc;
+        }, {});
+
+        if (Object.keys(normalized).length === 0) {
+          await db.delete(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_VARIANTS_SETTING_KEY));
+        } else {
+          await db
+            .insert(schema.settings)
+            .values({ key: DEFAULT_MEDIA_VARIANTS_SETTING_KEY, value: normalized })
+            .onConflictDoUpdate({
+              target: schema.settings.key,
+              set: { value: normalized, updated_at: new Date() },
+            });
+        }
+
+        return reply.status(OK).send(await serializeDefaultMediaVariants());
+      } catch (error) {
+        logger.error(error, 'Update default media variants error');
         return respondWithError(reply, error);
       }
     }

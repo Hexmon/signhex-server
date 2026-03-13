@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
-import { getDefaultMedia, resolveMediaUrl } from '@/utils/default-media';
+import { resolveDefaultMediaForScreen, resolveMediaUrl } from '@/utils/default-media';
 
 type ScreenRecord = typeof schema.screens.$inferSelect;
 type ScreenGroupRecord = typeof schema.screenGroups.$inferSelect;
@@ -13,7 +13,6 @@ type BuildScreenPlaybackStateOptions = {
   now?: Date;
   includeMedia?: boolean;
   includeUrls?: boolean;
-  defaultMedia?: Awaited<ReturnType<typeof getDefaultMedia>>;
   groupIds?: string[];
   lastProofOfPlayAt?: string | null;
 };
@@ -350,7 +349,7 @@ function derivePlaybackState(params: {
   activeItems: any[];
   latest: Awaited<ReturnType<typeof getLatestPublishForScreen>> | null;
   emergency: Awaited<ReturnType<typeof getActiveEmergencyForScreen>> | null;
-  defaultMedia: Awaited<ReturnType<typeof getDefaultMedia>>;
+  defaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>;
   currentMediaId?: string | null;
   lastProofOfPlayAt?: string | null;
   includeMedia?: boolean;
@@ -380,7 +379,7 @@ function derivePlaybackState(params: {
 
   const playback: Record<string, unknown> = {
     source,
-    is_live: Boolean(resolvedCurrentMediaId || fallbackItem || params.emergency || params.defaultMedia),
+    is_live: Boolean(resolvedCurrentMediaId || fallbackItem || params.emergency || params.defaultMedia?.media_id),
     current_media_id: resolvedCurrentMediaId,
     current_schedule_id: params.screen.current_schedule_id ?? params.latest?.schedule_id ?? null,
     current_item_id: fallbackItem?.id ?? null,
@@ -408,7 +407,7 @@ export async function buildScreenPlaybackState(
   const schedulePayload = (latest?.payload as any)?.schedule;
   const items = filterItemsForScreen(Array.isArray(schedulePayload?.items) ? schedulePayload.items : [], screen.id, groupIds);
   const { activeItems, upcomingItems, bookedUntil } = buildTimeline(items, now);
-  const defaultMedia = options.defaultMedia ?? (await getDefaultMedia(db));
+  const defaultMedia = await resolveDefaultMediaForScreen(screen, db);
   const emergency = await getActiveEmergencyForScreen(screen.id, {
     db,
     includeUrls: options.includeUrls,
@@ -528,7 +527,6 @@ export async function buildScreensOverviewPayload(options: {
   const serverTime = new Date();
   const screens = await db.select().from(schema.screens);
   const groups = await db.select().from(schema.screenGroups);
-  const defaultMedia = await getDefaultMedia(db);
   const proofOfPlayMap = await getLastProofOfPlayMap(screens.map((screen) => screen.id), db);
 
   const screenSummaries = await Promise.all(
@@ -537,7 +535,6 @@ export async function buildScreensOverviewPayload(options: {
         db,
         now: serverTime,
         includeMedia: options.includeMedia,
-        defaultMedia,
         lastProofOfPlayAt: proofOfPlayMap.get(screen.id) ?? null,
       })
     )

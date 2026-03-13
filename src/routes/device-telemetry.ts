@@ -9,7 +9,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
-import { getDefaultMedia } from '@/utils/default-media';
+import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
 import { buildScreenPlaybackStateById } from '@/screens/playback';
@@ -191,6 +191,71 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     });
   };
 
+  const serializeResolvedDefaultMedia = (
+    resolvedDefaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>,
+    includeUrls: boolean
+  ) => ({
+    default_media: resolvedDefaultMedia.media
+      ? {
+          media_id: resolvedDefaultMedia.media.id,
+          id: resolvedDefaultMedia.media.id,
+          name: resolvedDefaultMedia.media.name,
+          type: resolvedDefaultMedia.media.type,
+          status: resolvedDefaultMedia.media.status,
+          duration_seconds: resolvedDefaultMedia.media.duration_seconds,
+          width: resolvedDefaultMedia.media.width,
+          height: resolvedDefaultMedia.media.height,
+          media_url: includeUrls ? resolvedDefaultMedia.media_url : null,
+        }
+      : null,
+    default_media_resolution: {
+      source: resolvedDefaultMedia.source,
+      aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+    },
+  });
+
+  fastify.get<{ Params: { deviceId: string } }>(
+    apiEndpoints.deviceTelemetry.defaultMedia,
+    {
+      schema: {
+        description: 'Resolve default media for a device by aspect ratio/global fallback',
+        tags: ['Device Telemetry'],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const deviceId = (request.params as any).deviceId;
+        await authenticateDeviceOrThrow(request, deviceId, { allowUserToken: true });
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, deviceId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Device not registered');
+        }
+
+        const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        return reply.send({
+          source: resolvedDefaultMedia.source,
+          aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+          media_id: resolvedDefaultMedia.media_id,
+          media: resolvedDefaultMedia.media
+            ? {
+                id: resolvedDefaultMedia.media.id,
+                name: resolvedDefaultMedia.media.name,
+                type: resolvedDefaultMedia.media.type,
+                status: resolvedDefaultMedia.media.status,
+                duration_seconds: resolvedDefaultMedia.media.duration_seconds,
+                width: resolvedDefaultMedia.media.width,
+                height: resolvedDefaultMedia.media.height,
+                media_url: resolvedDefaultMedia.media_url,
+              }
+            : null,
+        });
+      } catch (error) {
+        logger.error(error, 'Get resolved device default media error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
   // Latest publish snapshot for device (device auth required; CMS JWT allowed)
   fastify.get<{ Params: { deviceId: string }; Querystring: typeof snapshotQuerySchema._type }>(
     apiEndpoints.deviceTelemetry.snapshot,
@@ -206,8 +271,14 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         await authenticateDeviceOrThrow(request, deviceId, { allowUserToken: true });
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, deviceId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Device not registered');
+        }
 
         const emergency = await getActiveEmergencyForScreen(deviceId, includeUrls);
+        const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
 
         const [latest] = await db
           .select({
@@ -225,20 +296,6 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .limit(1);
 
         if (!latest) {
-          const defaultMedia = await getDefaultMedia(db);
-          const defaultMediaPayload = defaultMedia?.media
-            ? {
-                id: defaultMedia.media.id,
-                name: defaultMedia.media.name,
-                type: defaultMedia.media.type,
-                status: defaultMedia.media.status,
-                duration_seconds: defaultMedia.media.duration_seconds,
-                width: defaultMedia.media.width,
-                height: defaultMedia.media.height,
-                media_url: includeUrls ? defaultMedia.media_url : null,
-              }
-            : null;
-
           if (emergency) {
             return reply.send({
               device_id: deviceId,
@@ -246,17 +303,17 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
               snapshot: null,
               media_urls: undefined,
               emergency,
-              default_media: defaultMediaPayload,
+              ...defaultMediaPayload,
             });
           }
-          if (defaultMediaPayload) {
+          if (defaultMediaPayload.default_media) {
             return reply.send({
               device_id: deviceId,
               publish: null,
               snapshot: null,
               media_urls: undefined,
               emergency: null,
-              default_media: defaultMediaPayload,
+              ...defaultMediaPayload,
             });
           }
           throw AppError.notFound('No publish found for this device');
@@ -327,6 +384,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
           emergency,
+          ...defaultMediaPayload,
         });
       } catch (error) {
         logger.error(error, 'Get device snapshot error');

@@ -616,4 +616,219 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(getScreen(recoveryScreenId)?.health_state).toBe('RECOVERY_REQUIRED');
     expect(getScreen(recoveryScreenId)?.auth_diagnostics?.state).toBe('EXPIRED_CERTIFICATE');
   });
+
+  it('resolves screen default media by exact aspect ratio, derived aspect ratio, global fallback, and none', async () => {
+    const db = getDatabase();
+    const exactScreenId = randomUUID();
+    const derivedScreenId = randomUUID();
+    const globalScreenId = randomUUID();
+    const noneScreenId = randomUUID();
+    const exactMediaId = randomUUID();
+    const derivedMediaId = randomUUID();
+    const globalMediaId = randomUUID();
+
+    await db.insert(schema.media).values([
+      {
+        id: exactMediaId,
+        name: 'Landscape Default',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1920,
+        height: 1080,
+      },
+      {
+        id: derivedMediaId,
+        name: 'Portrait Default',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1080,
+        height: 1920,
+      },
+      {
+        id: globalMediaId,
+        name: 'Global Default',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1280,
+        height: 720,
+      },
+    ]);
+
+    await db.insert(schema.screens).values([
+      {
+        id: exactScreenId,
+        name: 'Exact Ratio Screen',
+        status: 'OFFLINE',
+        aspect_ratio: '16:9',
+      } as any,
+      {
+        id: derivedScreenId,
+        name: 'Derived Ratio Screen',
+        status: 'OFFLINE',
+        width: 1080,
+        height: 1920,
+      } as any,
+      {
+        id: globalScreenId,
+        name: 'Global Ratio Screen',
+        status: 'OFFLINE',
+        aspect_ratio: '4:3',
+      } as any,
+      {
+        id: noneScreenId,
+        name: 'No Default Screen',
+        status: 'OFFLINE',
+        aspect_ratio: '32:9',
+      } as any,
+    ]);
+
+    await db
+      .insert(schema.settings)
+      .values({ key: 'default_media_id', value: globalMediaId })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: { value: globalMediaId, updated_at: new Date() },
+      });
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_variants',
+        value: {
+          '16:9': exactMediaId,
+          '9:16': derivedMediaId,
+        },
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: {
+            '16:9': exactMediaId,
+            '9:16': derivedMediaId,
+          },
+          updated_at: new Date(),
+        },
+      });
+
+    const exactResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${exactScreenId}/default-media`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+    expect(exactResponse.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(exactResponse.body)).toEqual(
+      expect.objectContaining({
+        source: 'ASPECT_RATIO',
+        aspect_ratio: '16:9',
+        media_id: exactMediaId,
+      })
+    );
+
+    const derivedResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${derivedScreenId}/default-media`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+    expect(derivedResponse.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(derivedResponse.body)).toEqual(
+      expect.objectContaining({
+        source: 'ASPECT_RATIO',
+        aspect_ratio: '9:16',
+        media_id: derivedMediaId,
+      })
+    );
+
+    const globalResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${globalScreenId}/default-media`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+    expect(globalResponse.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(globalResponse.body)).toEqual(
+      expect.objectContaining({
+        source: 'GLOBAL',
+        aspect_ratio: '4:3',
+        media_id: globalMediaId,
+      })
+    );
+
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_id'));
+    const noneResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${noneScreenId}/default-media`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+    expect(noneResponse.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(noneResponse.body)).toEqual(
+      expect.objectContaining({
+        source: 'NONE',
+        aspect_ratio: '32:9',
+        media_id: null,
+        media: null,
+      })
+    );
+  });
+
+  it('returns resolved default media and resolution metadata in screen snapshot responses', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const fallbackMediaId = randomUUID();
+
+    await db.insert(schema.media).values({
+      id: fallbackMediaId,
+      name: 'Screen Snapshot Default',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+      width: 1920,
+      height: 1080,
+    });
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Snapshot Fallback Screen',
+      status: 'OFFLINE',
+      aspect_ratio: '16:9',
+    } as any);
+
+    await db
+      .insert(schema.settings)
+      .values({ key: 'default_media_variants', value: { '16:9': fallbackMediaId } })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: { value: { '16:9': fallbackMediaId }, updated_at: new Date() },
+      });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/snapshot?include_urls=true`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(body.default_media).toEqual(
+      expect.objectContaining({
+        media_id: fallbackMediaId,
+        id: fallbackMediaId,
+        type: 'IMAGE',
+      })
+    );
+    expect(body.default_media_resolution).toEqual({
+      source: 'ASPECT_RATIO',
+      aspect_ratio: '16:9',
+    });
+  });
 });

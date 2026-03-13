@@ -10,7 +10,8 @@ import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, gte, lte, sql } from 'drizzle-orm';
 import { deleteObject, getPresignedUrl, getObject } from '@/s3';
-import { getDefaultMedia } from '@/utils/default-media';
+import { getAspectRatioName, KNOWN_ASPECT_RATIOS, resolveAspectRatio } from '@/utils/aspect-ratio';
+import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import {
   buildScreenPlaybackStateById,
@@ -74,60 +75,6 @@ export async function screenRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
   await setupScreensNamespace(fastify);
 
-  const knownAspectRatios = [
-    { aspect_ratio: '16:9', name: 'Widescreen' },
-    { aspect_ratio: '1:1', name: 'Square' },
-    { aspect_ratio: '4:3', name: 'Standard' },
-    { aspect_ratio: '9:16', name: 'Portrait' },
-    { aspect_ratio: '21:9', name: 'Ultrawide' },
-    { aspect_ratio: '3:2', name: 'Classic' },
-    { aspect_ratio: '5:4', name: 'SXGA' },
-    { aspect_ratio: '32:9', name: 'Super Ultrawide' },
-  ] as const;
-
-  const gcd = (a: number, b: number): number => {
-    let x = Math.abs(a);
-    let y = Math.abs(b);
-    while (y !== 0) {
-      const temp = y;
-      y = x % y;
-      x = temp;
-    }
-    return x || 1;
-  };
-
-  const deriveAspectRatio = (screen: {
-    aspect_ratio?: string | null;
-    width?: number | null;
-    height?: number | null;
-  }) => {
-    if (screen.aspect_ratio?.trim()) {
-      return screen.aspect_ratio.trim();
-    }
-
-    if (!screen.width || !screen.height || screen.width <= 0 || screen.height <= 0) {
-      return null;
-    }
-
-    const ratio = screen.width / screen.height;
-    const knownMatch = knownAspectRatios.find((entry) => {
-      const [w, h] = entry.aspect_ratio.split(':').map(Number);
-      return Math.abs(ratio - w / h) <= 0.03;
-    });
-
-    if (knownMatch) {
-      return knownMatch.aspect_ratio;
-    }
-
-    const divisor = gcd(screen.width, screen.height);
-    return `${screen.width / divisor}:${screen.height / divisor}`;
-  };
-
-  const getAspectRatioName = (aspectRatio: string | null) => {
-    if (!aspectRatio) return null;
-    return knownAspectRatios.find((entry) => entry.aspect_ratio === aspectRatio)?.name ?? 'Custom';
-  };
-
   const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
     const members = await db
       .select({ group_id: schema.screenGroupMembers.group_id })
@@ -145,6 +92,29 @@ export async function screenRoutes(fastify: FastifyInstance) {
       return null;
     }
   };
+
+  const serializeResolvedDefaultMedia = (
+    resolvedDefaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>,
+    includeUrls: boolean
+  ) => ({
+    default_media: resolvedDefaultMedia.media
+      ? {
+          media_id: resolvedDefaultMedia.media.id,
+          id: resolvedDefaultMedia.media.id,
+          name: resolvedDefaultMedia.media.name,
+          type: resolvedDefaultMedia.media.type,
+          status: resolvedDefaultMedia.media.status,
+          duration_seconds: resolvedDefaultMedia.media.duration_seconds,
+          width: resolvedDefaultMedia.media.width,
+          height: resolvedDefaultMedia.media.height,
+          media_url: includeUrls ? resolvedDefaultMedia.media_url : null,
+        }
+      : null,
+    default_media_resolution: {
+      source: resolvedDefaultMedia.source,
+      aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+    },
+  });
 
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
     return items.filter((i) => {
@@ -292,7 +262,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const configuredOnly = query.configured_only === 'true';
         const resolvedItems = screens
           .map((s) => {
-            const aspectRatio = deriveAspectRatio(s);
+            const aspectRatio = resolveAspectRatio(s);
             return {
               id: s.id,
               name: s.name,
@@ -305,7 +275,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         return reply.send({
           items: resolvedItems,
-          defaults: knownAspectRatios.map((entry) => ({
+          defaults: KNOWN_ASPECT_RATIOS.map((entry) => ({
             id: null,
             name: entry.name,
             aspect_ratio: entry.aspect_ratio,
@@ -400,6 +370,54 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get screen error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    apiEndpoints.screens.defaultMedia,
+    {
+      schema: {
+        description: 'Resolve default media for a screen by aspect ratio/global fallback',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          throw AppError.unauthorized('Missing authorization header');
+        }
+
+        await verifyAccessToken(token);
+        const screenId = (request.params as any).id;
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Screen not found');
+        }
+
+        const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        return reply.send({
+          source: resolvedDefaultMedia.source,
+          aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+          media_id: resolvedDefaultMedia.media_id,
+          media: resolvedDefaultMedia.media
+            ? {
+                id: resolvedDefaultMedia.media.id,
+                name: resolvedDefaultMedia.media.name,
+                type: resolvedDefaultMedia.media.type,
+                status: resolvedDefaultMedia.media.status,
+                duration_seconds: resolvedDefaultMedia.media.duration_seconds,
+                width: resolvedDefaultMedia.media.width,
+                height: resolvedDefaultMedia.media.height,
+                media_url: resolvedDefaultMedia.media_url,
+              }
+            : null,
+        });
+      } catch (error) {
+        logger.error(error, 'Get resolved screen default media error');
         return respondWithError(reply, error);
       }
     }
@@ -834,10 +852,17 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const screenId = (request.params as any).id;
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Screen not found');
+        }
+
         const emergency = await getActiveEmergencyForScreen(screenId, {
           db,
           includeUrls,
         });
+        const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
 
         const [latest] = await db
           .select({
@@ -855,20 +880,6 @@ export async function screenRoutes(fastify: FastifyInstance) {
           .limit(1);
 
         if (!latest) {
-          const defaultMedia = await getDefaultMedia(db);
-          const defaultMediaPayload = defaultMedia?.media
-            ? {
-                id: defaultMedia.media.id,
-                name: defaultMedia.media.name,
-                type: defaultMedia.media.type,
-                status: defaultMedia.media.status,
-                duration_seconds: defaultMedia.media.duration_seconds,
-                width: defaultMedia.media.width,
-                height: defaultMedia.media.height,
-                media_url: includeUrls ? defaultMedia.media_url : null,
-              }
-            : null;
-
           if (emergency) {
             return reply.send({
               screen_id: screenId,
@@ -876,17 +887,17 @@ export async function screenRoutes(fastify: FastifyInstance) {
               snapshot: null,
               media_urls: undefined,
               emergency,
-              default_media: defaultMediaPayload,
+              ...defaultMediaPayload,
             });
           }
-          if (defaultMediaPayload) {
+          if (defaultMediaPayload.default_media) {
             return reply.send({
               screen_id: screenId,
               publish: null,
               snapshot: null,
               media_urls: undefined,
               emergency: null,
-              default_media: defaultMediaPayload,
+              ...defaultMediaPayload,
             });
           }
           throw AppError.notFound('No publish found for this screen');
@@ -965,6 +976,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
           emergency,
+          ...defaultMediaPayload,
         });
       } catch (error) {
         logger.error(error, 'Get screen snapshot error');
