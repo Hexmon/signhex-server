@@ -1,6 +1,7 @@
-import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { resolveDefaultMediaForScreen, resolveMediaUrl } from '@/utils/default-media';
+import { getPresignedUrl } from '@/s3';
 
 type ScreenRecord = typeof schema.screens.$inferSelect;
 type ScreenGroupRecord = typeof schema.screenGroups.$inferSelect;
@@ -8,10 +9,21 @@ type ScreenGroupRecord = typeof schema.screenGroups.$inferSelect;
 type PlaybackSource = 'HEARTBEAT' | 'SCHEDULE' | 'EMERGENCY' | 'DEFAULT' | 'UNKNOWN';
 export type ScreenHealthState = 'ONLINE' | 'OFFLINE' | 'STALE' | 'ERROR' | 'RECOVERY_REQUIRED';
 
+export type ScreenScheduleTimelineItem = {
+  id: string;
+  presentation_id: string | null;
+  presentation_name: string | null;
+  start_at: string;
+  end_at: string;
+  priority: number;
+  is_current: boolean;
+};
+
 type BuildScreenPlaybackStateOptions = {
   db?: ReturnType<typeof getDatabase>;
   now?: Date;
   includeMedia?: boolean;
+  includePreview?: boolean;
   includeUrls?: boolean;
   groupIds?: string[];
   lastProofOfPlayAt?: string | null;
@@ -24,6 +36,7 @@ function toIso(value: Date | string | null | undefined): string | null {
 }
 
 const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
+const SCREENSHOT_PREVIEW_STALE_MS = 90 * 1000;
 
 function pickPrimaryMediaIdFromPresentation(presentation: any): string | null {
   if (!presentation || typeof presentation !== 'object') return null;
@@ -190,6 +203,46 @@ async function getMediaSummary(id: string, db = getDatabase()) {
     width: media.width ?? null,
     height: media.height ?? null,
     duration_seconds: media.duration_seconds ?? null,
+  };
+}
+
+async function getLatestScreenshotPreview(
+  screenId: string,
+  options: { db?: ReturnType<typeof getDatabase>; now?: Date } = {}
+) {
+  const db = options.db ?? getDatabase();
+  const now = options.now ?? new Date();
+  const [latest] = await db
+    .select({
+      storage_object_id: schema.screenshots.storage_object_id,
+      captured_at: schema.screenshots.created_at,
+      bucket: schema.storageObjects.bucket,
+      object_key: schema.storageObjects.object_key,
+    })
+    .from(schema.screenshots)
+    .innerJoin(schema.storageObjects, eq(schema.screenshots.storage_object_id, schema.storageObjects.id))
+    .where(eq(schema.screenshots.screen_id, screenId))
+    .orderBy(desc(schema.screenshots.created_at))
+    .limit(1);
+
+  if (!latest) return null;
+
+  let screenshotUrl: string | null = null;
+  try {
+    screenshotUrl = await getPresignedUrl(latest.bucket, latest.object_key, 3600);
+  } catch {
+    screenshotUrl = null;
+  }
+
+  const capturedAtIso = toIso(latest.captured_at);
+  const capturedAtMs =
+    latest.captured_at instanceof Date ? latest.captured_at.getTime() : Date.parse(String(latest.captured_at));
+
+  return {
+    storage_object_id: latest.storage_object_id,
+    captured_at: capturedAtIso,
+    screenshot_url: screenshotUrl,
+    stale: Number.isFinite(capturedAtMs) ? now.getTime() - capturedAtMs > SCREENSHOT_PREVIEW_STALE_MS : true,
   };
 }
 
@@ -421,6 +474,7 @@ export async function buildScreenPlaybackState(
     null;
   const currentMedia =
     options.includeMedia && currentMediaId ? await getMediaSummary(currentMediaId, db) : null;
+  const preview = options.includePreview ? await getLatestScreenshotPreview(screen.id, { db, now }) : null;
   const recoveryState = await getScreenRecoveryState(screen.id, db);
   const health = deriveHealthState({
     screen,
@@ -471,6 +525,7 @@ export async function buildScreenPlaybackState(
       currentMedia,
     }),
     emergency,
+    preview,
     created_at: screen.created_at,
     updated_at: screen.updated_at,
   };
@@ -522,41 +577,61 @@ function summarizeGroupPlayback(
 export async function buildScreensOverviewPayload(options: {
   db?: ReturnType<typeof getDatabase>;
   includeMedia?: boolean;
+  includePreview?: boolean;
+  onlineOnly?: boolean;
 }) {
   const db = options.db ?? getDatabase();
   const serverTime = new Date();
-  const screens = await db.select().from(schema.screens);
-  const groups = await db.select().from(schema.screenGroups);
+  const onlineThreshold = new Date(serverTime.getTime() - HEARTBEAT_STALE_MS);
+  const screens = options.onlineOnly
+    ? await db
+        .select()
+        .from(schema.screens)
+        .where(and(eq(schema.screens.status, 'ACTIVE'), gte(schema.screens.last_heartbeat_at, onlineThreshold)))
+    : await db.select().from(schema.screens);
+  const groups = options.onlineOnly ? [] : await db.select().from(schema.screenGroups);
   const proofOfPlayMap = await getLastProofOfPlayMap(screens.map((screen) => screen.id), db);
 
-  const screenSummaries = await Promise.all(
+  const screenSummaries = (
+    await Promise.all(
     screens.map((screen) =>
       buildScreenPlaybackState(screen, {
         db,
         now: serverTime,
         includeMedia: options.includeMedia,
+        includePreview: options.includePreview,
         lastProofOfPlayAt: proofOfPlayMap.get(screen.id) ?? null,
       })
     )
-  );
+    )
+  ).filter((summary) => (options.onlineOnly ? summary.health_state === 'ONLINE' : true));
 
   const screenSummaryMap = new Map(screenSummaries.map((summary) => [summary.id, summary]));
-  const memberRows = await db.select().from(schema.screenGroupMembers);
-  const groupMembersMap = memberRows.reduce((acc, row) => {
-    const list = acc.get(row.group_id) || [];
-    list.push(row.screen_id);
-    acc.set(row.group_id, list);
-    return acc;
-  }, new Map<string, string[]>());
-
-  const groupSummaries = groups.map((group) =>
-    summarizeGroupPlayback(group, groupMembersMap.get(group.id) || [], screenSummaryMap)
-  );
+  const groupSummaries = options.onlineOnly
+    ? []
+    : (() => {
+        const groupMembersMap = (db
+          .select()
+          .from(schema.screenGroupMembers)
+          .then((memberRows) =>
+            memberRows.reduce((acc, row) => {
+              const list = acc.get(row.group_id) || [];
+              list.push(row.screen_id);
+              acc.set(row.group_id, list);
+              return acc;
+            }, new Map<string, string[]>())
+          )) as Promise<Map<string, string[]>>;
+        return groupMembersMap.then((resolvedGroupMembersMap) =>
+          groups.map((group) =>
+            summarizeGroupPlayback(group, resolvedGroupMembersMap.get(group.id) || [], screenSummaryMap)
+          )
+        );
+      })();
 
   return {
     server_time: serverTime.toISOString(),
     screens: screenSummaries,
-    groups: groupSummaries,
+    groups: await groupSummaries,
   };
 }
 
@@ -575,4 +650,132 @@ export async function buildScreenPlaybackStateById(
     db,
     lastProofOfPlayAt: options.lastProofOfPlayAt ?? lastProofOfPlayMap.get(screenId) ?? null,
   });
+}
+
+function isActiveAt(item: any, now: Date) {
+  const start = Date.parse(String(item?.start_at));
+  const end = Date.parse(String(item?.end_at));
+  if (Number.isNaN(start) || Number.isNaN(end)) return false;
+  return start <= now.getTime() && end >= now.getTime();
+}
+
+function clipItemToWindow(
+  item: any,
+  windowStartMs: number,
+  windowEndMs: number,
+  now: Date
+): ScreenScheduleTimelineItem | null {
+  const start = Date.parse(String(item?.start_at));
+  const end = Date.parse(String(item?.end_at));
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  if (end <= windowStartMs || start >= windowEndMs) return null;
+
+  const clippedStart = Math.max(start, windowStartMs);
+  const clippedEnd = Math.min(end, windowEndMs);
+  if (clippedEnd <= clippedStart) return null;
+
+  return {
+    id: typeof item?.id === 'string' ? item.id : `${item?.presentation_id || 'item'}:${clippedStart}`,
+    presentation_id: typeof item?.presentation_id === 'string' ? item.presentation_id : null,
+    presentation_name:
+      typeof item?.presentation?.name === 'string' && item.presentation.name.trim().length > 0
+        ? item.presentation.name.trim()
+        : null,
+    start_at: new Date(clippedStart).toISOString(),
+    end_at: new Date(clippedEnd).toISOString(),
+    priority: Number.isFinite(item?.priority) ? Number(item.priority) : 0,
+    is_current: isActiveAt(item, now),
+  };
+}
+
+export async function buildScreenScheduleTimelinePayload(options: {
+  db?: ReturnType<typeof getDatabase>;
+  now?: Date;
+  windowStart: Date;
+  windowHours: number;
+  onlyActiveNow?: boolean;
+}) {
+  const db = options.db ?? getDatabase();
+  const now = options.now ?? new Date();
+  const windowStart = options.windowStart;
+  const windowEnd = new Date(windowStart.getTime() + options.windowHours * 60 * 60 * 1000);
+  const screens = options.onlyActiveNow
+    ? await db
+        .select()
+        .from(schema.screens)
+        .where(and(eq(schema.screens.status, 'ACTIVE'), isNotNull(schema.screens.current_schedule_id)))
+    : await db.select().from(schema.screens);
+  const proofOfPlayMap = await getLastProofOfPlayMap(screens.map((screen) => screen.id), db);
+  const windowStartMs = windowStart.getTime();
+  const windowEndMs = windowEnd.getTime();
+
+  const rows = await Promise.all(
+    screens.map(async (screen) => {
+      const groupIds = await getGroupIdsForScreen(screen.id, db);
+      const latest = await getLatestPublishForScreen(screen.id, db);
+      const schedulePayload = (latest?.payload as any)?.schedule;
+      const publishedItems = filterItemsForScreen(
+        Array.isArray(schedulePayload?.items) ? schedulePayload.items : [],
+        screen.id,
+        groupIds
+      );
+      const hasActiveNow = publishedItems.some((item) => isActiveAt(item, now));
+
+      if (options.onlyActiveNow && !hasActiveNow) {
+        return null;
+      }
+
+      const timelineItems = publishedItems
+        .map((item) => clipItemToWindow(item, windowStartMs, windowEndMs, now))
+        .filter((item): item is ScreenScheduleTimelineItem => Boolean(item))
+        .sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at) || b.priority - a.priority);
+
+      if (options.onlyActiveNow && timelineItems.length === 0) {
+        return null;
+      }
+
+      const summary = await buildScreenPlaybackState(screen, {
+        db,
+        now,
+        includeMedia: true,
+        lastProofOfPlayAt: proofOfPlayMap.get(screen.id) ?? null,
+      });
+
+      return {
+        id: summary.id,
+        name: summary.name,
+        location: summary.location,
+        health_state: summary.health_state,
+        health_reason: summary.health_reason,
+        playback: summary.playback,
+        publish: summary.publish,
+        timeline_items: timelineItems,
+      };
+    })
+  );
+
+  return {
+    server_time: now.toISOString(),
+    window_start: windowStart.toISOString(),
+    window_end: windowEnd.toISOString(),
+    screens: rows
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+export async function countActiveScheduledScreensNow(options: {
+  db?: ReturnType<typeof getDatabase>;
+  now?: Date;
+}) {
+  const now = options.now ?? new Date();
+  const payload = await buildScreenScheduleTimelinePayload({
+    db: options.db,
+    now,
+    windowStart: new Date(now.getTime() - 60 * 60 * 1000),
+    windowHours: 24,
+    onlyActiveNow: true,
+  });
+
+  return payload.screens.length;
 }

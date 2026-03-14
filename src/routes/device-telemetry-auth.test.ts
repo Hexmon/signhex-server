@@ -1,9 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import { randomUUID } from 'crypto';
+import { eq } from 'drizzle-orm';
 import { createTestServer, closeTestServer, testUser } from '@/test/helpers';
 import { getDatabase, schema } from '@/db';
 import { HTTP_STATUS } from '@/http-status-codes';
+import * as s3 from '@/s3';
 
 describe('Device telemetry auth runtime validation', () => {
   let server: FastifyInstance;
@@ -200,5 +202,68 @@ describe('Device telemetry auth runtime validation', () => {
       source: 'ASPECT_RATIO',
       aspect_ratio: '16:9',
     });
+  });
+
+  it('persists screenshot uploads as storage objects and screenshot rows', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const putObjectSpy = vi.spyOn(s3, 'putObject').mockResolvedValue({ etag: 'etag-1', sha256: 'sha-1' });
+    const presignedSpy = vi.spyOn(s3, 'getPresignedUrl').mockResolvedValue('https://cdn.example.com/screens/device.png');
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Screenshot Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const timestamp = new Date().toISOString();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device/screenshot',
+      headers: {
+        'x-device-serial': serial,
+      },
+      payload: {
+        device_id: deviceId,
+        timestamp,
+        image_data: Buffer.from('fake-png-data').toString('base64'),
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.CREATED);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(typeof body.storage_object_id).toBe('string');
+    expect(body.timestamp).toBe(timestamp);
+    expect(putObjectSpy).toHaveBeenCalledOnce();
+    expect(presignedSpy).toHaveBeenCalledOnce();
+
+    const [storageObject] = await db
+      .select()
+      .from(schema.storageObjects)
+      .where(eq(schema.storageObjects.id, body.storage_object_id))
+      .limit(1);
+    expect(storageObject).toBeTruthy();
+    expect(storageObject.bucket).toBe('device-screenshots');
+    expect(storageObject.content_type).toBe('image/png');
+
+    const [screenshot] = await db
+      .select()
+      .from(schema.screenshots)
+      .where(eq(schema.screenshots.storage_object_id, body.storage_object_id))
+      .limit(1);
+    expect(screenshot).toBeTruthy();
+    expect(screenshot.screen_id).toBe(deviceId);
+
+    putObjectSpy.mockRestore();
+    presignedSpy.mockRestore();
   });
 });

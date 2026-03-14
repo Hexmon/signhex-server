@@ -13,12 +13,13 @@ import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
 import { buildScreenPlaybackStateById } from '@/screens/playback';
-import { emitScreenStateUpdate } from '@/realtime/screens-namespace';
+import { emitScreenPreviewUpdate, emitScreenStateUpdate } from '@/realtime/screens-namespace';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
 const HEARTBEAT_BUCKET = 'logs-heartbeats';
 const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
+const SCREENSHOT_BUCKET = 'device-screenshots';
 
 const heartbeatSchema = z.object({
   device_id: z.string().min(1),
@@ -635,7 +636,46 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         // Upload to MinIO
         const objectKey = `device-screenshots/${data.device_id}/${Date.now()}.png`;
-        await putObject('device-screenshots', objectKey, imageBuffer, 'image/png');
+        const upload = await putObject(SCREENSHOT_BUCKET, objectKey, imageBuffer, 'image/png');
+        const [storageObject] = await db
+          .insert(schema.storageObjects)
+          .values({
+            bucket: SCREENSHOT_BUCKET,
+            object_key: objectKey,
+            content_type: 'image/png',
+            size: imageBuffer.length,
+            sha256: upload.sha256,
+          })
+          .returning({
+            id: schema.storageObjects.id,
+            bucket: schema.storageObjects.bucket,
+            object_key: schema.storageObjects.object_key,
+          });
+
+        if (!storageObject) {
+          throw new Error('Failed to persist screenshot storage reference');
+        }
+
+        await db.insert(schema.screenshots).values({
+          screen_id: data.device_id,
+          storage_object_id: storageObject.id,
+          created_at: new Date(data.timestamp),
+        });
+
+        let screenshotUrl: string | null = null;
+        try {
+          screenshotUrl = await getPresignedUrl(storageObject.bucket, storageObject.object_key, 3600);
+        } catch {
+          screenshotUrl = null;
+        }
+
+        emitScreenPreviewUpdate(fastify, {
+          screenId: data.device_id,
+          captured_at: data.timestamp,
+          screenshot_url: screenshotUrl,
+          stale: false,
+          storage_object_id: storageObject.id,
+        });
 
         logger.info(
           {
@@ -649,7 +689,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           success: true,
           object_key: objectKey,
-          timestamp: new Date().toISOString(),
+          storage_object_id: storageObject.id,
+          timestamp: data.timestamp,
         });
       } catch (error) {
         logger.error(error, 'Screenshot upload error');

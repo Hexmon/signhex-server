@@ -79,6 +79,7 @@ export const apiEndpoints = {
     list: withBase('/screens'),
     aspectRatios: withBase('/screens/aspect-ratios'),
     overview: withBase('/screens/overview'),
+    scheduleTimeline: withBase('/screens/schedule-timeline'),
     get: withBase('/screens/:id'),
     defaultMedia: withBase('/screens/:id/default-media'),
     update: withBase('/screens/:id'),

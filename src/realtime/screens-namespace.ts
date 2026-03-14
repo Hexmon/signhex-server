@@ -172,6 +172,23 @@ export function emitScreenStateUpdate(
     });
 }
 
+export function emitScreenPreviewUpdate(
+  fastify: FastifyInstance,
+  payload: {
+    screenId: string;
+    captured_at: string;
+    screenshot_url: string | null;
+    stale: boolean;
+    storage_object_id?: string | null;
+  }
+) {
+  const io = getOrCreateSocketServer(fastify);
+  io.of(SCREENS_NAMESPACE)
+    .to(screensAllRoom())
+    .to(screenRoom(payload.screenId))
+    .emit('screens:preview:update', payload);
+}
+
 export function emitScreensRefreshRequired(
   fastify: FastifyInstance,
   payload: {

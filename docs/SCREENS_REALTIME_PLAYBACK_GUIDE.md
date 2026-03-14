@@ -17,8 +17,12 @@ This flow has been verified against real backend mutations, not only unit tests.
 
 Verified path:
 - dashboard bootstrap via `GET /api/v1/screens/overview?include_media=true`
+- preview-aware dashboard bootstrap via `GET /api/v1/screens/overview?include_media=true&include_preview=true`
+- active scheduled dashboard timeline via `GET /api/v1/screens/schedule-timeline?window_start=<ISO>&window_hours=24&only_active_now=true`
 - detail bootstrap via `GET /api/v1/screens/:id/now-playing?include_media=true`
+- preview-aware detail bootstrap via `GET /api/v1/screens/:id/now-playing?include_media=true&include_preview=true`
 - `POST /api/v1/device/heartbeat` emits `screens:state:update`
+- `POST /api/v1/device/screenshot` persists a screenshot row and emits `screens:preview:update`
 - `POST /api/v1/emergency/trigger` emits `screens:refresh:required`
 - `DELETE /api/v1/screens/:id` emits `screens:refresh:required`
 - dashboard refetch after delete no longer includes the deleted screen
@@ -33,7 +37,7 @@ The dry-run script seeds a temporary screen, media, schedule snapshot, publish t
 ## REST
 
 ### 1) Dashboard bootstrap
-`GET /api/v1/screens/overview?include_media=true|false`
+`GET /api/v1/screens/overview?include_media=true|false&include_preview=true|false`
 
 Auth:
 - `Authorization: Bearer <token>`
@@ -42,6 +46,9 @@ Query:
 - `include_media=true`
   - adds `playback.current_media`
   - does not generate presigned media URLs
+- `include_preview=true`
+  - adds `preview`
+  - returns the latest stored screenshot preview for each screen
 
 Response shape:
 ```json
@@ -88,6 +95,12 @@ Response shape:
           "duration_seconds": 15
         }
       },
+      "preview": {
+        "storage_object_id": "storage-object-uuid",
+        "captured_at": "2026-03-10T07:14:50.000Z",
+        "screenshot_url": "https://cdn.example.com/device-screenshots/screen-uuid/latest.png",
+        "stale": false
+      },
       "emergency": null
     }
   ],
@@ -105,6 +118,62 @@ Response shape:
 }
 ```
 
+### Active Scheduled Timeline
+`GET /api/v1/screens/schedule-timeline?window_start=<ISO>&window_hours=24&only_active_now=true|false`
+
+Returns a dashboard-ready 24-hour timeline payload for screens. When `only_active_now=true`, only screens that have an active scheduled item at `server_time` are returned.
+
+Response shape:
+
+```json
+{
+  "server_time": "2026-03-13T09:00:00.000Z",
+  "window_start": "2026-03-13T00:00:00.000Z",
+  "window_end": "2026-03-14T00:00:00.000Z",
+  "screens": [
+    {
+      "id": "screen-uuid",
+      "name": "Lobby Screen",
+      "location": "Reception",
+      "health_state": "ONLINE",
+      "health_reason": "The screen is healthy and reporting recent heartbeats.",
+      "playback": {
+        "source": "SCHEDULE",
+        "current_media_id": "media-uuid"
+      },
+      "publish": {
+        "publish_id": "publish-uuid",
+        "schedule_id": "schedule-uuid"
+      },
+      "timeline_items": [
+        {
+          "id": "item-uuid",
+          "presentation_id": "presentation-uuid",
+          "presentation_name": "Morning Playlist",
+          "start_at": "2026-03-13T09:00:00.000Z",
+          "end_at": "2026-03-13T12:00:00.000Z",
+          "priority": 5,
+          "is_current": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+Metrics overview also exposes an additive field:
+
+```json
+{
+  "schedules": {
+    "active": 5,
+    "active_screens_now": 2
+  }
+}
+```
+
+Use `active_screens_now` for dashboard cards that mean “screens running playlists right now”. Keep `active` only for legacy “number of active schedule records” views.
+
 Important semantics:
 - `current_media_id` at the screen level is the raw `screens.current_media_id`
 - `playback.current_media_id` is the resolved live media id and may come from:
@@ -113,10 +182,11 @@ Important semantics:
   - active schedule fallback
   - default media fallback
 - FE should use `playback.current_media_id` and `playback.source` for live UI
+- FE should use `preview` only as a latest screenshot preview, not a true live stream
 - FE should use top-level `server_time` instead of local browser time when showing “playing now” timers
 
 ### 2) Per-screen drilldown
-`GET /api/v1/screens/:id/now-playing?include_media=true|false&include_urls=true|false`
+`GET /api/v1/screens/:id/now-playing?include_media=true|false&include_urls=true|false&include_preview=true|false`
 
 Auth:
 - `Authorization: Bearer <token>`
@@ -126,6 +196,8 @@ Query:
   - adds `playback.current_media`
 - `include_urls=true`
   - only affects the `emergency.media_url` path today
+- `include_preview=true`
+  - adds `preview`
 
 Response shape:
 ```json
@@ -168,6 +240,12 @@ Response shape:
       "height": 1080,
       "duration_seconds": 15
     }
+  },
+  "preview": {
+    "storage_object_id": "storage-object-uuid",
+    "captured_at": "2026-03-10T07:14:50.000Z",
+    "screenshot_url": "https://cdn.example.com/device-screenshots/screen-uuid/latest.png",
+    "stale": false
   },
   "emergency": null
 }
@@ -243,6 +321,34 @@ Payload:
   "screenIds": ["screen-uuid-1"]
 }
 ```
+
+### Server events
+
+#### `screens:state:update`
+Payload:
+```json
+{
+  "server_time": "2026-03-10T07:15:00.000Z",
+  "screen": { "...": "same screen summary shape as overview.screens[]" }
+}
+```
+
+#### `screens:preview:update`
+Payload:
+```json
+{
+  "screenId": "screen-uuid",
+  "captured_at": "2026-03-10T07:14:50.000Z",
+  "screenshot_url": "https://cdn.example.com/device-screenshots/screen-uuid/latest.png",
+  "stale": false,
+  "storage_object_id": "storage-object-uuid"
+}
+```
+
+Frontend guidance:
+- patch the matching screen row preview without a full overview refetch when possible
+- a preview is a latest screenshot, not a true stream
+- treat `stale=true` as an observability hint, not a playback failure
 
 Ack with ids:
 ```json

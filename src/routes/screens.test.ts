@@ -25,6 +25,7 @@ async function issueAdminToken() {
     { action: 'create', subject: 'Screen' },
     { action: 'read', subject: 'Screen' },
     { action: 'delete', subject: 'Screen' },
+    { action: 'read', subject: 'Dashboard' },
   ]) {
     if (!mergedGrants.some((current) => current.action === grant.action && current.subject === grant.subject)) {
       mergedGrants.push(grant);
@@ -224,6 +225,58 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(screen.publish.publish_id).toBe(publishId);
   });
 
+  it('returns only online screens when overview is requested with online_only=true', async () => {
+    const db = getDatabase();
+    const onlineScreenId = randomUUID();
+    const staleScreenId = randomUUID();
+    const now = new Date();
+
+    await db.insert(schema.screens).values([
+      {
+        id: onlineScreenId,
+        name: 'Overview Online Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: now,
+      },
+      {
+        id: staleScreenId,
+        name: 'Overview Stale Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: new Date(now.getTime() - 10 * 60 * 1000),
+      },
+    ]);
+
+    await db.insert(schema.deviceCertificates).values([
+      {
+        screen_id: onlineScreenId,
+        serial: `serial-${onlineScreenId}`,
+        certificate_pem: 'online-overview-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+      {
+        screen_id: staleScreenId,
+        serial: `serial-${staleScreenId}`,
+        certificate_pem: 'stale-overview-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/screens/overview?online_only=true',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as any;
+    const returnedIds = body.screens.map((screen: any) => screen.id);
+    expect(returnedIds).toContain(onlineScreenId);
+    expect(returnedIds).not.toContain(staleScreenId);
+    expect(body.screens.find((screen: any) => screen.id === onlineScreenId)?.health_state).toBe('ONLINE');
+  });
+
   it('returns normalized playback fields from now-playing', async () => {
     const db = getDatabase();
     const screenId = randomUUID();
@@ -308,6 +361,263 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(body.playback.ends_at).toBe(endAt);
     expect(body.active_items).toHaveLength(1);
     expect(body.publish.publish_id).toBe(publishId);
+  });
+
+  it('returns latest screenshot preview data in overview and now-playing when include_preview=true', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const latestStorageId = randomUUID();
+    const olderStorageId = randomUUID();
+    const presignedSpy = vi
+      .spyOn(s3, 'getPresignedUrl')
+      .mockImplementation(async (_bucket, key) => `https://cdn.example.com/${key}`);
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Preview Screen',
+      status: 'ACTIVE',
+      last_heartbeat_at: new Date(),
+    });
+
+    await db.insert(schema.storageObjects).values([
+      {
+        id: olderStorageId,
+        bucket: 'device-screenshots',
+        object_key: `device-screenshots/${screenId}/older.png`,
+        content_type: 'image/png',
+        size: 10,
+      },
+      {
+        id: latestStorageId,
+        bucket: 'device-screenshots',
+        object_key: `device-screenshots/${screenId}/latest.png`,
+        content_type: 'image/png',
+        size: 10,
+      },
+    ]);
+
+    await db.insert(schema.screenshots).values([
+      {
+        screen_id: screenId,
+        storage_object_id: olderStorageId,
+        created_at: new Date(Date.now() - 5 * 60 * 1000),
+      },
+      {
+        screen_id: screenId,
+        storage_object_id: latestStorageId,
+        created_at: new Date(),
+      },
+    ]);
+
+    const overviewResponse = await server.inject({
+      method: 'GET',
+      url: '/api/v1/screens/overview?include_preview=true',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(overviewResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const overviewBody = JSON.parse(overviewResponse.body) as any;
+    const overviewScreen = overviewBody.screens.find((entry: any) => entry.id === screenId);
+    expect(overviewScreen.preview).toEqual(
+      expect.objectContaining({
+        storage_object_id: latestStorageId,
+        screenshot_url: `https://cdn.example.com/device-screenshots/${screenId}/latest.png`,
+        stale: false,
+      })
+    );
+
+    const nowPlayingResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/now-playing?include_preview=true`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(nowPlayingResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const nowPlayingBody = JSON.parse(nowPlayingResponse.body) as any;
+    expect(nowPlayingBody.preview).toEqual(
+      expect.objectContaining({
+        storage_object_id: latestStorageId,
+        screenshot_url: `https://cdn.example.com/device-screenshots/${screenId}/latest.png`,
+      })
+    );
+
+    presignedSpy.mockRestore();
+  });
+
+  it('returns a 24-hour schedule timeline for active scheduled screens only and clips item bounds', async () => {
+    const db = getDatabase();
+    const activeScreenId = randomUUID();
+    const inactiveScreenId = randomUUID();
+    const activeMediaId = randomUUID();
+    const inactiveMediaId = randomUUID();
+    const activeScheduleId = randomUUID();
+    const inactiveScheduleId = randomUUID();
+    const activeSnapshotId = randomUUID();
+    const inactiveSnapshotId = randomUUID();
+    const activePublishId = randomUUID();
+    const inactivePublishId = randomUUID();
+    const activeItemId = randomUUID();
+    const inactiveItemId = randomUUID();
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - 60 * 60 * 1000);
+    const activeStart = new Date(windowStart.getTime() - 60 * 60 * 1000).toISOString();
+    const activeEnd = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
+    const inactiveStart = new Date(now.getTime() + 5 * 60 * 60 * 1000).toISOString();
+    const inactiveEnd = new Date(now.getTime() + 6 * 60 * 60 * 1000).toISOString();
+
+    await db.insert(schema.screens).values([
+      {
+        id: activeScreenId,
+        name: 'Timeline Active Screen',
+        location: 'Lobby',
+        status: 'ACTIVE',
+        last_heartbeat_at: now,
+        current_schedule_id: activeScheduleId,
+        current_media_id: activeMediaId,
+      },
+      {
+        id: inactiveScreenId,
+        name: 'Timeline Future Screen',
+        location: 'Hallway',
+        status: 'ACTIVE',
+        last_heartbeat_at: now,
+        current_schedule_id: inactiveScheduleId,
+        current_media_id: inactiveMediaId,
+      },
+    ]);
+
+    await db.insert(schema.media).values([
+      {
+        id: activeMediaId,
+        name: 'Active Timeline Media',
+        type: 'VIDEO',
+        status: 'READY',
+        created_by: testUser.id,
+      },
+      {
+        id: inactiveMediaId,
+        name: 'Inactive Timeline Media',
+        type: 'VIDEO',
+        status: 'READY',
+        created_by: testUser.id,
+      },
+    ]);
+
+    await db.insert(schema.schedules).values([
+      {
+        id: activeScheduleId,
+        name: 'Active Timeline Schedule',
+        start_at: new Date(activeStart),
+        end_at: new Date(activeEnd),
+        is_active: true,
+        created_by: testUser.id,
+      },
+      {
+        id: inactiveScheduleId,
+        name: 'Inactive Timeline Schedule',
+        start_at: new Date(inactiveStart),
+        end_at: new Date(inactiveEnd),
+        is_active: true,
+        created_by: testUser.id,
+      },
+    ]);
+
+    await db.insert(schema.scheduleSnapshots).values([
+      {
+        id: activeSnapshotId,
+        schedule_id: activeScheduleId,
+        payload: buildScheduleSnapshotPayload({
+          itemId: activeItemId,
+          mediaId: activeMediaId,
+          scheduleId: activeScheduleId,
+          screenId: activeScreenId,
+          startAt: activeStart,
+          endAt: activeEnd,
+        }),
+      },
+      {
+        id: inactiveSnapshotId,
+        schedule_id: inactiveScheduleId,
+        payload: buildScheduleSnapshotPayload({
+          itemId: inactiveItemId,
+          mediaId: inactiveMediaId,
+          scheduleId: inactiveScheduleId,
+          screenId: inactiveScreenId,
+          startAt: inactiveStart,
+          endAt: inactiveEnd,
+        }),
+      },
+    ]);
+
+    await db.insert(schema.publishes).values([
+      {
+        id: activePublishId,
+        schedule_id: activeScheduleId,
+        snapshot_id: activeSnapshotId,
+        published_by: testUser.id,
+      },
+      {
+        id: inactivePublishId,
+        schedule_id: inactiveScheduleId,
+        snapshot_id: inactiveSnapshotId,
+        published_by: testUser.id,
+      },
+    ]);
+
+    await db.insert(schema.publishTargets).values([
+      {
+        publish_id: activePublishId,
+        screen_id: activeScreenId,
+      },
+      {
+        publish_id: inactivePublishId,
+        screen_id: inactiveScreenId,
+      },
+    ]);
+
+    const timelineResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/schedule-timeline?window_start=${encodeURIComponent(windowStart.toISOString())}&window_hours=24&only_active_now=true`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(timelineResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const timelineBody = JSON.parse(timelineResponse.body) as any;
+    expect(typeof timelineBody.server_time).toBe('string');
+    const activeRow = timelineBody.screens.find((screen: any) => screen.id === activeScreenId);
+    expect(activeRow).toBeTruthy();
+    expect(timelineBody.screens.some((screen: any) => screen.id === inactiveScreenId)).toBe(false);
+    expect(activeRow.playback.current_media.id).toBe(activeMediaId);
+    expect(activeRow.timeline_items).toHaveLength(1);
+    expect(activeRow.timeline_items[0]).toEqual(
+      expect.objectContaining({
+        id: activeItemId,
+        presentation_id: expect.any(String),
+        presentation_name: 'Playback Presentation',
+        is_current: true,
+      })
+    );
+    expect(activeRow.timeline_items[0].start_at).toBe(windowStart.toISOString());
+    expect(Date.parse(activeRow.timeline_items[0].end_at)).toBe(Date.parse(activeEnd));
+
+    const metricsResponse = await server.inject({
+      method: 'GET',
+      url: '/api/v1/metrics/overview',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(metricsResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const metricsBody = JSON.parse(metricsResponse.body) as any;
+    expect(metricsBody.schedules.active).toBeGreaterThanOrEqual(1);
+    expect(metricsBody.schedules.active_screens_now).toBeGreaterThanOrEqual(1);
   });
 
   it('returns 404 when deleting a missing screen', async () => {

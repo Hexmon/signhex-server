@@ -67,6 +67,9 @@ describe('screens namespace realtime updates', () => {
 
   beforeAll(async () => {
     vi.spyOn(s3, 'putObject').mockResolvedValue({ sha256: 'test-sha256' } as any);
+    vi.spyOn(s3, 'getPresignedUrl').mockImplementation(async (bucket: string, key: string) => {
+      return `https://cdn.example.com/${bucket}/${key}`;
+    });
     server = await createTestServer();
     adminToken = await issueAdminTokenWithSession();
     await server.listen({ host: '127.0.0.1', port: 0 });
@@ -246,5 +249,71 @@ describe('screens namespace realtime updates', () => {
       },
     });
     expect(clearResponse.statusCode).toBe(HTTP_STATUS.OK);
+  });
+
+  it('emits preview update events after screenshot upload', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const serial = `serial-${Date.now()}-${randomUUID()}`;
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Preview Screen',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: screenId,
+      serial,
+      certificate_pem: 'preview-cert',
+      is_revoked: false,
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    if (socket) {
+      socket.disconnect();
+    }
+    socket = createClient(`${baseUrl}/screens`, {
+      transports: ['websocket'],
+      auth: { token: adminToken },
+      reconnection: false,
+      forceNew: true,
+    });
+    await waitForSocketConnect(socket);
+
+    await new Promise<void>((resolve) => {
+      socket!.emit('screens:subscribe', { includeAll: true, screenIds: [screenId] }, () => resolve());
+    });
+
+    const previewPromise = waitForEvent<any>(
+      socket,
+      'screens:preview:update',
+      (payload) => payload?.screenId === screenId && typeof payload?.screenshot_url === 'string'
+    );
+
+    const timestamp = new Date().toISOString();
+    const screenshotResponse = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device/screenshot',
+      headers: {
+        'x-device-serial': serial,
+      },
+      payload: {
+        device_id: screenId,
+        timestamp,
+        image_data: Buffer.from('fake-image').toString('base64'),
+      },
+    });
+
+    expect(screenshotResponse.statusCode).toBe(HTTP_STATUS.CREATED);
+    const previewUpdate = await previewPromise;
+    expect(previewUpdate).toEqual(
+      expect.objectContaining({
+        screenId,
+        captured_at: timestamp,
+        stale: false,
+      })
+    );
+    expect(previewUpdate.screenshot_url).toContain(`device-screenshots/device-screenshots/${screenId}/`);
   });
 });

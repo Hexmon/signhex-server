@@ -14,6 +14,7 @@ import { getAspectRatioName, KNOWN_ASPECT_RATIOS, resolveAspectRatio } from '@/u
 import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import {
+  buildScreenScheduleTimelinePayload,
   buildScreenPlaybackStateById,
   buildScreensOverviewPayload,
   getActiveEmergencyForScreen,
@@ -59,11 +60,20 @@ const screenshotTriggerSchema = z.object({
 
 const overviewQuerySchema = z.object({
   include_media: z.string().optional(),
+  include_preview: z.string().optional(),
+  online_only: z.string().optional(),
+});
+
+const scheduleTimelineQuerySchema = z.object({
+  window_start: z.string().datetime(),
+  window_hours: z.coerce.number().int().positive().max(48).default(24),
+  only_active_now: z.string().optional(),
 });
 
 const nowPlayingQuerySchema = z.object({
   include_urls: z.string().optional(),
   include_media: z.string().optional(),
+  include_preview: z.string().optional(),
 });
 
 const snapshotQuerySchema = z.object({
@@ -310,15 +320,53 @@ export async function screenRoutes(fastify: FastifyInstance) {
         await verifyAccessToken(token);
         const query = overviewQuerySchema.parse(request.query);
         const includeMedia = query.include_media?.toLowerCase() === 'true';
+        const includePreview = query.include_preview?.toLowerCase() === 'true';
+        const onlineOnly = query.online_only?.toLowerCase() === 'true';
 
         return reply.send(
           await buildScreensOverviewPayload({
             db,
             includeMedia,
+            includePreview,
+            onlineOnly,
           })
         );
       } catch (error) {
         logger.error(error, 'Get screens overview error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Querystring: typeof scheduleTimelineQuerySchema._type }>(
+    apiEndpoints.screens.scheduleTimeline,
+    {
+      schema: {
+        description: 'Get a dashboard-ready 24-hour schedule timeline for currently active scheduled screens',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          throw AppError.unauthorized('Missing authorization header');
+        }
+
+        await verifyAccessToken(token);
+        const query = scheduleTimelineQuerySchema.parse(request.query);
+
+        return reply.send(
+          await buildScreenScheduleTimelinePayload({
+            db,
+            windowStart: new Date(query.window_start),
+            windowHours: query.window_hours,
+            onlyActiveNow: query.only_active_now?.toLowerCase() === 'true',
+          })
+        );
+      } catch (error) {
+        logger.error(error, 'Get screen schedule timeline error');
         return respondWithError(reply, error);
       }
     }
@@ -723,10 +771,12 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const query = nowPlayingQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
         const includeMedia = query.include_media?.toLowerCase() === 'true';
+        const includePreview = query.include_preview?.toLowerCase() === 'true';
 
         const summary = await buildScreenPlaybackStateById(screenId, {
           db,
           includeMedia,
+          includePreview,
           includeUrls,
         });
 
@@ -751,6 +801,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           booked_until: summary.booked_until,
           playback: summary.playback,
           emergency: summary.emergency,
+          preview: (summary as any).preview ?? null,
         });
       } catch (error) {
         logger.error(error, 'Get screen now-playing error');
