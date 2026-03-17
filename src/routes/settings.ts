@@ -16,6 +16,7 @@ import {
   resolveMediaUrl,
 } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
+import { serializeMediaRecord } from '@/utils/media';
 
 const logger = createLogger('settings-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -36,25 +37,7 @@ const defaultMediaVariantsUpdateSchema = z.object({
 export async function settingsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
-  const serializeMedia = (media: any, media_url: string | null) => ({
-    id: media.id,
-    name: media.name,
-    type: media.type,
-    status: media.status,
-    source_bucket: media.source_bucket,
-    source_object_key: media.source_object_key,
-    source_content_type: media.source_content_type,
-    source_size: media.source_size,
-    ready_object_id: media.ready_object_id,
-    thumbnail_object_id: media.thumbnail_object_id,
-    duration_seconds: media.duration_seconds,
-    width: media.width,
-    height: media.height,
-    created_by: media.created_by,
-    created_at: media.created_at.toISOString?.() ?? media.created_at,
-    updated_at: media.updated_at.toISOString?.() ?? media.updated_at,
-    media_url,
-  });
+  const serializeMedia = (media: any, media_url: string | null) => serializeMediaRecord(media, media_url);
 
   const serializeDefaultMediaVariants = async () => {
     const payload = await getDefaultMediaVariants(db);

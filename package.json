@@ -22,6 +22,8 @@
     "verify": "tsx scripts/verify-build.ts",
     "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts",
     "chat:dry-run": "tsx scripts/chat-dry-run.ts",
+    "schedule:dry-run": "tsx scripts/schedule-dry-run.ts",
+    "emergency:dry-run": "tsx scripts/emergency-dry-run.ts",
     "screens:dry-run": "tsx scripts/screens-realtime-dry-run.ts",
     "test:default-media": "vitest run src/routes/settings.test.ts && vitest run src/routes/screens.test.ts && vitest run src/routes/device-telemetry-auth.test.ts",
     "notifications:reconcile": "tsx scripts/notifications-reconcile.ts",

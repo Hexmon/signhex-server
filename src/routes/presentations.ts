@@ -14,6 +14,7 @@ import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
+import { serializeMediaRecord } from '@/utils/media';
 
 const logger = createLogger('presentation-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, NO_CONTENT, UNAUTHORIZED } = HTTP_STATUS;
@@ -203,7 +204,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
             fit_mode: i.fit_mode,
             audio_enabled: i.audio_enabled,
             created_at: i.created_at.toISOString?.() ?? i.created_at,
-            media: mediaMap.get(i.media_id) || null,
+            media: mediaMap.get(i.media_id) ? serializeMediaRecord(mediaMap.get(i.media_id) as any) : null,
           })),
           created_by: presentation.created_by,
           created_at: presentation.created_at.toISOString(),
@@ -256,16 +257,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
               duration_seconds: i.duration_seconds,
               created_at: i.created_at.toISOString?.() ?? i.created_at,
               media: media
-                ? {
-                    id: media.id,
-                    name: media.name,
-                    type: media.type,
-                    status: media.status,
-                    source_bucket: media.source_bucket,
-                    source_object_key: media.source_object_key,
-                    ready_object_id: media.ready_object_id,
-                    thumbnail_object_id: media.thumbnail_object_id,
-                  }
+                ? serializeMediaRecord(media)
                 : null,
             };
           }),
@@ -326,14 +318,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           duration_seconds: item.duration_seconds,
           created_at: item.created_at.toISOString?.() ?? item.created_at,
           media: {
-            id: media.id,
-            name: media.name,
-            type: media.type,
-            status: media.status,
-            source_bucket: media.source_bucket,
-            source_object_key: media.source_object_key,
-            ready_object_id: media.ready_object_id,
-            thumbnail_object_id: media.thumbnail_object_id,
+            ...serializeMediaRecord(media),
           },
         });
       } catch (error) {
@@ -417,7 +402,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
             fit_mode: i.fit_mode,
             audio_enabled: i.audio_enabled,
             created_at: i.created_at.toISOString?.() ?? i.created_at,
-            media: mediaMap.get(i.media_id) || null,
+            media: mediaMap.get(i.media_id) ? serializeMediaRecord(mediaMap.get(i.media_id) as any) : null,
           })),
         });
       } catch (error) {
@@ -484,14 +469,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           audio_enabled: item.audio_enabled,
           created_at: item.created_at.toISOString?.() ?? item.created_at,
           media: {
-            id: media.id,
-            name: media.name,
-            type: media.type,
-            status: media.status,
-            source_bucket: media.source_bucket,
-            source_object_key: media.source_object_key,
-            ready_object_id: media.ready_object_id,
-            thumbnail_object_id: media.thumbnail_object_id,
+            ...serializeMediaRecord(media),
           },
         });
       } catch (error) {

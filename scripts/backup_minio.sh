@@ -10,14 +10,20 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/hexmon_minio_$TIMESTAMP.tar.gz"
 
 # MinIO configuration from environment
-MINIO_ENDPOINT="${MINIO_ENDPOINT:-localhost:9000}"
-MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
-MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
+MINIO_ENDPOINT="${MINIO_ENDPOINT:-localhost}"
+MINIO_PORT="${MINIO_PORT:-9000}"
+MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-}"
+MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-}"
 MINIO_USE_SSL="${MINIO_USE_SSL:-false}"
+
+if [ -z "$MINIO_ACCESS_KEY" ] || [ -z "$MINIO_SECRET_KEY" ]; then
+    echo "Error: MINIO_ACCESS_KEY and MINIO_SECRET_KEY environment variables are required"
+    exit 1
+fi
 
 echo "Starting MinIO backup..."
 echo "Backup file: $BACKUP_FILE"
-echo "MinIO endpoint: $MINIO_ENDPOINT"
+echo "MinIO endpoint: $MINIO_ENDPOINT:$MINIO_PORT"
 
 # Set protocol
 if [ "$MINIO_USE_SSL" = "true" ]; then
@@ -45,7 +51,7 @@ BUCKETS=(
 )
 
 # Configure mc (MinIO client)
-mc alias set hexmon "$PROTOCOL://$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" --api S3v4
+mc alias set hexmon "$PROTOCOL://$MINIO_ENDPOINT:$MINIO_PORT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" --api S3v4
 
 # Backup each bucket
 for bucket in "${BUCKETS[@]}"; do
@@ -59,4 +65,3 @@ tar -czf "$BACKUP_FILE" -C "$TEMP_DIR" . 2>/dev/null
 
 echo "Backup completed successfully: $BACKUP_FILE"
 echo "Backup size: $(du -h "$BACKUP_FILE" | cut -f1)"
-

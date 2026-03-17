@@ -20,6 +20,7 @@ import { publishScheduleSnapshot, resolvePresentations } from '@/routes/schedule
 import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 import z from 'zod';
 import { AppError } from '@/utils/app-error';
+import { serializeMediaRecord } from '@/utils/media';
 
 const logger = createLogger('schedule-routes');
 const { CREATED } = HTTP_STATUS;
@@ -58,6 +59,16 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       throw AppError.badRequest('start_at must be before end_at');
     }
     return { startAt, endAt };
+  };
+
+  const validateTimeZone = (timezone?: string | null) => {
+    if (!timezone) return null;
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: timezone });
+      return timezone;
+    } catch {
+      throw AppError.badRequest('Invalid timezone');
+    }
   };
 
   const targetsIntersect = (
@@ -120,8 +131,10 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const endIso =
           data.end_at ?? new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
         const { startAt, endAt } = validateStartEnd(startIso, endIso);
+        const timezone = validateTimeZone(data.timezone);
         const schedule = await scheduleRepo.create({
           ...data,
+          timezone,
           start_at: startAt,
           end_at: endAt,
           created_by: payload.sub,
@@ -131,6 +144,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           id: schedule.id,
           name: schedule.name,
           description: schedule.description,
+          timezone: schedule.timezone ?? null,
           start_at: schedule.start_at.toISOString(),
           end_at: schedule.end_at.toISOString(),
           is_active: schedule.is_active,
@@ -264,6 +278,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
             id: s.id,
             name: s.name,
             description: s.description,
+            timezone: s.timezone ?? null,
             start_at: s.start_at?.toISOString(),
             end_at: s.end_at?.toISOString(),
             is_active: s.is_active,
@@ -312,6 +327,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           id: schedule.id,
           name: schedule.name,
           description: schedule.description,
+          timezone: schedule.timezone ?? null,
           start_at: schedule.start_at?.toISOString(),
           end_at: schedule.end_at?.toISOString(),
           is_active: schedule.is_active,
@@ -382,16 +398,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
                       order: pi.order,
                       duration_seconds: pi.duration_seconds,
                       media: pi.media
-                        ? {
-                            id: pi.media.id,
-                            name: pi.media.name,
-                            type: pi.media.type,
-                            status: pi.media.status,
-                            source_bucket: pi.media.source_bucket,
-                            source_object_key: pi.media.source_object_key,
-                            ready_object_id: pi.media.ready_object_id,
-                            thumbnail_object_id: pi.media.thumbnail_object_id,
-                          }
+                        ? serializeMediaRecord(pi.media)
                         : null,
                     })),
                     slots: (pres.slots || []).map((si: any) => ({
@@ -403,16 +410,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
                       fit_mode: si.fit_mode,
                       audio_enabled: si.audio_enabled,
                       media: si.media
-                        ? {
-                            id: si.media.id,
-                            name: si.media.name,
-                            type: si.media.type,
-                            status: si.media.status,
-                            source_bucket: si.media.source_bucket,
-                            source_object_key: si.media.source_object_key,
-                            ready_object_id: si.media.ready_object_id,
-                            thumbnail_object_id: si.media.thumbnail_object_id,
-                          }
+                        ? serializeMediaRecord(si.media)
                         : null,
                     })),
                   }
@@ -575,6 +573,8 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const data = updateScheduleSchema.parse(request.body);
+        const timezone =
+          Object.prototype.hasOwnProperty.call(data, 'timezone') ? validateTimeZone(data.timezone ?? null) : undefined;
 
         let startAt: Date | undefined;
         let endAt: Date | undefined;
@@ -591,20 +591,31 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           if (startAt && endAt && startAt >= endAt) throw AppError.badRequest('start_at must be before end_at');
         }
 
+        const existingSchedule = await scheduleRepo.findById((request.params as any).id);
+        if (!existingSchedule) {
+          throw AppError.notFound('Schedule not found');
+        }
+
+        const nextStartAt = startAt ?? existingSchedule.start_at;
+        const nextEndAt = endAt ?? existingSchedule.end_at;
+        const existingItems = await scheduleItemRepo.listBySchedule(existingSchedule.id);
+        const outOfBoundsItem = existingItems.find((item: any) => item.start_at < nextStartAt || item.end_at > nextEndAt);
+        if (outOfBoundsItem) {
+          throw AppError.badRequest('Updated schedule window would exclude one or more existing schedule items');
+        }
+
         const schedule = await scheduleRepo.update((request.params as any).id, {
           ...data,
+          timezone,
           start_at: startAt,
           end_at: endAt,
         });
-
-        if (!schedule) {
-          throw AppError.notFound('Schedule not found');
-        }
 
         return reply.send({
           id: schedule.id,
           name: schedule.name,
           description: schedule.description,
+          timezone: schedule.timezone ?? null,
           start_at: schedule.start_at?.toISOString(),
           end_at: schedule.end_at?.toISOString(),
           is_active: schedule.is_active,

@@ -57,6 +57,8 @@ JWT_SECRET=<paste-your-generated-secret-here>
 DATABASE_URL=postgresql://postgres:root@localhost:5432/signhex
 ```
 
+Keep `localhost` in `.env` when you run backend commands like `npm run check`, `npm run db:push`, or `npm run seed` from your machine. Docker Compose rewrites the API container's internal service hosts to `postgres` and `minio` automatically.
+
 ### Step 3: Start Services
 
 ```bash

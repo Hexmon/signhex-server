@@ -140,4 +140,82 @@ describe('Schedule publish codec validation', () => {
     expect(body.error.details?.unsupported_targets?.[0]?.media_id).toBe(mediaId);
     expect(body.error.details?.unsupported_targets?.[0]?.required_codecs).toContain('h264');
   });
+
+  it('blocks publish when a presentation references non-ready media', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const mediaId = randomUUID();
+    const presentationId = randomUUID();
+    const scheduleId = randomUUID();
+    const now = new Date();
+    const startAt = new Date(now.getTime() + 5 * 60 * 1000);
+    const endAt = new Date(now.getTime() + 30 * 60 * 1000);
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Non Ready Media Screen',
+      status: 'OFFLINE',
+    });
+
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: 'Processing Video',
+      type: 'VIDEO',
+      status: 'PROCESSING',
+      created_by: testUser.id,
+      source_content_type: 'video/mp4',
+    });
+
+    await db.insert(schema.presentations).values({
+      id: presentationId,
+      name: 'Non Ready Media Presentation',
+      created_by: testUser.id,
+    });
+
+    await db.insert(schema.presentationItems).values({
+      id: randomUUID(),
+      presentation_id: presentationId,
+      media_id: mediaId,
+      order: 0,
+      duration_seconds: 10,
+    });
+
+    await db.insert(schema.schedules).values({
+      id: scheduleId,
+      name: 'Non Ready Publish Schedule',
+      timezone: 'UTC',
+      start_at: startAt,
+      end_at: endAt,
+      is_active: true,
+      created_by: testUser.id,
+    } as any);
+
+    await db.insert(schema.scheduleItems).values({
+      id: randomUUID(),
+      schedule_id: scheduleId,
+      presentation_id: presentationId,
+      start_at: startAt,
+      end_at: endAt,
+      priority: 0,
+      screen_ids: [screenId],
+      screen_group_ids: [],
+    });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: `/api/v1/schedules/${scheduleId}/publish`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        screen_ids: [screenId],
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(false);
+    expect(body.error.details?.reason).toBe('INVALID_PRESENTATION_ASSETS');
+    expect(body.error.details?.invalid_references?.[0]?.issue).toBe('MEDIA_NOT_READY');
+  });
 });

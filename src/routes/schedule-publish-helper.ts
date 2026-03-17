@@ -3,6 +3,7 @@ import { getDatabase, schema } from '@/db';
 import { createScheduleRepository, ScheduleRepository } from '@/db/repositories/schedule';
 import { createScheduleItemRepository, ScheduleItemRepository } from '@/db/repositories/schedule-item';
 import { AppError } from '@/utils/app-error';
+import { serializeMediaRecord } from '@/utils/media';
 
 type DB = ReturnType<typeof getDatabase>;
 
@@ -128,7 +129,73 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
   }
 
   const scheduleItems = await scheduleItemRepo.listBySchedule(schedule.id);
+  if (scheduleItems.length === 0) {
+    throw AppError.badRequest('Cannot publish a schedule without schedule items');
+  }
   const presMap = await resolvePresentations(scheduleItems.map((i: any) => i.presentation_id), db);
+
+  const missingPresentationIds = Array.from(
+    new Set(scheduleItems.map((item: any) => item.presentation_id).filter((presentationId: string) => !presMap.has(presentationId)))
+  );
+  if (missingPresentationIds.length > 0) {
+    throw AppError.badRequest('One or more schedule items reference a missing presentation', {
+      reason: 'MISSING_PRESENTATION',
+      presentation_ids: missingPresentationIds,
+    });
+  }
+
+  const invalidPresentationRefs: Array<{ presentation_id: string; issue: string; media_id?: string | null }> = [];
+  for (const presentation of presMap.values()) {
+    if ((presentation as any)?.layout_id && !presentation.layout) {
+      invalidPresentationRefs.push({
+        presentation_id: presentation.id,
+        issue: 'MISSING_LAYOUT',
+      });
+    }
+
+    for (const item of presentation.items || []) {
+      if (!item.media) {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MISSING_MEDIA',
+          media_id: item.media_id,
+        });
+        continue;
+      }
+      if (item.media.status !== 'READY') {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MEDIA_NOT_READY',
+          media_id: item.media.id,
+        });
+      }
+    }
+
+    for (const slot of presentation.slots || []) {
+      if (!slot.media) {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MISSING_MEDIA',
+          media_id: slot.media_id,
+        });
+        continue;
+      }
+      if (slot.media.status !== 'READY') {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MEDIA_NOT_READY',
+          media_id: slot.media.id,
+        });
+      }
+    }
+  }
+
+  if (invalidPresentationRefs.length > 0) {
+    throw AppError.badRequest('Schedule references missing or non-ready presentation assets', {
+      reason: 'INVALID_PRESENTATION_ASSETS',
+      invalid_references: invalidPresentationRefs,
+    });
+  }
 
   const uniqueGroupIds = new Set<string>();
   (params.screenGroupIds || []).forEach((g) => uniqueGroupIds.add(g));
@@ -231,7 +298,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
           screen_id: screenInfo.id,
           screen_name: screenInfo.name,
           media_id: media.id,
-          media_name: media.name,
+          media_name: media.display_name ?? media.name,
           required_codecs: requiredCodecs,
         });
       });
@@ -248,11 +315,13 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
     );
   }
 
+  const publishedAt = new Date().toISOString();
   const snapshotPayload = {
     schedule: {
       id: schedule.id,
       name: schedule.name,
       description: schedule.description,
+      timezone: (schedule as any).timezone ?? null,
       start_at: schedule.start_at?.toISOString(),
       end_at: schedule.end_at?.toISOString(),
       is_active: schedule.is_active,
@@ -286,16 +355,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
                   order: pi.order,
                   duration_seconds: pi.duration_seconds,
                   media: pi.media
-                    ? {
-                        id: pi.media.id,
-                        name: pi.media.name,
-                        type: pi.media.type,
-                        status: pi.media.status,
-                        source_bucket: pi.media.source_bucket,
-                        source_object_key: pi.media.source_object_key,
-                        ready_object_id: pi.media.ready_object_id,
-                        thumbnail_object_id: pi.media.thumbnail_object_id,
-                      }
+                    ? serializeMediaRecord(pi.media)
                     : null,
                 })),
                 slots: (pres.slots || []).map((si: any) => ({
@@ -307,16 +367,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
                   fit_mode: si.fit_mode,
                   audio_enabled: si.audio_enabled,
                   media: si.media
-                    ? {
-                        id: si.media.id,
-                        name: si.media.name,
-                        type: si.media.type,
-                        status: si.media.status,
-                        source_bucket: si.media.source_bucket,
-                        source_object_key: si.media.source_object_key,
-                        ready_object_id: si.media.ready_object_id,
-                        thumbnail_object_id: si.media.thumbnail_object_id,
-                      }
+                    ? serializeMediaRecord(si.media)
                     : null,
                 })),
               }
@@ -329,26 +380,9 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
       screen_group_ids: params.screenGroupIds || [],
       resolved_screen_ids: Array.from(resolvedScreenIds),
     },
-    published_at: new Date().toISOString(),
+    published_at: publishedAt,
     notes: params.notes ?? null,
   };
-
-  const [snapshot] = await db
-    .insert(schema.scheduleSnapshots)
-    .values({
-      schedule_id: schedule.id,
-      payload: snapshotPayload,
-    })
-    .returning();
-
-  const [publish] = await db
-    .insert(schema.publishes)
-    .values({
-      schedule_id: schedule.id,
-      snapshot_id: snapshot.id,
-      published_by: params.publishedBy,
-    })
-    .returning();
 
   const targetRows: { screen_id?: string; screen_group_id?: string }[] = [];
   const seenScreens = new Set<string>();
@@ -369,21 +403,42 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
     }
   });
 
-  if (targetRows.length > 0) {
-    await db
-      .insert(schema.publishTargets)
-      .values(
-        targetRows.map((t) => ({
-          publish_id: publish.id,
-          screen_id: t.screen_id,
-          screen_group_id: t.screen_group_id,
-        }))
-      );
-  }
+  const transactionalResult = await db.transaction(async (tx) => {
+    const [snapshot] = await tx
+      .insert(schema.scheduleSnapshots)
+      .values({
+        schedule_id: schedule.id,
+        payload: snapshotPayload,
+      })
+      .returning();
+
+    const [publish] = await tx
+      .insert(schema.publishes)
+      .values({
+        schedule_id: schedule.id,
+        snapshot_id: snapshot.id,
+        published_by: params.publishedBy,
+      })
+      .returning();
+
+    if (targetRows.length > 0) {
+      await tx
+        .insert(schema.publishTargets)
+        .values(
+          targetRows.map((t) => ({
+            publish_id: publish.id,
+            screen_id: t.screen_id,
+            screen_group_id: t.screen_group_id,
+          }))
+        );
+    }
+
+    return { snapshot, publish };
+  });
 
   return {
-    publish,
-    snapshot,
+    publish: transactionalResult.publish,
+    snapshot: transactionalResult.snapshot,
     targets: targetRows,
     schedule,
     scheduleItems,

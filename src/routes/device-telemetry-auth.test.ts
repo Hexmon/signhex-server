@@ -204,6 +204,314 @@ describe('Device telemetry auth runtime validation', () => {
     });
   });
 
+  it('returns ETag for device snapshots and honors If-None-Match when no emergency is active', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const scheduleId = randomUUID();
+    const snapshotId = randomUUID();
+    const publishId = randomUUID();
+    const now = new Date();
+    const startAt = new Date(now.getTime() - 5 * 60 * 1000);
+    const endAt = new Date(now.getTime() + 25 * 60 * 1000);
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'ETag Snapshot Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    await db.insert(schema.schedules).values({
+      id: scheduleId,
+      name: 'ETag Schedule',
+      timezone: 'UTC',
+      start_at: startAt,
+      end_at: endAt,
+      is_active: true,
+      created_by: testUser.id,
+    } as any);
+
+    await db.insert(schema.scheduleSnapshots).values({
+      id: snapshotId,
+      schedule_id: scheduleId,
+      payload: {
+        schedule: {
+          id: scheduleId,
+          timezone: 'UTC',
+          start_at: startAt.toISOString(),
+          end_at: endAt.toISOString(),
+          items: [],
+        },
+      },
+    });
+
+    await db.insert(schema.publishes).values({
+      id: publishId,
+      schedule_id: scheduleId,
+      snapshot_id: snapshotId,
+      published_by: testUser.id,
+    });
+
+    await db.insert(schema.publishTargets).values({
+      publish_id: publishId,
+      screen_id: deviceId,
+    });
+
+    const firstResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${deviceId}/snapshot`,
+      headers: {
+        'x-device-serial': serial,
+      },
+    });
+
+    expect(firstResponse.statusCode).toBe(HTTP_STATUS.OK);
+    expect(firstResponse.headers.etag).toBe(`"${snapshotId}"`);
+
+    const secondResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${deviceId}/snapshot`,
+      headers: {
+        'x-device-serial': serial,
+        'if-none-match': `"${snapshotId}"`,
+      },
+    });
+
+    expect(secondResponse.statusCode).toBe(304);
+  });
+
+  it('resolves the winning emergency for a device using global over group over screen precedence', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const groupId = randomUUID();
+    const mediaGlobal = randomUUID();
+    const mediaGroup = randomUUID();
+    const mediaScreen = randomUUID();
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Emergency Priority Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    await db.insert(schema.screenGroups).values({
+      id: groupId,
+      name: 'Emergency Group',
+    });
+    await db.insert(schema.screenGroupMembers).values({
+      group_id: groupId,
+      screen_id: deviceId,
+    });
+
+    await db.insert(schema.media).values([
+      {
+        id: mediaGlobal,
+        name: 'Global Emergency Media',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+      },
+      {
+        id: mediaGroup,
+        name: 'Group Emergency Media',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+      },
+      {
+        id: mediaScreen,
+        name: 'Screen Emergency Media',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+      },
+    ]);
+
+    await db.insert(schema.emergencies).values([
+      {
+        message: 'Screen emergency',
+        priority: 'CRITICAL',
+        media_id: mediaScreen,
+        screen_ids: [deviceId],
+        screen_group_ids: [],
+        target_all: false,
+        is_active: true,
+        triggered_by: testUser.id,
+      },
+      {
+        message: 'Group emergency',
+        priority: 'LOW',
+        media_id: mediaGroup,
+        screen_ids: [],
+        screen_group_ids: [groupId],
+        target_all: false,
+        is_active: true,
+        triggered_by: testUser.id,
+      },
+      {
+        message: 'Global emergency',
+        priority: 'LOW',
+        media_id: mediaGlobal,
+        screen_ids: [],
+        screen_group_ids: [],
+        target_all: true,
+        is_active: true,
+        triggered_by: testUser.id,
+      },
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${deviceId}/snapshot`,
+      headers: {
+        'x-device-serial': serial,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(body.emergency).toEqual(
+      expect.objectContaining({
+        message: 'Global emergency',
+        scope: 'GLOBAL',
+        media_id: mediaGlobal,
+      })
+    );
+  });
+
+  it('returns the latest successful publish targeting a device when multiple publishes exist', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const scheduleOneId = randomUUID();
+    const scheduleTwoId = randomUUID();
+    const snapshotOneId = randomUUID();
+    const snapshotTwoId = randomUUID();
+    const publishOneId = randomUUID();
+    const publishTwoId = randomUUID();
+    const now = new Date();
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Latest Publish Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    await db.insert(schema.schedules).values([
+      {
+        id: scheduleOneId,
+        name: 'Old Schedule',
+        timezone: 'UTC',
+        start_at: new Date(now.getTime() - 60 * 60 * 1000),
+        end_at: new Date(now.getTime() + 60 * 60 * 1000),
+        is_active: true,
+        created_by: testUser.id,
+      },
+      {
+        id: scheduleTwoId,
+        name: 'New Schedule',
+        timezone: 'UTC',
+        start_at: new Date(now.getTime() - 60 * 60 * 1000),
+        end_at: new Date(now.getTime() + 60 * 60 * 1000),
+        is_active: true,
+        created_by: testUser.id,
+      },
+    ] as any);
+
+    await db.insert(schema.scheduleSnapshots).values([
+      {
+        id: snapshotOneId,
+        schedule_id: scheduleOneId,
+        payload: {
+          schedule: {
+            id: scheduleOneId,
+            timezone: 'UTC',
+            items: [],
+          },
+        },
+      },
+      {
+        id: snapshotTwoId,
+        schedule_id: scheduleTwoId,
+        payload: {
+          schedule: {
+            id: scheduleTwoId,
+            timezone: 'UTC',
+            items: [],
+          },
+        },
+      },
+    ]);
+
+    await db.insert(schema.publishes).values([
+      {
+        id: publishOneId,
+        schedule_id: scheduleOneId,
+        snapshot_id: snapshotOneId,
+        published_by: testUser.id,
+        published_at: new Date(now.getTime() - 10 * 60 * 1000),
+      },
+      {
+        id: publishTwoId,
+        schedule_id: scheduleTwoId,
+        snapshot_id: snapshotTwoId,
+        published_by: testUser.id,
+        published_at: new Date(now.getTime() - 1 * 60 * 1000),
+      },
+    ]);
+
+    await db.insert(schema.publishTargets).values([
+      {
+        publish_id: publishOneId,
+        screen_id: deviceId,
+      },
+      {
+        publish_id: publishTwoId,
+        screen_id: deviceId,
+      },
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${deviceId}/snapshot`,
+      headers: {
+        'x-device-serial': serial,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(body.publish).toEqual(
+      expect.objectContaining({
+        publish_id: publishTwoId,
+        schedule_id: scheduleTwoId,
+        snapshot_id: snapshotTwoId,
+      })
+    );
+  });
+
   it('persists screenshot uploads as storage objects and screenshot rows', async () => {
     const db = getDatabase();
     const deviceId = randomUUID();

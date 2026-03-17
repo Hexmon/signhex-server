@@ -106,6 +106,7 @@ function mapSchedule(s: any | null) {
     id: s.id,
     name: s.name,
     description: s.description ?? null,
+    timezone: s.timezone ?? null,
     start_at: toIso(s.start_at),
     end_at: toIso(s.end_at),
     is_active: s.is_active,

@@ -3,6 +3,12 @@ import { config as appConfig } from '@/config';
 
 export const createMediaSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
+  display_name: z
+    .string()
+    .trim()
+    .min(1, 'Display name is required')
+    .max(255)
+    .optional(),
   type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']),
 });
 
@@ -23,10 +29,13 @@ const allowedContentTypes = [
 ] as const;
 
 export const presignUploadSchema = z.object({
-  filename: z
+  filename: z.string().min(1).max(255),
+  display_name: z
     .string()
-    .min(1)
-    .transform((val) => val.replace(/[^\\w.\\-]+/g, '_')),
+    .trim()
+    .min(1, 'Display name is required')
+    .max(255)
+    .optional(),
   content_type: z.enum(allowedContentTypes),
   size: z
     .number()
@@ -53,6 +62,8 @@ export type ProcessMediaRequest = z.infer<typeof processMediaSchema>;
 export const mediaResponseSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
+  display_name: z.string().optional(),
+  filename: z.string().optional(),
   type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']),
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']),
   duration_seconds: z.number().optional(),

@@ -5,6 +5,7 @@ export class ScheduleRepository {
   async create(data: {
     name: string;
     description?: string;
+    timezone?: string | null;
     start_at: Date;
     end_at: Date;
     created_by: string;

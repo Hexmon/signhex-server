@@ -20,6 +20,7 @@ import {
   getActiveEmergencyForScreen,
 } from '@/screens/playback';
 import { emitScreensRefreshRequired, setupScreensNamespace } from '@/realtime/screens-namespace';
+import { serializeMediaRecord } from '@/utils/media';
 
 const logger = createLogger('screen-routes');
 const { CREATED, OK } = HTTP_STATUS;
@@ -110,14 +111,10 @@ export async function screenRoutes(fastify: FastifyInstance) {
     default_media: resolvedDefaultMedia.media
       ? {
           media_id: resolvedDefaultMedia.media.id,
-          id: resolvedDefaultMedia.media.id,
-          name: resolvedDefaultMedia.media.name,
-          type: resolvedDefaultMedia.media.type,
-          status: resolvedDefaultMedia.media.status,
-          duration_seconds: resolvedDefaultMedia.media.duration_seconds,
-          width: resolvedDefaultMedia.media.width,
-          height: resolvedDefaultMedia.media.height,
-          media_url: includeUrls ? resolvedDefaultMedia.media_url : null,
+          ...serializeMediaRecord(
+            resolvedDefaultMedia.media,
+            includeUrls ? resolvedDefaultMedia.media_url : null
+          ),
         }
       : null,
     default_media_resolution: {
@@ -452,16 +449,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           aspect_ratio: resolvedDefaultMedia.aspect_ratio,
           media_id: resolvedDefaultMedia.media_id,
           media: resolvedDefaultMedia.media
-            ? {
-                id: resolvedDefaultMedia.media.id,
-                name: resolvedDefaultMedia.media.name,
-                type: resolvedDefaultMedia.media.type,
-                status: resolvedDefaultMedia.media.status,
-                duration_seconds: resolvedDefaultMedia.media.duration_seconds,
-                width: resolvedDefaultMedia.media.width,
-                height: resolvedDefaultMedia.media.height,
-                media_url: resolvedDefaultMedia.media_url,
-              }
+            ? serializeMediaRecord(resolvedDefaultMedia.media, resolvedDefaultMedia.media_url)
             : null,
         });
       } catch (error) {

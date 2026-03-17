@@ -21,6 +21,7 @@ export class MediaRepository {
   async create(data: {
     id?: string;
     name: string;
+    display_name?: string;
     type: 'IMAGE' | 'VIDEO' | 'DOCUMENT';
     created_by: string;
     source_object_id?: string;

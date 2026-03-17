@@ -2,12 +2,14 @@ import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, sql } from 'drizzle
 import { getDatabase, schema } from '@/db';
 import { resolveDefaultMediaForScreen, resolveMediaUrl } from '@/utils/default-media';
 import { getPresignedUrl } from '@/s3';
+import { serializeMediaRecord } from '@/utils/media';
 
 type ScreenRecord = typeof schema.screens.$inferSelect;
 type ScreenGroupRecord = typeof schema.screenGroups.$inferSelect;
 
 type PlaybackSource = 'HEARTBEAT' | 'SCHEDULE' | 'EMERGENCY' | 'DEFAULT' | 'UNKNOWN';
 export type ScreenHealthState = 'ONLINE' | 'OFFLINE' | 'STALE' | 'ERROR' | 'RECOVERY_REQUIRED';
+export type EmergencyScopeMatch = 'GLOBAL' | 'GROUP' | 'SCREEN';
 
 export type ScreenScheduleTimelineItem = {
   id: string;
@@ -37,6 +39,54 @@ function toIso(value: Date | string | null | undefined): string | null {
 
 const HEARTBEAT_STALE_MS = 5 * 60 * 1000;
 const SCREENSHOT_PREVIEW_STALE_MS = 90 * 1000;
+
+function getEmergencySeverityRank(priority: string | null | undefined): number {
+  switch ((priority || '').toUpperCase()) {
+    case 'CRITICAL':
+      return 4;
+    case 'HIGH':
+      return 3;
+    case 'MEDIUM':
+      return 2;
+    case 'LOW':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function resolveEmergencyScopeMatch(
+  emergency: typeof schema.emergencies.$inferSelect,
+  screenId: string,
+  groupIds: string[]
+): EmergencyScopeMatch | null {
+  const emergencyScreenIds = Array.isArray((emergency as any).screen_ids)
+    ? ((emergency as any).screen_ids as string[])
+    : [];
+  const emergencyGroupIds = Array.isArray((emergency as any).screen_group_ids)
+    ? ((emergency as any).screen_group_ids as string[])
+    : [];
+  const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
+  const targetAll = (emergency as any).target_all === true || !hasTargets;
+
+  if (targetAll) return 'GLOBAL';
+  if (emergencyGroupIds.some((groupId) => groupIds.includes(groupId))) return 'GROUP';
+  if (emergencyScreenIds.includes(screenId)) return 'SCREEN';
+  return null;
+}
+
+function getEmergencyScopeRank(scope: EmergencyScopeMatch): number {
+  switch (scope) {
+    case 'GLOBAL':
+      return 3;
+    case 'GROUP':
+      return 2;
+    case 'SCREEN':
+      return 1;
+    default:
+      return 0;
+  }
+}
 
 function pickPrimaryMediaIdFromPresentation(presentation: any): string | null {
   if (!presentation || typeof presentation !== 'object') return null;
@@ -135,14 +185,48 @@ export async function getActiveEmergencyForScreen(
   options: { db?: ReturnType<typeof getDatabase>; includeUrls?: boolean; groupIds?: string[] } = {}
 ) {
   const db = options.db ?? getDatabase();
-  const [emergency] = await db
+  const emergencies = await db
     .select()
     .from(schema.emergencies)
-    .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
-    .orderBy(desc(schema.emergencies.created_at))
-    .limit(1);
+    .where(
+      and(
+        eq(schema.emergencies.is_active, true),
+        isNull(schema.emergencies.cleared_at),
+        sql`(${schema.emergencies.expires_at} IS NULL OR ${schema.emergencies.expires_at} > now())`
+      )
+    )
+    .orderBy(desc(schema.emergencies.created_at));
 
-  if (!emergency) return null;
+  if (emergencies.length === 0) return null;
+
+  const groupIds = options.groupIds ?? (await getGroupIdsForScreen(screenId, db));
+  const ranked = emergencies
+    .map((emergency) => {
+      const scopeMatch = resolveEmergencyScopeMatch(emergency, screenId, groupIds);
+      if (!scopeMatch) return null;
+      return {
+        emergency,
+        scopeMatch,
+        scopeRank: getEmergencyScopeRank(scopeMatch),
+        severityRank: getEmergencySeverityRank(emergency.priority),
+      };
+    })
+    .filter(Boolean) as Array<{
+    emergency: typeof schema.emergencies.$inferSelect;
+    scopeMatch: EmergencyScopeMatch;
+    scopeRank: number;
+    severityRank: number;
+  }>;
+
+  if (ranked.length === 0) return null;
+
+  ranked.sort((left, right) => {
+    if (right.scopeRank !== left.scopeRank) return right.scopeRank - left.scopeRank;
+    if (right.severityRank !== left.severityRank) return right.severityRank - left.severityRank;
+    return new Date(right.emergency.created_at).getTime() - new Date(left.emergency.created_at).getTime();
+  });
+
+  const { emergency, scopeMatch } = ranked[0];
 
   const emergencyScreenIds = Array.isArray((emergency as any).screen_ids)
     ? ((emergency as any).screen_ids as string[])
@@ -150,17 +234,6 @@ export async function getActiveEmergencyForScreen(
   const emergencyGroupIds = Array.isArray((emergency as any).screen_group_ids)
     ? ((emergency as any).screen_group_ids as string[])
     : [];
-  const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
-  const targetAll = (emergency as any).target_all === true || !hasTargets;
-
-  if (!targetAll) {
-    const groupIds = options.groupIds ?? (await getGroupIdsForScreen(screenId, db));
-    const screenMatch = emergencyScreenIds.includes(screenId);
-    const groupMatch = emergencyGroupIds.some((groupId) => groupIds.includes(groupId));
-    if (!screenMatch && !groupMatch) {
-      return null;
-    }
-  }
 
   let mediaUrl: string | null = null;
   if (options.includeUrls && (emergency as any).media_id) {
@@ -179,6 +252,9 @@ export async function getActiveEmergencyForScreen(
     screen_ids: emergencyScreenIds,
     screen_group_ids: emergencyGroupIds,
     target_all: (emergency as any).target_all ?? false,
+    scope: scopeMatch,
+    expires_at: toIso((emergency as any).expires_at),
+    audit_note: (emergency as any).audit_note ?? null,
     created_at: toIso(emergency.created_at),
     cleared_at: toIso(emergency.cleared_at),
   };
@@ -192,18 +268,7 @@ async function getMediaById(id: string, db = getDatabase()) {
 async function getMediaSummary(id: string, db = getDatabase()) {
   const media = await getMediaById(id, db);
   if (!media) return null;
-
-  return {
-    id: media.id,
-    name: media.name,
-    type: media.type,
-    status: media.status,
-    source_content_type: media.source_content_type ?? null,
-    source_size: media.source_size ?? null,
-    width: media.width ?? null,
-    height: media.height ?? null,
-    duration_seconds: media.duration_seconds ?? null,
-  };
+  return serializeMediaRecord(media);
 }
 
 async function getLatestScreenshotPreview(
