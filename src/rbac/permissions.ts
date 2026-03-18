@@ -21,6 +21,7 @@ export const PERMISSION_SUBJECTS = [
   'Webhook',
   'SsoConfig',
   'OrgSettings',
+  'BrandingSettings',
   'Conversation',
   'ProofOfPlay',
   'Dashboard',

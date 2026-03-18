@@ -10,6 +10,8 @@ import { config as appConfig } from '@/config';
 import { deleteObject, getObject, putObject } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { createMediaRepository } from '@/db/repositories/media';
+import { createBackupRun, getLatestBackupRun, runFullBackup } from '@/utils/backup-runs';
+import { getCachedSettings } from '@/utils/settings';
 
 const logger = createLogger('jobs');
 
@@ -87,7 +89,7 @@ type PgBossError = Error & {
   code?: string;
 };
 
-const RECURRING_QUEUE_NAMES = ['cleanup', 'archive', 'chat:media-cleanup'] as const;
+const RECURRING_QUEUE_NAMES = ['cleanup', 'archive', 'chat:media-cleanup', 'backup', 'backup:check'] as const;
 
 function getPgBossSchemaSql() {
   return `"${appConfig.PG_BOSS_SCHEMA.replace(/"/g, '""')}"`;
@@ -228,6 +230,14 @@ export interface ChatMediaCleanupJob {
   messageId?: string;
 }
 
+export interface BackupJob {
+  runId: string;
+}
+
+export interface BackupCheckJob {
+  trigger: 'scheduled-check';
+}
+
 // Job queue functions
 export async function queueFFmpegTranscode(job: FFmpegTranscodeJob, options?: any) {
   const jobs = getJobs();
@@ -260,6 +270,15 @@ export async function queueCleanup(job: CleanupJob, options?: any) {
   const jobs = getJobs();
   return jobs.send('cleanup', job, {
     retryLimit: 1,
+    ...options,
+  });
+}
+
+export async function queueBackup(job: BackupJob, options?: any) {
+  const jobs = getJobs();
+  return jobs.send('backup', job, {
+    retryLimit: 1,
+    retryDelay: 60,
     ...options,
   });
 }
@@ -814,6 +833,38 @@ export async function registerJobHandlers() {
     }
   });
 
+  await jobs.work<BackupJob>('backup', async (jobBatch) => {
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      logger.info({ runId: job.data.runId }, 'Processing backup job');
+      await runFullBackup(job.data.runId);
+    }
+  });
+
+  await jobs.work<BackupCheckJob>('backup:check', async () => {
+    const backupsSettings = getCachedSettings('org.backups');
+    if (!backupsSettings.automatic_enabled) {
+      return;
+    }
+
+    const latestRun = await getLatestBackupRun();
+    const now = Date.now();
+    const latestTimestamp = latestRun?.created_at ? new Date(latestRun.created_at).getTime() : 0;
+    const intervalMs = backupsSettings.interval_hours * 60 * 60 * 1000;
+
+    if (latestRun && ['PENDING', 'RUNNING'].includes(latestRun.status)) {
+      return;
+    }
+
+    if (latestTimestamp && now - latestTimestamp < intervalMs) {
+      return;
+    }
+
+    const run = await createBackupRun('AUTOMATIC');
+    await queueBackup({ runId: run.id });
+  });
+
   logger.info('Job handlers registered');
 }
 
@@ -864,10 +915,12 @@ export async function scheduleRecurringJobs() {
     // Clean any prior schedules
     await jobs.unschedule('cleanup').catch(() => { });
     await jobs.unschedule('archive').catch(() => { });
+    await jobs.unschedule('backup:check').catch(() => { });
 
     // Now schedule safely (queues exist)
     await jobs.schedule('cleanup', '0 2 * * *', { type: 'expired_sessions' });      // daily 2 AM
     await jobs.schedule('archive', '0 3 * * 0', { type: 'logs', startDate: '', endDate: '' }); // Sun 3 AM
+    await jobs.schedule('backup:check', '0 * * * *', { trigger: 'scheduled-check' }); // hourly
 
     logger.info('Recurring jobs scheduled successfully');
   } catch (error) {

@@ -85,6 +85,18 @@ export async function getUserDepartmentMap(userIds: string[]) {
   return new Map(rows.map((row) => [row.id, row.department_id ?? null]));
 }
 
+export async function getUserRoleMap(userIds: string[]) {
+  if (userIds.length === 0) return new Map<string, string | null>();
+  const db = getDatabase();
+  const rows = await db
+    .select({ id: schema.users.id, role: schema.roles.name })
+    .from(schema.users)
+    .innerJoin(schema.roles, eq(schema.users.role_id, schema.roles.id))
+    .where(inArray(schema.users.id, userIds as any));
+
+  return new Map(rows.map((row) => [row.id, row.role ?? null]));
+}
+
 export async function canAccessOwnedResource(
   actor: ActorContext,
   ownerUserId?: string | null,
@@ -101,4 +113,42 @@ export async function canAccessOwnedResource(
 
   const ownerDepartments = await getUserDepartmentMap([ownerUserId]);
   return isSameDepartment(actor.departmentId, ownerDepartments.get(ownerUserId));
+}
+
+export async function canReadLayoutResource(actor: ActorContext, ownerUserId?: string | null) {
+  if (isAdminLike(actor.roleName)) return true;
+  if (!ownerUserId) return false;
+  if (!isDepartmentScopedRole(actor.roleName)) return false;
+
+  const ownerRoles = await getUserRoleMap([ownerUserId]);
+  if (ownerRoles.get(ownerUserId) === 'ADMIN') {
+    return true;
+  }
+
+  const ownerDepartments = await getUserDepartmentMap([ownerUserId]);
+  return isSameDepartment(actor.departmentId, ownerDepartments.get(ownerUserId));
+}
+
+export async function canReadAdminSharedResource(actor: ActorContext, ownerUserId?: string | null) {
+  if (isAdminLike(actor.roleName)) return true;
+  if (ownerUserId && ownerUserId === actor.userId) return true;
+  if (!ownerUserId || !isDepartmentScopedRole(actor.roleName)) return false;
+
+  const ownerRoles = await getUserRoleMap([ownerUserId]);
+  if (ownerRoles.get(ownerUserId) === 'ADMIN') {
+    return true;
+  }
+
+  const ownerDepartments = await getUserDepartmentMap([ownerUserId]);
+  return isSameDepartment(actor.departmentId, ownerDepartments.get(ownerUserId));
+}
+
+export async function getAdminUserIds() {
+  const db = getDatabase();
+  const rows = await db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .innerJoin(schema.roles, eq(schema.users.role_id, schema.roles.id))
+    .where(eq(schema.roles.name, 'ADMIN'));
+  return rows.map((row) => row.id);
 }

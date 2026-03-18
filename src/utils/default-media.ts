@@ -5,8 +5,10 @@ import { resolveAspectRatio } from '@/utils/aspect-ratio';
 
 export const DEFAULT_MEDIA_SETTING_KEY = 'default_media_id';
 export const DEFAULT_MEDIA_VARIANTS_SETTING_KEY = 'default_media_variants';
+export const DEFAULT_MEDIA_TARGETS_SETTING_KEY = 'default_media_targets';
 
-export type DefaultMediaSource = 'ASPECT_RATIO' | 'GLOBAL' | 'NONE';
+export type DefaultMediaSource = 'SCREEN' | 'GROUP' | 'ASPECT_RATIO' | 'GLOBAL' | 'NONE';
+export type DefaultMediaTargetType = 'SCREEN' | 'GROUP';
 
 type MediaRecord = typeof schema.media.$inferSelect;
 
@@ -18,6 +20,18 @@ type DefaultMediaRecord = {
 
 type DefaultMediaVariantsMap = Record<string, string>;
 
+export type DefaultMediaTargetAssignment = {
+  target_type: DefaultMediaTargetType;
+  target_id: string;
+  media_id: string;
+  aspect_ratio: string;
+};
+
+export type DefaultMediaTargetAssignmentRecord = DefaultMediaTargetAssignment & {
+  media: MediaRecord | null;
+  media_url: string | null;
+};
+
 export type ResolvedDefaultMedia = {
   source: DefaultMediaSource;
   aspect_ratio: string | null;
@@ -25,6 +39,9 @@ export type ResolvedDefaultMedia = {
   media: MediaRecord | null;
   media_url: string | null;
 };
+
+const isUuidLike = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
 const extractDefaultMediaId = (value: unknown): string | null => {
   if (typeof value === 'string' && value.trim()) return value;
@@ -48,6 +65,42 @@ const extractDefaultMediaVariants = (value: unknown): DefaultMediaVariantsMap =>
     }
     return acc;
   }, {});
+};
+
+const extractDefaultMediaTargets = (value: unknown): DefaultMediaTargetAssignment[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.reduce<DefaultMediaTargetAssignment[]>((acc, entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return acc;
+    }
+
+    const record = entry as Record<string, unknown>;
+    const targetType = typeof record.target_type === 'string' ? record.target_type.trim().toUpperCase() : '';
+    const targetId = typeof record.target_id === 'string' ? record.target_id.trim() : '';
+    const aspectRatio = typeof record.aspect_ratio === 'string' ? record.aspect_ratio.trim() : '';
+    const mediaId = extractDefaultMediaId(record.media_id ?? record);
+
+    if (
+      (targetType === 'SCREEN' || targetType === 'GROUP') &&
+      targetId &&
+      aspectRatio &&
+      mediaId &&
+      isUuidLike(targetId) &&
+      isUuidLike(mediaId)
+    ) {
+      acc.push({
+        target_type: targetType,
+        target_id: targetId,
+        media_id: mediaId,
+        aspect_ratio: aspectRatio,
+      });
+    }
+
+    return acc;
+  }, []);
 };
 
 export async function resolveMediaUrl(media: any, db = getDatabase()): Promise<string | null> {
@@ -155,8 +208,40 @@ export async function getDefaultMediaVariants(db = getDatabase()): Promise<{
   };
 }
 
+export async function getDefaultMediaTargetAssignments(
+  db = getDatabase()
+): Promise<DefaultMediaTargetAssignmentRecord[]> {
+  const [setting] = await db
+    .select()
+    .from(schema.settings)
+    .where(eq(schema.settings.key, DEFAULT_MEDIA_TARGETS_SETTING_KEY));
+
+  const assignments = extractDefaultMediaTargets(setting?.value);
+  if (assignments.length === 0) {
+    return [];
+  }
+
+  const mediaIds = Array.from(new Set(assignments.map((assignment) => assignment.media_id)));
+  const mediaRows = await db.select().from(schema.media).where(inArray(schema.media.id, mediaIds as any));
+  const mediaById = new Map(mediaRows.map((media) => [media.id, media]));
+  const urlsById = new Map<string, string | null>();
+
+  await Promise.all(
+    mediaRows.map(async (media) => {
+      urlsById.set(media.id, await resolveMediaUrl(media, db));
+    })
+  );
+
+  return assignments.map((assignment) => ({
+    ...assignment,
+    media: mediaById.get(assignment.media_id) ?? null,
+    media_url: urlsById.get(assignment.media_id) ?? null,
+  }));
+}
+
 export async function resolveDefaultMediaForScreen(
   screen: {
+    id?: string | null;
     aspect_ratio?: string | null;
     width?: number | null;
     height?: number | null;
@@ -164,39 +249,50 @@ export async function resolveDefaultMediaForScreen(
   db = getDatabase()
 ): Promise<ResolvedDefaultMedia> {
   const aspect_ratio = resolveAspectRatio(screen);
-  const [variantsMap, globalDefault] = await Promise.all([
-    getDefaultMediaVariantsMap(db),
-    getDefaultMedia(db),
-  ]);
+  const screenId = screen.id ?? null;
+  if (screenId) {
+    const assignments = await getDefaultMediaTargetAssignments(db);
+    const matchingAssignments = assignments.filter(
+      (assignment) => assignment.aspect_ratio === aspect_ratio && assignment.media
+    );
 
-  const variantMediaId = aspect_ratio ? variantsMap[aspect_ratio] ?? null : null;
-  if (variantMediaId) {
-    const variantDefault = await loadMediaRecord(variantMediaId, db);
-    if (variantDefault.media) {
+    const screenAssignment = matchingAssignments.find(
+      (assignment) => assignment.target_type === 'SCREEN' && assignment.target_id === screenId
+    );
+    if (screenAssignment?.media) {
       return {
-        source: 'ASPECT_RATIO',
+        source: 'SCREEN',
         aspect_ratio,
-        media_id: variantDefault.media_id,
-        media: variantDefault.media,
-        media_url: variantDefault.media_url,
+        media_id: screenAssignment.media_id,
+        media: screenAssignment.media,
+        media_url: screenAssignment.media_url,
       };
     }
-  }
 
-  if (globalDefault?.media) {
-    return {
-      source: 'GLOBAL',
-      aspect_ratio,
-      media_id: globalDefault.media_id,
-      media: globalDefault.media,
-      media_url: globalDefault.media_url,
-    };
+    const memberships = await db
+      .select({ group_id: schema.screenGroupMembers.group_id })
+      .from(schema.screenGroupMembers)
+      .where(eq(schema.screenGroupMembers.screen_id, screenId));
+    const groupIds = new Set(memberships.map((membership) => membership.group_id));
+
+    const groupAssignment = matchingAssignments.find(
+      (assignment) => assignment.target_type === 'GROUP' && groupIds.has(assignment.target_id)
+    );
+    if (groupAssignment?.media) {
+      return {
+        source: 'GROUP',
+        aspect_ratio,
+        media_id: groupAssignment.media_id,
+        media: groupAssignment.media,
+        media_url: groupAssignment.media_url,
+      };
+    }
   }
 
   return {
     source: 'NONE',
     aspect_ratio,
-    media_id: globalDefault?.media_id ?? null,
+    media_id: null,
     media: null,
     media_url: null,
   };

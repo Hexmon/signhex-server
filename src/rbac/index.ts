@@ -68,7 +68,7 @@ export async function defineAbilityFor(roleId: string, userId: string, departmen
     throw AppError.unauthorized('Authorization context is stale. Please sign in again.');
   }
 
-  const { can, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+  const { can, cannot, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
 
   if (role.name === 'SUPER_ADMIN') {
     can('manage', 'all');
@@ -77,6 +77,12 @@ export async function defineAbilityFor(roleId: string, userId: string, departmen
 
   const userContext: UserContext = { id: userId, department_id: departmentId };
   const grants = await resolveRoleGrants(role as any, new Set<string>());
+  const hasExplicitBrandingGrant = grants.some(
+    (grant: any) =>
+      grant &&
+      (grant.subject === 'BrandingSettings') &&
+      (grant.action === 'manage' || grant.action === 'read' || grant.action === 'update')
+  );
 
   grants.forEach((grant: any) => {
     if (!grant || !grant.action || !grant.subject) return;
@@ -87,6 +93,10 @@ export async function defineAbilityFor(roleId: string, userId: string, departmen
     }
     can(grant.action, grant.subject, conditions as any);
   });
+
+  if (role.name === 'ADMIN' && !hasExplicitBrandingGrant) {
+    cannot('manage', 'BrandingSettings');
+  }
 
   return build();
 }

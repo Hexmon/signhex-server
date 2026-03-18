@@ -668,6 +668,35 @@ export const settings = pgTable('settings', {
   updated_at: timestamp('updated_at').notNull().defaultNow(),
 });
 
+export const backupRuns = pgTable(
+  'backup_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    trigger_type: varchar('trigger_type', { length: 20 }).notNull(),
+    status: varchar('status', { length: 20 }).notNull().default('PENDING'),
+    triggered_by: uuid('triggered_by'),
+    started_at: timestamp('started_at'),
+    completed_at: timestamp('completed_at'),
+    error_message: text('error_message'),
+    files: jsonb('files').$type<
+      Array<{
+        bucket: string;
+        object_key: string;
+        name: string;
+        size: number;
+        content_type: string;
+        storage_object_id: string;
+      }>
+    >(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    statusIdx: index('backup_runs_status_idx').on(table.status),
+    createdAtIdx: index('backup_runs_created_at_idx').on(table.created_at),
+  })
+);
+
 // API Keys
 export const apiKeys = pgTable(
   'api_keys',

@@ -15,6 +15,7 @@ MINIO_PORT="${MINIO_PORT:-9000}"
 MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-}"
 MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-}"
 MINIO_USE_SSL="${MINIO_USE_SSL:-false}"
+BACKUP_SKIP_ARCHIVES="${BACKUP_SKIP_ARCHIVES:-false}"
 
 if [ -z "$MINIO_ACCESS_KEY" ] || [ -z "$MINIO_SECRET_KEY" ]; then
     echo "Error: MINIO_ACCESS_KEY and MINIO_SECRET_KEY environment variables are required"
@@ -47,8 +48,11 @@ BUCKETS=(
     "logs-auth"
     "logs-heartbeats"
     "logs-pop"
-    "archives"
 )
+
+if [ "$BACKUP_SKIP_ARCHIVES" != "true" ]; then
+    BUCKETS+=("archives")
+fi
 
 # Configure mc (MinIO client)
 mc alias set hexmon "$PROTOCOL://$MINIO_ENDPOINT:$MINIO_PORT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" --api S3v4

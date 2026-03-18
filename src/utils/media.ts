@@ -71,6 +71,6 @@ export const serializeMediaRecord = (media: MediaRecord, mediaUrl?: string | nul
     created_by: media.created_by ?? undefined,
     created_at: toIso(media.created_at),
     updated_at: toIso(media.updated_at),
-    media_url: mediaUrl ?? undefined,
+    media_url: mediaUrl ?? null,
   };
 };

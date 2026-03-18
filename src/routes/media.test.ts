@@ -19,10 +19,12 @@ describe('Media Routes - delete ownership and usage protection', () => {
   let otherUserToken: string;
   let adminToken: string;
   let superAdminToken: string;
+  let operatorToken: string;
   let ownerUserId: string;
   let otherUserId: string;
   let adminUserId: string;
   let superAdminUserId: string;
+  let operatorUserId: string;
 
   beforeAll(async () => {
     await initializeDatabase();
@@ -85,6 +87,11 @@ describe('Media Routes - delete ownership and usage protection', () => {
         { action: 'delete', subject: 'Media' },
       ],
     });
+    const operatorRole = await ensureRole('OPERATOR', {
+      grants: [
+        { action: 'read', subject: 'Media' },
+      ],
+    });
     const superAdminRole = await ensureRole('SUPER_ADMIN', { grants: [] });
 
     const createUser = async (params: {
@@ -130,6 +137,18 @@ describe('Media Routes - delete ownership and usage protection', () => {
       lastName: 'Admin',
       roleId: superAdminRole.id,
     });
+    operatorUserId = await createUser({
+      email: `media-operator-${Date.now()}@example.com`,
+      firstName: 'Operator',
+      lastName: 'User',
+      roleId: operatorRole.id,
+    });
+
+    const operatorDepartmentId = randomUUID();
+    await db
+      .update(schema.users)
+      .set({ department_id: operatorDepartmentId })
+      .where(eq(schema.users.id, operatorUserId));
 
     const issueToken = async (userId: string, email: string, roleId: string, roleName: string) => {
       const token = await generateAccessToken(userId, email, roleId, roleName);
@@ -165,6 +184,19 @@ describe('Media Routes - delete ownership and usage protection', () => {
       superAdminRole.id,
       superAdminRole.name
     );
+    const operatorAccess = await generateAccessToken(
+      operatorUserId,
+      `operator-${operatorUserId}@example.com`,
+      operatorRole.id,
+      operatorRole.name,
+      operatorDepartmentId
+    );
+    await createSessionRepository().create({
+      user_id: operatorUserId,
+      access_jti: operatorAccess.jti,
+      expires_at: operatorAccess.expiresAt,
+    });
+    operatorToken = operatorAccess.token;
   });
 
   afterAll(async () => {
@@ -265,6 +297,40 @@ describe('Media Routes - delete ownership and usage protection', () => {
     expect(body.error.message).toContain('Priya Sharma');
     expect(body.error.details.owner_user_id).toBe(ownerUserId);
     expect(body.error.details.owner_display_name).toBe('Priya Sharma');
+  });
+
+  it('shows admin uploaded media to operators in list and detail responses', async () => {
+    const media = await insertMedia(adminUserId);
+
+    const listResponse = await server.inject({
+      method: 'GET',
+      url: '/api/v1/media',
+      headers: {
+        authorization: `Bearer ${operatorToken}`,
+      },
+    });
+
+    expect(listResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const listBody = JSON.parse(listResponse.body);
+    expect(listBody.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: media.id,
+        }),
+      ])
+    );
+
+    const getResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/media/${media.id}`,
+      headers: {
+        authorization: `Bearer ${operatorToken}`,
+      },
+    });
+
+    expect(getResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const getBody = JSON.parse(getResponse.body);
+    expect(getBody.id).toBe(media.id);
   });
 
   it('allows ADMIN to delete another user media', async () => {

@@ -184,8 +184,17 @@ export const apiEndpoints = {
   settings: {
     list: withBase('/settings'),
     upsert: withBase('/settings'),
+    general: withBase('/settings/general'),
+    branding: withBase('/settings/branding'),
+    security: withBase('/settings/security'),
+    appearance: withBase('/settings/appearance'),
+    backups: withBase('/settings/backups'),
+    backupRun: withBase('/settings/backups/run'),
+    backupHistory: withBase('/settings/backups/history'),
+    logs: withBase('/settings/logs'),
     defaultMedia: withBase('/settings/default-media'),
     defaultMediaVariants: withBase('/settings/default-media/variants'),
+    defaultMediaTargets: withBase('/settings/default-media/targets'),
   },
   conversations: {
     start: withBase('/conversations'),

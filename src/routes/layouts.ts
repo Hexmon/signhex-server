@@ -8,7 +8,7 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
-import { canAccessOwnedResource, getDepartmentUserIds, isDepartmentScopedRole } from '@/rbac/policy';
+import { canAccessOwnedResource, canReadLayoutResource, getAdminUserIds, getDepartmentUserIds, getUserRoleMap, isDepartmentScopedRole } from '@/rbac/policy';
 
 const logger = createLogger('layout-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -106,6 +106,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           aspect_ratio: layout.aspect_ratio,
           spec: layout.spec,
           created_by: layout.created_by ?? payload.sub,
+          is_shared: payload.role === 'ADMIN',
           created_at: layout.created_at.toISOString?.() ?? layout.created_at,
           updated_at: layout.updated_at.toISOString?.() ?? layout.updated_at,
         });
@@ -136,7 +137,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
 
         const query = listLayoutsQuerySchema.parse(request.query);
         const createdByIds = isDepartmentScopedRole(payload.role)
-          ? await getDepartmentUserIds(payload.department_id)
+          ? Array.from(new Set([...(await getDepartmentUserIds(payload.department_id)), ...(await getAdminUserIds())]))
           : undefined;
         const result = await repo.list({
           page: query.page,
@@ -146,6 +147,12 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           created_by_ids: createdByIds,
         });
 
+        const creatorRoles = await getUserRoleMap(
+          result.items
+            .map((item: any) => item.created_by)
+            .filter((value: string | null | undefined): value is string => Boolean(value))
+        );
+
         return reply.send({
           items: result.items.map((l: any) => ({
             id: l.id,
@@ -154,6 +161,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
             aspect_ratio: l.aspect_ratio,
             spec: l.spec,
             created_by: l.created_by ?? null,
+            is_shared: Boolean(l.created_by && creatorRoles.get(l.created_by) === 'ADMIN'),
             created_at: l.created_at.toISOString?.() ?? l.created_at,
             updated_at: l.updated_at.toISOString?.() ?? l.updated_at,
           })),
@@ -190,13 +198,13 @@ export async function layoutRoutes(fastify: FastifyInstance) {
 
         const layout = await repo.findById((request.params as any).id);
         if (!layout) throw AppError.notFound('Layout not found');
-        const canReadLayout = await canAccessOwnedResource(
+        const canReadLayout = await canReadLayoutResource(
           { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
-          layout.created_by,
-          { allowUnownedForAdminOnly: true }
+          layout.created_by
         );
         if (!canReadLayout) throw AppError.forbidden('Forbidden');
 
+        const creatorRoles = await getUserRoleMap(layout.created_by ? [layout.created_by] : []);
         return reply.send({
           id: layout.id,
           name: layout.name,
@@ -204,6 +212,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           aspect_ratio: layout.aspect_ratio,
           spec: layout.spec,
           created_by: layout.created_by ?? null,
+          is_shared: Boolean(layout.created_by && creatorRoles.get(layout.created_by) === 'ADMIN'),
           created_at: layout.created_at.toISOString?.() ?? layout.created_at,
           updated_at: layout.updated_at.toISOString?.() ?? layout.updated_at,
         });
@@ -260,6 +269,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           aspect_ratio: layout.aspect_ratio,
           spec: layout.spec,
           created_by: layout.created_by ?? null,
+          is_shared: payload.role === 'ADMIN',
           created_at: layout.created_at.toISOString?.() ?? layout.created_at,
           updated_at: layout.updated_at.toISOString?.() ?? layout.updated_at,
         });

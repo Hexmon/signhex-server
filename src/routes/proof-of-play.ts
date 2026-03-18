@@ -30,6 +30,15 @@ const listSchema = z.object({
 
 export async function proofOfPlayRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
+  const exportColumns = [
+    'id',
+    'screen_id',
+    'media_id',
+    'presentation_id',
+    'started_at',
+    'ended_at',
+    'created_at',
+  ] as const;
   const buildConditions = (query: typeof listSchema._type) => {
     const conditions: any[] = [];
     if (query.screen_id) conditions.push(eq(schema.proofOfPlay.screen_id, query.screen_id));
@@ -181,7 +190,10 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
             ended_at: i.ended_at?.toISOString?.() ?? i.ended_at,
             created_at: i.created_at?.toISOString?.() ?? i.created_at,
           })),
-          { header: true }
+          {
+            header: true,
+            columns: exportColumns,
+          }
         );
 
         reply.header('Content-Type', 'text/csv');

@@ -13,6 +13,7 @@ import { respondWithError } from '@/utils/errors';
 import { isLockedOut, recordFailedAttempt, resetAttempts } from '@/auth/login-throttle';
 import { AppError } from '@/utils/app-error';
 import { createRoleRepository } from '@/db/repositories/role';
+import { getIdleTimeoutSeconds } from '@/utils/settings';
 
 const logger = createLogger('auth-routes');
 const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, TOO_MANY_REQUESTS, UNAUTHORIZED } = HTTP_STATUS;
@@ -89,7 +90,8 @@ export async function authRoutes(fastify: FastifyInstance) {
           email,
           role.id,
           role.name,
-          department_id
+          department_id,
+          { expiresInSeconds: getIdleTimeoutSeconds() }
         );
         const csrfToken = randomUUID();
 

@@ -1,6 +1,10 @@
 import { eq, and, desc, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
-import { DEFAULT_MEDIA_SETTING_KEY, DEFAULT_MEDIA_VARIANTS_SETTING_KEY } from '@/utils/default-media';
+import {
+  DEFAULT_MEDIA_SETTING_KEY,
+  DEFAULT_MEDIA_TARGETS_SETTING_KEY,
+  DEFAULT_MEDIA_VARIANTS_SETTING_KEY,
+} from '@/utils/default-media';
 
 export type MediaUsageReference =
   | 'chat_attachments'
@@ -120,6 +124,7 @@ export class MediaRepository {
       proofOfPlay,
       defaultMediaSetting,
       defaultMediaVariantsSetting,
+      defaultMediaTargetsSetting,
     ] = await Promise.all([
       db.select({ id: schema.chatAttachments.id }).from(schema.chatAttachments).where(eq(schema.chatAttachments.media_asset_id, id)).limit(1),
       db.select({ id: schema.chatBookmarks.id }).from(schema.chatBookmarks).where(eq(schema.chatBookmarks.media_asset_id, id)).limit(1),
@@ -131,6 +136,7 @@ export class MediaRepository {
       db.select({ id: schema.proofOfPlay.id }).from(schema.proofOfPlay).where(eq(schema.proofOfPlay.media_id, id)).limit(1),
       db.select({ value: schema.settings.value }).from(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_SETTING_KEY)).limit(1),
       db.select({ value: schema.settings.value }).from(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_VARIANTS_SETTING_KEY)).limit(1),
+      db.select({ value: schema.settings.value }).from(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_TARGETS_SETTING_KEY)).limit(1),
     ]);
 
     const references: MediaUsageReference[] = [];
@@ -166,6 +172,19 @@ export class MediaRepository {
       typeof variantMediaMap === 'object' &&
       !Array.isArray(variantMediaMap) &&
       Object.values(variantMediaMap as Record<string, unknown>).some((value) => value === id)
+    ) {
+      if (!references.includes('settings')) {
+        references.push('settings');
+      }
+    }
+    const targetAssignments = defaultMediaTargetsSetting[0]?.value;
+    if (
+      Array.isArray(targetAssignments) &&
+      targetAssignments.some((value) => {
+        if (!value || typeof value !== 'object') return false;
+        const candidate = value as { media_id?: unknown };
+        return candidate.media_id === id;
+      })
     ) {
       if (!references.includes('settings')) {
         references.push('settings');

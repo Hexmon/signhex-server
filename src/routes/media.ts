@@ -18,7 +18,13 @@ import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
 import { deriveMediaDisplayName, sanitizeStorageFilename, serializeMediaRecord } from '@/utils/media';
-import { canAccessOwnedResource, getDepartmentUserIds, isDepartmentScopedRole } from '@/rbac/policy';
+import {
+  canAccessOwnedResource,
+  canReadAdminSharedResource,
+  getAdminUserIds,
+  getDepartmentUserIds,
+  isDepartmentScopedRole,
+} from '@/rbac/policy';
 
 const logger = createLogger('media-routes');
 const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
@@ -234,7 +240,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
         const query = listMediaQuerySchema.parse(request.query);
         const createdByIds = isDepartmentScopedRole(payload.role)
-          ? await getDepartmentUserIds(payload.department_id)
+          ? Array.from(new Set([...(await getDepartmentUserIds(payload.department_id)), ...(await getAdminUserIds())]))
           : undefined;
         const result = await mediaRepo.list({
           page: query.page,
@@ -306,7 +312,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         if (!media) {
           throw AppError.notFound('Media not found');
         }
-        const canReadMedia = await canAccessOwnedResource(
+        const canReadMedia = await canReadAdminSharedResource(
           { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
           media.created_by
         );
