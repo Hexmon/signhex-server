@@ -11,6 +11,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 import { PERMISSION_ACTIONS } from '@/rbac/permissions';
+import { canManageSystemRole, isSuperAdmin } from '@/rbac/policy';
 
 const logger = createLogger('role-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -67,6 +68,9 @@ export async function roleRoutes(fastify: FastifyInstance) {
         if (!ability.can('create', 'Role')) throw AppError.forbidden('Forbidden');
 
         const data = createRoleSchema.parse(request.body);
+        if (!isSuperAdmin(payload.role)) {
+          throw AppError.forbidden('Only Super Admin can create roles.');
+        }
         const role = await roleRepo.create({
           name: data.name,
           description: data.description,
@@ -197,6 +201,11 @@ export async function roleRoutes(fastify: FastifyInstance) {
         if (!ability.can('update', 'Role')) throw AppError.forbidden('Forbidden');
 
         const data = updateRoleSchema.parse(request.body);
+        const existingRole = await roleRepo.findById(request.params.id);
+        if (!existingRole) throw AppError.notFound('Role not found');
+        if (existingRole.is_system && !canManageSystemRole(payload.role, existingRole.name)) {
+          throw AppError.forbidden('Forbidden');
+        }
         const updated = await roleRepo.update(request.params.id, data);
         if (!updated) throw AppError.notFound('Role not found');
 
@@ -236,6 +245,9 @@ export async function roleRoutes(fastify: FastifyInstance) {
 
         const role = await roleRepo.findById(request.params.id);
         if (!role) throw AppError.notFound('Role not found');
+        if (role.is_system && !canManageSystemRole(payload.role, role.name)) {
+          throw AppError.forbidden('Forbidden');
+        }
         if (role.is_system) throw AppError.conflict('System roles cannot be deleted.');
 
         const [usage] = await db

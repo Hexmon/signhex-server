@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class ScheduleRepository {
@@ -25,6 +25,7 @@ export class ScheduleRepository {
     page?: number;
     limit?: number;
     is_active?: boolean;
+    created_by_ids?: string[];
   }) {
     const db = getDatabase();
     const page = options.page || 1;
@@ -34,6 +35,12 @@ export class ScheduleRepository {
     const conditions = [];
     if (options.is_active !== undefined) {
       conditions.push(eq(schema.schedules.is_active, options.is_active));
+    }
+    if (options.created_by_ids) {
+      if (options.created_by_ids.length === 0) {
+        return { items: [], total: 0, page, limit };
+      }
+      conditions.push(inArray(schema.schedules.created_by, options.created_by_ids as any));
     }
 
     let query = db.select().from(schema.schedules);

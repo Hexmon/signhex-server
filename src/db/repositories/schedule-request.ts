@@ -1,4 +1,4 @@
-import { eq, and, desc, lt, sql } from 'drizzle-orm';
+import { eq, and, desc, lt, sql, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 type ScheduleRequestStatus = (typeof schema.scheduleRequestStatusEnum.enumValues)[number];
@@ -35,11 +35,16 @@ export class ScheduleRequestRepository {
     limit?: number;
     status?: ScheduleRequestStatusFilter;
     requested_by?: string;
+    requested_by_ids?: string[];
   }) {
     const db = getDatabase();
     const page = options.page || 1;
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
+
+    if (options.requested_by_ids && options.requested_by_ids.length === 0) {
+      return { items: [], total: 0, page, limit };
+    }
 
     const isExpiredFilter = options.status === 'EXPIRED';
     const isPublishedFilter = options.status === 'PUBLISHED';
@@ -49,6 +54,7 @@ export class ScheduleRequestRepository {
       const expiredConditions = [
         lt(schema.schedules.end_at, now),
         ...(options.requested_by ? [eq(schema.scheduleRequests.requested_by, options.requested_by)] : []),
+        ...(options.requested_by_ids ? [inArray(schema.scheduleRequests.requested_by, options.requested_by_ids as any)] : []),
       ];
 
       const buildExpiredQuery = () =>
@@ -74,6 +80,7 @@ export class ScheduleRequestRepository {
       const publishedConditions = [
         sql`${schema.scheduleRequests.schedule_id} IN (SELECT ${schema.publishes.schedule_id} FROM ${schema.publishes})`,
         ...(options.requested_by ? [eq(schema.scheduleRequests.requested_by, options.requested_by)] : []),
+        ...(options.requested_by_ids ? [inArray(schema.scheduleRequests.requested_by, options.requested_by_ids as any)] : []),
       ];
 
       const whereClause = and(...publishedConditions);
@@ -96,6 +103,7 @@ export class ScheduleRequestRepository {
     const conditions = [];
     if (options.status) conditions.push(eq(schema.scheduleRequests.status, options.status as ScheduleRequestStatus));
     if (options.requested_by) conditions.push(eq(schema.scheduleRequests.requested_by, options.requested_by));
+    if (options.requested_by_ids) conditions.push(inArray(schema.scheduleRequests.requested_by, options.requested_by_ids as any));
 
     let query = db.select().from(schema.scheduleRequests);
     if (conditions.length) {
@@ -108,11 +116,17 @@ export class ScheduleRequestRepository {
     return { items, total: total.length, page, limit };
   }
 
-  async countSummary(options?: { requested_by?: string }) {
+  async countSummary(options?: { requested_by?: string; requested_by_ids?: string[] }) {
     const db = getDatabase();
+    if (options?.requested_by_ids && options.requested_by_ids.length === 0) {
+      return { pending: 0, approved: 0, rejected: 0, published: 0, expired: 0 };
+    }
     const baseConditions = options?.requested_by
       ? [eq(schema.scheduleRequests.requested_by, options.requested_by)]
       : [];
+    if (options?.requested_by_ids) {
+      baseConditions.push(inArray(schema.scheduleRequests.requested_by, options.requested_by_ids as any));
+    }
     const combine = (...extra: any[]) => {
       const filters = [...baseConditions, ...extra].filter(Boolean);
       if (filters.length === 0) return undefined;

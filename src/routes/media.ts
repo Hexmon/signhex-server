@@ -18,6 +18,7 @@ import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
 import { deriveMediaDisplayName, sanitizeStorageFilename, serializeMediaRecord } from '@/utils/media';
+import { canAccessOwnedResource, getDepartmentUserIds, isDepartmentScopedRole } from '@/rbac/policy';
 
 const logger = createLogger('media-routes');
 const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
@@ -229,14 +230,18 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
 
         const query = listMediaQuerySchema.parse(request.query);
+        const createdByIds = isDepartmentScopedRole(payload.role)
+          ? await getDepartmentUserIds(payload.department_id)
+          : undefined;
         const result = await mediaRepo.list({
           page: query.page,
           limit: query.limit,
           type: query.type,
           status: query.status,
+          created_by_ids: createdByIds,
         });
 
         const readyIds = result.items.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
@@ -294,13 +299,18 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
 
         const mediaId = (request.params as any).id;
         const media = await mediaRepo.findById(mediaId);
         if (!media) {
           throw AppError.notFound('Media not found');
         }
+        const canReadMedia = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          media.created_by
+        );
+        if (!canReadMedia) throw AppError.forbidden('Forbidden');
 
         const media_url = await resolveMediaUrl(media);
         const statusState = resolveApiStatus(media, media_url);
@@ -345,6 +355,11 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         if (!media) {
           throw AppError.notFound('Media not found');
         }
+        const canUpdateMedia = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          media.created_by
+        );
+        if (!canUpdateMedia) throw AppError.forbidden('Forbidden');
 
         if (!media.source_bucket || !media.source_object_key) {
           throw AppError.badRequest('Media missing source object info');

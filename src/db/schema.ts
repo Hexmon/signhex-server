@@ -325,11 +325,13 @@ export const layouts = pgTable(
     description: text('description'),
     aspect_ratio: varchar('aspect_ratio', { length: 50 }).notNull(),
     spec: jsonb('spec').notNull(), // normalized slots: [{id,x,y,w,h,z,fit,audio_enabled}]
+    created_by: uuid('created_by'),
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => ({
     aspectIdx: index('layouts_aspect_ratio_idx').on(table.aspect_ratio),
+    creatorIdx: index('layouts_created_by_idx').on(table.created_by),
   })
 );
 

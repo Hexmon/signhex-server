@@ -132,6 +132,7 @@ export async function authRoutes(fastify: FastifyInstance) {
             last_name: last_name,
             role: role.name,
             role_id: role.id,
+            department_id: department_id ?? null,
           },
           expiresAt: expiresAt.toISOString(),
         };

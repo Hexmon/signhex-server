@@ -4,6 +4,7 @@ import { initializeDatabase, closeDatabase, getDatabase, schema } from '@/db';
 import { generateAccessToken } from '@/auth/jwt';
 import { hashPassword } from '@/auth/password';
 import { createSessionRepository } from '@/db/repositories/session';
+import { SYSTEM_ROLE_DEFAULTS } from '@/rbac/system-roles';
 
 export async function createTestServer(): Promise<FastifyInstance> {
   await initializeDatabase();
@@ -42,19 +43,19 @@ export async function seedTestData() {
       {
         id: testRoles.ADMIN.id,
         name: testRoles.ADMIN.name,
-        permissions: {},
+        permissions: SYSTEM_ROLE_DEFAULTS.ADMIN,
         is_system: true,
       },
       {
         id: testRoles.OPERATOR.id,
         name: testRoles.OPERATOR.name,
-        permissions: {},
+        permissions: SYSTEM_ROLE_DEFAULTS.OPERATOR,
         is_system: true,
       },
       {
         id: testRoles.DEPARTMENT.id,
         name: testRoles.DEPARTMENT.name,
-        permissions: {},
+        permissions: SYSTEM_ROLE_DEFAULTS.DEPARTMENT,
         is_system: true,
       },
     ])

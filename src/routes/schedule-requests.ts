@@ -14,6 +14,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { publishScheduleSnapshot } from '@/routes/schedule-publish-helper';
 import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 import { AppError } from '@/utils/app-error';
+import { canAccessOwnedResource, getDepartmentUserIds, isAdminLike, isDepartmentScopedRole } from '@/rbac/policy';
 
 const logger = createLogger('schedule-request-routes');
 const { CREATED } = HTTP_STATUS;
@@ -481,6 +482,15 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
   const scheduleItemRepo = createScheduleItemRepository();
   const db = getDatabase();
 
+  const assertScheduleRequestAccess = async (payload: { sub: string; role: string; department_id?: string }, req: any) => {
+    if (isAdminLike(payload.role)) return;
+    const canAccess = await canAccessOwnedResource(
+      { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+      req.requested_by
+    );
+    if (!canAccess) throw AppError.forbidden('Forbidden');
+  };
+
   // Create schedule request (draft)
   fastify.post<{ Body: typeof createRequestSchema._type; Querystring: typeof createRequestQuerySchema._type }>(
     apiEndpoints.scheduleRequests.create,
@@ -502,6 +512,13 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const data = createRequestSchema.parse(request.body);
         const query = createRequestQuerySchema.parse(request.query);
         const include = parseInclude(query.include);
+        const schedule = await scheduleRepo.findById(data.schedule_id);
+        if (!schedule) throw AppError.notFound('Schedule not found');
+        const canAccessSchedule = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          schedule.created_by
+        );
+        if (!canAccessSchedule) throw AppError.forbidden('Forbidden');
         const created = await repo.create({
           schedule_id: data.schedule_id,
           notes: data.notes,
@@ -548,7 +565,15 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
-        const filter = ability.can('manage', 'all') ? {} : { requested_by: payload.sub };
+        const requestedByIds =
+          isDepartmentScopedRole(payload.role) && !isAdminLike(payload.role)
+            ? await getDepartmentUserIds(payload.department_id)
+            : undefined;
+        const filter = ability.can('manage', 'all')
+          ? {}
+          : requestedByIds
+            ? { requested_by_ids: requestedByIds }
+            : { requested_by: payload.sub };
         const counts = await repo.countSummary(filter);
         return reply.send({ counts });
       } catch (error) {
@@ -578,11 +603,16 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
 
         const query = listRequestQuerySchema.parse(request.query);
         const include = parseInclude(query.include);
+        const requestedByIds =
+          isDepartmentScopedRole(payload.role) && !isAdminLike(payload.role)
+            ? await getDepartmentUserIds(payload.department_id)
+            : undefined;
         const filter = {
           page: query.page,
           limit: query.limit,
           status: query.status,
-          requested_by: ability.can('manage', 'all') ? undefined : payload.sub,
+          requested_by: ability.can('manage', 'all') || requestedByIds ? undefined : payload.sub,
+          requested_by_ids: ability.can('manage', 'all') ? undefined : requestedByIds,
         };
         const result = await repo.list(filter);
 
@@ -641,11 +671,12 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!ability.can('update', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
         const data = updateRequestSchema.parse(request.body);
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
+        await assertScheduleRequestAccess(payload, req);
 
         if (req.status === 'APPROVED') {
           throw AppError.badRequest('Cannot edit an approved request; reject or create new');
@@ -704,9 +735,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
-        if (!ability.can('manage', 'all') && req.requested_by !== payload.sub) {
-          throw AppError.forbidden('Forbidden');
-        }
+        await assertScheduleRequestAccess(payload, req);
 
         if (include.size === 0) {
           return reply.send({
@@ -749,7 +778,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
@@ -785,7 +814,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
@@ -847,7 +876,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');

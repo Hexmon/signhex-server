@@ -40,6 +40,7 @@ import csrfProtectionPlugin from '@/middleware/csrf';
 import { formatErrorResponse } from '@/utils/app-error';
 import { toAppError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { syncSystemRolePermissions } from '@/rbac/system-roles';
 
 type BodySummary = {
   type: string;
@@ -89,6 +90,8 @@ function sanitizeErrorMessage(message?: string) {
 }
 
 export async function createServer() {
+  await syncSystemRolePermissions();
+
   const fastify = Fastify({
     logger: {
       level: appConfig.LOG_LEVEL,

@@ -8,6 +8,7 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { canAccessOwnedResource, getDepartmentUserIds, isDepartmentScopedRole } from '@/rbac/policy';
 
 const logger = createLogger('layout-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -93,7 +94,10 @@ export async function layoutRoutes(fastify: FastifyInstance) {
             { field: 'spec', message: err?.message || 'Invalid layout spec' },
           ]);
         }
-        const layout = await repo.create(data);
+        const layout = await repo.create({
+          ...data,
+          created_by: payload.sub,
+        });
 
         return reply.status(CREATED).send({
           id: layout.id,
@@ -101,6 +105,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           description: layout.description,
           aspect_ratio: layout.aspect_ratio,
           spec: layout.spec,
+          created_by: layout.created_by ?? payload.sub,
           created_at: layout.created_at.toISOString?.() ?? layout.created_at,
           updated_at: layout.updated_at.toISOString?.() ?? layout.updated_at,
         });
@@ -130,11 +135,15 @@ export async function layoutRoutes(fastify: FastifyInstance) {
         if (!ability.can('read', 'Layout')) throw AppError.forbidden('Forbidden');
 
         const query = listLayoutsQuerySchema.parse(request.query);
+        const createdByIds = isDepartmentScopedRole(payload.role)
+          ? await getDepartmentUserIds(payload.department_id)
+          : undefined;
         const result = await repo.list({
           page: query.page,
           limit: query.limit,
           aspect_ratio: query.aspect_ratio,
           search: query.search,
+          created_by_ids: createdByIds,
         });
 
         return reply.send({
@@ -144,6 +153,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
             description: l.description,
             aspect_ratio: l.aspect_ratio,
             spec: l.spec,
+            created_by: l.created_by ?? null,
             created_at: l.created_at.toISOString?.() ?? l.created_at,
             updated_at: l.updated_at.toISOString?.() ?? l.updated_at,
           })),
@@ -180,6 +190,12 @@ export async function layoutRoutes(fastify: FastifyInstance) {
 
         const layout = await repo.findById((request.params as any).id);
         if (!layout) throw AppError.notFound('Layout not found');
+        const canReadLayout = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          layout.created_by,
+          { allowUnownedForAdminOnly: true }
+        );
+        if (!canReadLayout) throw AppError.forbidden('Forbidden');
 
         return reply.send({
           id: layout.id,
@@ -187,6 +203,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           description: layout.description,
           aspect_ratio: layout.aspect_ratio,
           spec: layout.spec,
+          created_by: layout.created_by ?? null,
           created_at: layout.created_at.toISOString?.() ?? layout.created_at,
           updated_at: layout.updated_at.toISOString?.() ?? layout.updated_at,
         });
@@ -225,6 +242,14 @@ export async function layoutRoutes(fastify: FastifyInstance) {
             ]);
           }
         }
+        const existingLayout = await repo.findById((request.params as any).id);
+        if (!existingLayout) throw AppError.notFound('Layout not found');
+        const canUpdateLayout = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          existingLayout.created_by,
+          { creatorOnlyForScopedRoles: true, allowUnownedForAdminOnly: true }
+        );
+        if (!canUpdateLayout) throw AppError.forbidden('You can only edit layouts you created.');
         const layout = await repo.update((request.params as any).id, data);
         if (!layout) throw AppError.notFound('Layout not found');
 
@@ -234,6 +259,7 @@ export async function layoutRoutes(fastify: FastifyInstance) {
           description: layout.description,
           aspect_ratio: layout.aspect_ratio,
           spec: layout.spec,
+          created_by: layout.created_by ?? null,
           created_at: layout.created_at.toISOString?.() ?? layout.created_at,
           updated_at: layout.updated_at.toISOString?.() ?? layout.updated_at,
         });
@@ -264,6 +290,12 @@ export async function layoutRoutes(fastify: FastifyInstance) {
 
         const layout = await repo.findById((request.params as any).id);
         if (!layout) throw AppError.notFound('Layout not found');
+        const canDeleteLayout = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          layout.created_by,
+          { creatorOnlyForScopedRoles: true, allowUnownedForAdminOnly: true }
+        );
+        if (!canDeleteLayout) throw AppError.forbidden('You can only delete layouts you created.');
 
         await repo.delete(layout.id);
         return reply.status(204).send();

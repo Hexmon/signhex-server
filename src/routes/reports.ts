@@ -9,6 +9,7 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { isDepartmentScopedRole } from '@/rbac/policy';
 
 const logger = createLogger('reports-routes');
 const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
@@ -88,6 +89,14 @@ export async function reportsRoutes(fastify: FastifyInstance) {
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Dashboard')) throw AppError.forbidden('Forbidden');
 
+        const rowsWhere =
+          isDepartmentScopedRole(payload.role) && payload.department_id
+            ? sql`${schema.requests.status} != 'COMPLETED'
+                AND ${schema.requests.status} != 'REJECTED'
+                AND ${schema.users.department_id} = ${payload.department_id}`
+            : sql`${schema.requests.status} != 'COMPLETED'
+                AND ${schema.requests.status} != 'REJECTED'`;
+
         const rows = await db
           .select({
             requestId: schema.requests.id,
@@ -100,7 +109,7 @@ export async function reportsRoutes(fastify: FastifyInstance) {
           .from(schema.requests)
           .leftJoin(schema.users, eq(schema.requests.created_by, schema.users.id))
           .leftJoin(schema.departments, eq(schema.users.department_id, schema.departments.id))
-          .where(sql`${schema.requests.status} != 'COMPLETED' AND ${schema.requests.status} != 'REJECTED'`);
+          .where(rowsWhere);
 
         const grouped = new Map<
           string,

@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { DEFAULT_MEDIA_SETTING_KEY, DEFAULT_MEDIA_VARIANTS_SETTING_KEY } from '@/utils/default-media';
 
@@ -47,6 +47,7 @@ export class MediaRepository {
     limit?: number;
     type?: string;
     status?: string;
+    created_by_ids?: string[];
   }) {
     const db = getDatabase();
     const page = options.page || 1;
@@ -59,6 +60,12 @@ export class MediaRepository {
     }
     if (options.status) {
       conditions.push(eq(schema.media.status, options.status as any));
+    }
+    if (options.created_by_ids) {
+      if (options.created_by_ids.length === 0) {
+        return { items: [], total: 0, page, limit };
+      }
+      conditions.push(inArray(schema.media.created_by, options.created_by_ids as any));
     }
 
     let query = db.select().from(schema.media);

@@ -10,6 +10,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 import { createRoleRepository } from '@/db/repositories/role';
+import { canManageUserRecord, canManageUserRoleTarget, canReadUserRecord } from '@/rbac/policy';
 
 const logger = createLogger('user-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -73,6 +74,12 @@ export async function userRoutes(fastify: FastifyInstance) {
         if (!role) {
           throw AppError.notFound('Role not found');
         }
+        if (!canManageUserRoleTarget(payload.role, role.name)) {
+          throw AppError.forbidden('Forbidden');
+        }
+        if (payload.role === 'DEPARTMENT' && data.department_id !== payload.department_id) {
+          throw AppError.forbidden('Department users can only manage operators in their own department.');
+        }
 
         const user = await userRepo.create({
           email: data.email,
@@ -133,20 +140,39 @@ export async function userRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'User')) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         const query = listUsersQuerySchema.parse(request.query);
+        const effectiveRole =
+          payload.role === 'OPERATOR'
+            ? 'OPERATOR'
+            : payload.role === 'DEPARTMENT'
+              ? 'OPERATOR'
+              : query.role;
+        const effectiveDepartmentId =
+          payload.role === 'DEPARTMENT' ? payload.department_id : query.department_id;
         const result = await userRepo.list({
           page: query.page,
           limit: query.limit,
-          role: query.role,
+          role: effectiveRole,
           role_id: query.role_id,
-          department_id: query.department_id,
+          department_id: effectiveDepartmentId,
           is_active: query.is_active === 'true' ? true : query.is_active === 'false' ? false : undefined,
         });
 
+        const items = result.items.filter((user) =>
+          canReadUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            { roleName: (user as any).role ?? '', departmentId: user.department_id }
+          )
+        );
+
         return reply.send({
-          items: result.items.map((user) => ({
+          items: items.map((user) => ({
             id: user.id,
             email: user.email,
             first_name: user.first_name,
@@ -161,7 +187,7 @@ export async function userRoutes(fastify: FastifyInstance) {
           pagination: {
             page: result.page,
             limit: result.limit,
-            total: result.total,
+            total: items.length,
           },
         });
       } catch (error) {
@@ -188,7 +214,11 @@ export async function userRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'User')) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         const user = await userRepo.findById((request.params as any).id);
         if (!user) {
@@ -196,6 +226,14 @@ export async function userRoutes(fastify: FastifyInstance) {
         }
 
         const role = await roleRepo.findById(user.role_id);
+        if (
+          !canReadUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            { roleName: role?.name ?? '', departmentId: user.department_id }
+          )
+        ) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         return reply.send({
           id: user.id,
@@ -246,6 +284,36 @@ export async function userRoutes(fastify: FastifyInstance) {
           if (!role) {
             throw AppError.notFound('Role not found');
           }
+          if (!canManageUserRoleTarget(payload.role, role.name)) {
+            throw AppError.forbidden('Forbidden');
+          }
+          if (payload.role === 'DEPARTMENT' && data.department_id !== payload.department_id) {
+            throw AppError.forbidden('Department users can only manage operators in their own department.');
+          }
+        }
+        const existingUser = await userRepo.findById((request.params as any).id);
+        if (!existingUser) {
+          throw AppError.notFound('User not found');
+        }
+        if (
+          payload.role === 'DEPARTMENT' &&
+          Object.prototype.hasOwnProperty.call(data, 'department_id') &&
+          data.department_id !== payload.department_id
+        ) {
+          throw AppError.forbidden('Department users can only manage operators in their own department.');
+        }
+        const existingRole = await roleRepo.findById(existingUser.role_id);
+        if (
+          !canManageUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            {
+              id: existingUser.id,
+              roleName: existingRole?.name ?? '',
+              departmentId: existingUser.department_id,
+            }
+          )
+        ) {
+          throw AppError.forbidden('Forbidden');
         }
         const user = await userRepo.update((request.params as any).id, data);
 
@@ -289,6 +357,8 @@ export async function userRoutes(fastify: FastifyInstance) {
         first_name?: string | null;
         last_name?: string | null;
         email?: string | null;
+        role_id?: string;
+        department_id?: string | null;
       } | null = null;
 
       try {
@@ -308,6 +378,19 @@ export async function userRoutes(fastify: FastifyInstance) {
         user = await userRepo.findById(userId);
         if (!user) {
           throw AppError.notFound('User not found');
+        }
+        const targetRole = user.role_id ? await roleRepo.findById(user.role_id) : null;
+        if (
+          !canManageUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            {
+              id: userId,
+              roleName: targetRole?.name ?? '',
+              departmentId: (user as any).department_id,
+            }
+          )
+        ) {
+          throw AppError.forbidden('Forbidden');
         }
 
         await userRepo.delete(userId);
