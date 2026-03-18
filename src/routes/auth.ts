@@ -162,25 +162,26 @@ export async function authRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const secure = appConfig.NODE_ENV !== 'development';
+      const expired = 'Max-Age=0; Path=/; SameSite=Lax' + (secure ? '; Secure' : '');
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) {
-          throw AppError.unauthorized('Missing authorization header');
+        if (token) {
+          try {
+            const payload = await verifyAccessToken(token);
+            await sessionRepo.revokeByJti(payload.jti);
+          } catch (tokenError) {
+            logger.warn(tokenError, 'Ignoring invalid token during logout');
+          }
         }
-
-        const payload = await verifyAccessToken(token);
-        await sessionRepo.revokeByJti(payload.jti);
-
-        // Clear cookies
-        const secure = appConfig.NODE_ENV !== 'development';
-        const expired = 'Max-Age=0; Path=/; SameSite=Lax' + (secure ? '; Secure' : '');
-        reply.header('Set-Cookie', [`access_token=; ${expired}; HttpOnly`, `csrf_token=; ${expired}`]);
-
-        return reply.send({ message: 'Logged out successfully' });
       } catch (error) {
-        logger.error(error, 'Logout error');
-        throw AppError.unauthorized('Invalid token');
+        logger.warn(error, 'Ignoring logout revoke error');
+      } finally {
+        reply.header('Set-Cookie', [`access_token=; ${expired}; HttpOnly`, `csrf_token=; ${expired}`]);
       }
+
+      return reply.send({ message: 'Logged out successfully' });
     }
   );
 
