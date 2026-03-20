@@ -164,7 +164,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       for (const assignment of screenAssignments) {
         const screen = screenMap.get(assignment.target_id);
         if (!screen) {
-          throw AppError.notFound('Screen not found');
+          throw AppError.badRequest(
+            `One or more selected screens no longer exist (${assignment.target_id}). Refresh the page and try again.`
+          );
         }
         const aspectRatio = resolveAspectRatio(screen);
         if (!aspectRatio || aspectRatio !== assignment.aspect_ratio.trim()) {
@@ -203,7 +205,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       for (const assignment of groupAssignments) {
         const group = groupMap.get(assignment.target_id);
         if (!group) {
-          throw AppError.notFound('Screen group not found');
+          throw AppError.badRequest(
+            `One or more selected screen groups no longer exist (${assignment.target_id}). Refresh the page and try again.`
+          );
         }
 
         const groupMembers = membersByGroup.get(assignment.target_id) ?? [];

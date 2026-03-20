@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { createServer } from '@/server';
 import { initializeDatabase, closeDatabase, getDatabase, schema } from '@/db';
 import { generateAccessToken } from '@/auth/jwt';
@@ -87,6 +88,16 @@ export async function seedTestData() {
 }
 
 export async function closeTestServer(server: FastifyInstance) {
+  const db = getDatabase();
+  await db
+    .update(schema.emergencies)
+    .set({
+      is_active: false,
+      cleared_at: new Date(),
+      clear_reason: 'test-server-cleanup',
+      updated_at: new Date(),
+    })
+    .where(eq(schema.emergencies.triggered_by, testUser.id));
   await server.close();
   await closeDatabase();
 }

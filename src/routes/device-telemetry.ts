@@ -109,6 +109,14 @@ const snapshotQuerySchema = z.object({
   include_urls: z.string().optional(),
 });
 
+const normalizeEtagToken = (value: string) =>
+  value
+    .trim()
+    .replace(/^W\//i, '')
+    .replace(/\\/g, '')
+    .replace(/^"+|"+$/g, '')
+    .trim();
+
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
@@ -146,7 +154,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     apiEndpoints.deviceTelemetry.defaultMedia,
     {
       schema: {
-        description: 'Resolve default media for a device by aspect ratio/global fallback',
+        description: 'Resolve target-based default media for a device',
         tags: ['Device Telemetry'],
       },
     },
@@ -191,7 +199,10 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
         const ifNoneMatchHeader = typeof request.headers['if-none-match'] === 'string' ? request.headers['if-none-match'] : '';
-        const ifNoneMatch = ifNoneMatchHeader.replace(/^W\//, '').replace(/^"+|"+$/g, '');
+        const ifNoneMatchValues = ifNoneMatchHeader
+          .split(',')
+          .map(normalizeEtagToken)
+          .filter(Boolean);
         const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, deviceId)).limit(1);
         if (!screen) {
           throw AppError.notFound('Device not registered');
@@ -242,7 +253,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         const snapshotVersion = String(latest.snapshot_id);
         reply.header('ETag', `"${snapshotVersion}"`);
-        if (!emergency && ifNoneMatch && ifNoneMatch === snapshotVersion) {
+        if (!emergency && ifNoneMatchValues.some((value) => value === '*' || value === snapshotVersion)) {
           return reply.status(304).send();
         }
 

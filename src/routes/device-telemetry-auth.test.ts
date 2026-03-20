@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import { randomUUID } from 'crypto';
+import { AddressInfo } from 'net';
 import { eq } from 'drizzle-orm';
 import { createTestServer, closeTestServer, testUser } from '@/test/helpers';
 import { getDatabase, schema } from '@/db';
@@ -9,9 +10,13 @@ import * as s3 from '@/s3';
 
 describe('Device telemetry auth runtime validation', () => {
   let server: FastifyInstance;
+  let baseUrl: string;
 
   beforeAll(async () => {
     server = await createTestServer();
+    await server.listen({ host: '127.0.0.1', port: 0 });
+    const address = server.server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${address.port}`;
   });
 
   afterAll(async () => {
@@ -85,7 +90,7 @@ describe('Device telemetry auth runtime validation', () => {
     expect(body.error.message).toBe('Device not registered');
   });
 
-  it('returns resolved aspect-ratio default media for authenticated device fallback requests', async () => {
+  it('returns resolved screen-target default media for authenticated device fallback requests', async () => {
     const db = getDatabase();
     const deviceId = randomUUID();
     const serial = `serial-${randomUUID()}`;
@@ -118,10 +123,30 @@ describe('Device telemetry auth runtime validation', () => {
 
     await db
       .insert(schema.settings)
-      .values({ key: 'default_media_variants', value: { '9:16': mediaId } })
+      .values({
+        key: 'default_media_targets',
+        value: [
+          {
+            target_type: 'SCREEN',
+            target_id: deviceId,
+            media_id: mediaId,
+            aspect_ratio: '9:16',
+          },
+        ],
+      })
       .onConflictDoUpdate({
         target: schema.settings.key,
-        set: { value: { '9:16': mediaId }, updated_at: new Date() },
+        set: {
+          value: [
+            {
+              target_type: 'SCREEN',
+              target_id: deviceId,
+              media_id: mediaId,
+              aspect_ratio: '9:16',
+            },
+          ],
+          updated_at: new Date(),
+        },
       });
 
     const response = await server.inject({
@@ -136,14 +161,14 @@ describe('Device telemetry auth runtime validation', () => {
     const body = JSON.parse(response.body);
     expect(body).toEqual(
       expect.objectContaining({
-        source: 'ASPECT_RATIO',
+        source: 'SCREEN',
         aspect_ratio: '9:16',
         media_id: mediaId,
       })
     );
   });
 
-  it('returns resolved default media and resolution metadata in device snapshot fallback responses', async () => {
+  it('returns resolved target-based default media and resolution metadata in device snapshot fallback responses', async () => {
     const db = getDatabase();
     const deviceId = randomUUID();
     const serial = `serial-${randomUUID()}`;
@@ -175,10 +200,30 @@ describe('Device telemetry auth runtime validation', () => {
 
     await db
       .insert(schema.settings)
-      .values({ key: 'default_media_variants', value: { '16:9': mediaId } })
+      .values({
+        key: 'default_media_targets',
+        value: [
+          {
+            target_type: 'SCREEN',
+            target_id: deviceId,
+            media_id: mediaId,
+            aspect_ratio: '16:9',
+          },
+        ],
+      })
       .onConflictDoUpdate({
         target: schema.settings.key,
-        set: { value: { '16:9': mediaId }, updated_at: new Date() },
+        set: {
+          value: [
+            {
+              target_type: 'SCREEN',
+              target_id: deviceId,
+              media_id: mediaId,
+              aspect_ratio: '16:9',
+            },
+          ],
+          updated_at: new Date(),
+        },
       });
 
     const response = await server.inject({
@@ -199,7 +244,7 @@ describe('Device telemetry auth runtime validation', () => {
       })
     );
     expect(body.default_media_resolution).toEqual({
-      source: 'ASPECT_RATIO',
+      source: 'SCREEN',
       aspect_ratio: '16:9',
     });
   });
@@ -214,6 +259,16 @@ describe('Device telemetry auth runtime validation', () => {
     const now = new Date();
     const startAt = new Date(now.getTime() - 5 * 60 * 1000);
     const endAt = new Date(now.getTime() + 25 * 60 * 1000);
+
+    await db
+      .update(schema.emergencies)
+      .set({
+        is_active: false,
+        cleared_at: now,
+        clear_reason: 'device-telemetry-etag-test-reset',
+        updated_at: now,
+      })
+      .where(eq(schema.emergencies.is_active, true));
 
     await db.insert(schema.screens).values({
       id: deviceId,
@@ -264,27 +319,32 @@ describe('Device telemetry auth runtime validation', () => {
       screen_id: deviceId,
     });
 
-    const firstResponse = await server.inject({
-      method: 'GET',
-      url: `/api/v1/device/${deviceId}/snapshot`,
+    const firstResponse = await fetch(`${baseUrl}/api/v1/device/${deviceId}/snapshot`, {
       headers: {
         'x-device-serial': serial,
       },
     });
 
-    expect(firstResponse.statusCode).toBe(HTTP_STATUS.OK);
-    expect(firstResponse.headers.etag).toBe(`"${snapshotId}"`);
+    expect(firstResponse.status).toBe(HTTP_STATUS.OK);
+    expect(firstResponse.headers.get('etag')).toBe(`"${snapshotId}"`);
 
-    const secondResponse = await server.inject({
-      method: 'GET',
-      url: `/api/v1/device/${deviceId}/snapshot`,
+    const secondResponse = await fetch(`${baseUrl}/api/v1/device/${deviceId}/snapshot`, {
       headers: {
         'x-device-serial': serial,
         'if-none-match': `"${snapshotId}"`,
       },
     });
 
-    expect(secondResponse.statusCode).toBe(304);
+    expect(secondResponse.status).toBe(304);
+
+    const weakEtagResponse = await fetch(`${baseUrl}/api/v1/device/${deviceId}/snapshot`, {
+      headers: {
+        'x-device-serial': serial,
+        'if-none-match': `W/"stale-snapshot", "${snapshotId}"`,
+      },
+    });
+
+    expect(weakEtagResponse.status).toBe(304);
   });
 
   it('resolves the winning emergency for a device using global over group over screen precedence', async () => {
