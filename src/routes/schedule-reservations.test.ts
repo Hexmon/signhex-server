@@ -277,4 +277,103 @@ describe('Hybrid schedule reservations', () => {
     const conflictingBody = JSON.parse(conflictingPublish.body);
     expect(conflictingBody.error.details?.conflict_type).toBe('SCREEN_TIME_WINDOW_CONFLICT');
   });
+
+  it('allows an admin to take down a published request and clears active ownership for the screen', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const now = new Date();
+    const startAt = new Date(now.getTime() + 180 * 60 * 1000);
+    const endAt = new Date(now.getTime() + 240 * 60 * 1000);
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Take Down Screen',
+      status: 'OFFLINE',
+    });
+
+    const publishedSchedule = await seedReadySchedule({
+      screenId,
+      createdBy: testUser.id,
+      name: 'Take Down Schedule',
+      startAt,
+      endAt,
+    });
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/api/v1/schedule-requests',
+      headers: { authorization: `Bearer ${tokenOne}` },
+      payload: {
+        schedule_id: publishedSchedule.scheduleId,
+        notes: 'publish then take down',
+      },
+    });
+
+    const createdBody = JSON.parse(created.body);
+    const requestId = createdBody.id as string;
+
+    await server.inject({
+      method: 'POST',
+      url: `/api/v1/schedule-requests/${requestId}/approve`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+      payload: { comment: 'approved for takedown test' },
+    });
+
+    const published = await server.inject({
+      method: 'POST',
+      url: `/api/v1/schedule-requests/${requestId}/publish`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+    });
+
+    expect(published.statusCode).toBe(HTTP_STATUS.OK);
+
+    const takenDown = await server.inject({
+      method: 'POST',
+      url: `/api/v1/schedule-requests/${requestId}/take-down`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+      payload: { reason: 'Removed by admin' },
+    });
+
+    expect(takenDown.statusCode).toBe(HTTP_STATUS.OK);
+    const takenDownBody = JSON.parse(takenDown.body);
+    expect(takenDownBody.status).toBe('TAKEN_DOWN');
+    expect(takenDownBody.takedown_reason).toBe('Removed by admin');
+    expect(takenDownBody.resolved_screen_ids).toContain(screenId);
+
+    const reservations = await db
+      .select()
+      .from(schema.scheduleReservations)
+      .where(eq(schema.scheduleReservations.schedule_request_id, requestId));
+    expect(reservations.every((row) => row.state === 'RELEASED')).toBe(true);
+    expect(reservations.every((row) => row.release_reason === 'request-taken-down-by-admin')).toBe(true);
+
+    const refreshCommands = await db
+      .select()
+      .from(schema.deviceCommands)
+      .where(eq(schema.deviceCommands.screen_id, screenId));
+    expect(refreshCommands.some((command) => command.type === 'REFRESH' && command.status === 'PENDING')).toBe(true);
+    const refreshReasons = refreshCommands
+      .filter((command) => command.type === 'REFRESH')
+      .map((command) => (command.payload as { reason?: string } | null)?.reason);
+    expect(refreshReasons).toContain('TAKE_DOWN');
+
+    const requestDetail = await server.inject({
+      method: 'GET',
+      url: `/api/v1/schedule-requests/${requestId}`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+    });
+
+    const detailBody = JSON.parse(requestDetail.body);
+    expect(detailBody.status).toBe('TAKEN_DOWN');
+    expect(detailBody.taken_down_at).toBeTruthy();
+    expect(detailBody.takedown_reason).toBe('Removed by admin');
+
+    const deviceSnapshot = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${screenId}/snapshot`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+    });
+
+    expect(deviceSnapshot.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+  });
 });

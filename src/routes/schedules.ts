@@ -436,6 +436,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
                       duration_seconds: si.duration_seconds,
                       fit_mode: si.fit_mode,
                       audio_enabled: si.audio_enabled,
+                      loop_enabled: si.loop_enabled ?? false,
                       media: si.media
                         ? serializeMediaRecord(si.media)
                         : null,

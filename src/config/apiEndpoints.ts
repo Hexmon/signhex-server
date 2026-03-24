@@ -72,6 +72,7 @@ export const apiEndpoints = {
     approve: withBase('/schedule-requests/:id/approve'),
     reject: withBase('/schedule-requests/:id/reject'),
     cancel: withBase('/schedule-requests/:id/cancel'),
+    takeDown: withBase('/schedule-requests/:id/take-down'),
     publish: withBase('/schedule-requests/:id/publish'),
     statusSummary: withBase('/schedule-requests/status-summary'),
   },

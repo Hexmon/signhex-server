@@ -98,6 +98,7 @@ export async function resolvePresentations(presentationIds: string[], db: DB = g
       duration_seconds: i.duration_seconds,
       fit_mode: i.fit_mode,
       audio_enabled: i.audio_enabled,
+      loop_enabled: i.loop_enabled ?? false,
       media: mediaMap.get(i.media_id) || null,
       created_at: i.created_at,
     });
@@ -374,6 +375,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
                   duration_seconds: si.duration_seconds,
                   fit_mode: si.fit_mode,
                   audio_enabled: si.audio_enabled,
+                  loop_enabled: si.loop_enabled ?? false,
                   media: si.media
                     ? serializeMediaRecord(si.media)
                     : null,

@@ -37,7 +37,7 @@ const updateRequestSchema = z.object({
 const listRequestQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
-  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'EXPIRED', 'PUBLISHED']).optional(),
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'PUBLISHED', 'TAKEN_DOWN', 'EXPIRED']).optional(),
   include: z.string().optional(),
 });
 
@@ -193,6 +193,7 @@ function mapPresentationSlot(s: any) {
     duration_seconds: s.duration_seconds ?? null,
     fit_mode: s.fit_mode ?? null,
     audio_enabled: s.audio_enabled ?? false,
+    loop_enabled: s.loop_enabled ?? false,
     created_at: toIso(s.created_at),
   };
 }
@@ -235,6 +236,14 @@ function mapReservationSummary(r: any) {
     version: r.reservation_version ?? null,
     hold_expires_at: toIso(r.hold_expires_at),
     published_at: toIso(r.published_at),
+  };
+}
+
+function mapTakedownSummary(r: any) {
+  return {
+    taken_down_at: toIso(r.taken_down_at),
+    taken_down_by: r.taken_down_by ?? null,
+    takedown_reason: r.takedown_reason ?? null,
   };
 }
 
@@ -441,6 +450,7 @@ async function expandScheduleRequests(
       created_at: toIso(r.created_at),
       updated_at: toIso(r.updated_at),
       reservation_summary: mapReservationSummary(r),
+      ...mapTakedownSummary(r),
       ...(include.has('users')
         ? {
             requested_by_user: userMap.get(r.requested_by)
@@ -667,6 +677,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
               reviewed_at: r.reviewed_at?.toISOString?.() ?? r.reviewed_at,
               review_notes: r.review_notes ?? null,
               reservation_summary: mapReservationSummary(r),
+              ...mapTakedownSummary(r),
               created_at: r.created_at.toISOString?.() ?? r.created_at,
               updated_at: r.updated_at.toISOString?.() ?? r.updated_at,
             })),
@@ -744,13 +755,14 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           status: updated.status,
           notes: updated.notes,
           requested_by: updated.requested_by,
-          review_notes: updated.review_notes ?? null,
-          reviewed_by: updated.reviewed_by,
-          reviewed_at: updated.reviewed_at?.toISOString?.() ?? updated.reviewed_at,
-          reservation_summary: mapReservationSummary(updated),
-          created_at: updated.created_at.toISOString?.() ?? updated.created_at,
-          updated_at: updated.updated_at.toISOString?.() ?? updated.updated_at,
-        });
+            review_notes: updated.review_notes ?? null,
+            reviewed_by: updated.reviewed_by,
+            reviewed_at: updated.reviewed_at?.toISOString?.() ?? updated.reviewed_at,
+            reservation_summary: mapReservationSummary(updated),
+            ...mapTakedownSummary(updated),
+            created_at: updated.created_at.toISOString?.() ?? updated.created_at,
+            updated_at: updated.updated_at.toISOString?.() ?? updated.updated_at,
+          });
       } catch (error) {
         logger.error(error, 'Update schedule request error');
         return respondWithError(reply, error);
@@ -795,6 +807,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
             reviewed_at: req.reviewed_at?.toISOString?.() ?? req.reviewed_at,
             review_notes: req.review_notes ?? null,
             reservation_summary: mapReservationSummary(req),
+            ...mapTakedownSummary(req),
             created_at: req.created_at.toISOString?.() ?? req.created_at,
             updated_at: req.updated_at.toISOString?.() ?? req.updated_at,
           });
@@ -853,6 +866,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
           review_notes: (request.body as any)?.comment ?? updated!.review_notes ?? null,
           reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
         });
       } catch (error) {
         logger.error(error, 'Approve schedule request error');
@@ -985,6 +999,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
           review_notes: (updated as any).review_notes ?? (request.body as any)?.comment ?? null,
           reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
         });
       } catch (error) {
         logger.error(error, 'Reject schedule request error');
@@ -1039,9 +1054,69 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
           review_notes: updated!.review_notes ?? null,
           reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
         });
       } catch (error) {
         logger.error(error, 'Cancel schedule request error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    apiEndpoints.scheduleRequests.takeDown,
+    {
+      schema: {
+        description: 'Take down a published schedule request (admin only)',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
+
+        const req = await repo.findById((request.params as any).id);
+        if (!req) throw AppError.notFound('Schedule request not found');
+
+        const takedownResult = await db.transaction(async (tx) =>
+          reservationService.takeDownPublishedRequest(
+            {
+              scheduleRequestId: req.id,
+              takenDownBy: payload.sub,
+              takedownReason: (request.body as any)?.reason ?? null,
+            },
+            tx
+          )
+        );
+
+        if (takedownResult.screenIds.length > 0) {
+          await dispatchPlaybackRefresh(fastify, {
+            reason: 'TAKE_DOWN',
+            screenIds: takedownResult.screenIds as string[],
+            createdBy: payload.sub,
+          });
+        }
+
+        const updated = await repo.findById(req.id);
+        return reply.send({
+          id: updated!.id,
+          status: updated!.status,
+          reviewed_by: updated!.reviewed_by,
+          reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
+          review_notes: updated!.review_notes ?? null,
+          reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
+          resolved_screen_ids: takedownResult.screenIds,
+          message: takedownResult.alreadyTakenDown
+            ? 'Schedule request was already taken down'
+            : 'Published schedule request taken down',
+        });
+      } catch (error) {
+        logger.error(error, 'Take down schedule request error');
         return respondWithError(reply, error);
       }
     }

@@ -3,7 +3,7 @@ import { and, eq, gte, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 
-type PlaybackRefreshReason = 'PUBLISH' | 'EMERGENCY' | 'GROUP_MEMBERSHIP';
+type PlaybackRefreshReason = 'PUBLISH' | 'EMERGENCY' | 'GROUP_MEMBERSHIP' | 'TAKE_DOWN';
 
 type DispatchPlaybackRefreshParams = {
   reason: PlaybackRefreshReason;
@@ -66,23 +66,28 @@ export async function dispatchPlaybackRefresh(
     };
   }
 
-  const dedupeCutoff = new Date(Date.now() - REFRESH_COMMAND_DEDUPE_MS);
-  const existingRefreshes = await db
-    .select({
-      screen_id: schema.deviceCommands.screen_id,
-    })
-    .from(schema.deviceCommands)
-    .where(
-      and(
-        inArray(schema.deviceCommands.screen_id, resolvedScreenIds as string[]),
-        eq(schema.deviceCommands.type, 'REFRESH'),
-        inArray(schema.deviceCommands.status, ['PENDING', 'SENT'] as const),
-        gte(schema.deviceCommands.created_at, dedupeCutoff)
-      )
-    );
+  const screenIdsToQueue =
+    params.reason === 'TAKE_DOWN'
+      ? resolvedScreenIds
+      : await (async () => {
+          const dedupeCutoff = new Date(Date.now() - REFRESH_COMMAND_DEDUPE_MS);
+          const existingRefreshes = await db
+            .select({
+              screen_id: schema.deviceCommands.screen_id,
+            })
+            .from(schema.deviceCommands)
+            .where(
+              and(
+                inArray(schema.deviceCommands.screen_id, resolvedScreenIds as string[]),
+                eq(schema.deviceCommands.type, 'REFRESH'),
+                inArray(schema.deviceCommands.status, ['PENDING', 'SENT'] as const),
+                gte(schema.deviceCommands.created_at, dedupeCutoff)
+              )
+            );
 
-  const blockedScreenIds = new Set(existingRefreshes.map((row) => row.screen_id));
-  const screenIdsToQueue = resolvedScreenIds.filter((screenId) => !blockedScreenIds.has(screenId));
+          const blockedScreenIds = new Set(existingRefreshes.map((row) => row.screen_id));
+          return resolvedScreenIds.filter((screenId) => !blockedScreenIds.has(screenId));
+        })();
 
   if (screenIdsToQueue.length === 0) {
     return {

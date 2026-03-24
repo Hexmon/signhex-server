@@ -29,6 +29,7 @@ export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', [
   'REJECTED',
   'CANCELLED',
   'PUBLISHED',
+  'TAKEN_DOWN',
   'EXPIRED',
 ]);
 export const scheduleReservationStateEnum = pgEnum('schedule_reservation_state', [
@@ -210,6 +211,7 @@ export const presentationSlotItems = pgTable(
     duration_seconds: integer('duration_seconds'),
     fit_mode: varchar('fit_mode', { length: 50 }),
     audio_enabled: boolean('audio_enabled').default(false),
+    loop_enabled: boolean('loop_enabled').default(false),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => ({
@@ -366,6 +368,9 @@ export const scheduleRequests = pgTable(
     reservation_state: varchar('reservation_state', { length: 50 }),
     hold_expires_at: timestamp('hold_expires_at'),
     published_at: timestamp('published_at'),
+    taken_down_at: timestamp('taken_down_at'),
+    taken_down_by: uuid('taken_down_by'),
+    takedown_reason: text('takedown_reason'),
     requested_by: uuid('requested_by').notNull(),
     reviewed_by: uuid('reviewed_by'),
     reviewed_at: timestamp('reviewed_at'),

@@ -65,7 +65,7 @@ export class ScheduleRequestRepository {
   async countSummary(options?: { requested_by?: string; requested_by_ids?: string[] }) {
     const db = getDatabase();
     if (options?.requested_by_ids && options.requested_by_ids.length === 0) {
-      return { pending: 0, approved: 0, rejected: 0, published: 0, expired: 0 };
+      return { pending: 0, approved: 0, rejected: 0, published: 0, taken_down: 0, expired: 0 };
     }
     const baseConditions = options?.requested_by
       ? [eq(schema.scheduleRequests.requested_by, options.requested_by)]
@@ -93,12 +93,14 @@ export class ScheduleRequestRepository {
     const rejected = await count(combine(eq(schema.scheduleRequests.status, 'REJECTED')));
     const expired = await count(combine(eq(schema.scheduleRequests.status, 'EXPIRED')));
     const published = await count(combine(eq(schema.scheduleRequests.status, 'PUBLISHED')));
+    const takenDown = await count(combine(eq(schema.scheduleRequests.status, 'TAKEN_DOWN')));
 
     return {
       pending,
       approved,
       rejected,
       published,
+      taken_down: takenDown,
       expired,
     };
   }

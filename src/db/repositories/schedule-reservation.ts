@@ -188,6 +188,34 @@ export class ScheduleReservationRepository {
       .returning();
   }
 
+  async markPublishedRequestReservationsReleased(
+    scheduleRequestId: string,
+    releaseReason: string,
+    db: DBLike = getDatabase()
+  ) {
+    const releasedAt = new Date();
+    return db
+      .update(schema.scheduleReservations)
+      .set({
+        state: 'RELEASED',
+        released_at: releasedAt,
+        release_reason: releaseReason,
+        hold_expires_at: null,
+        updated_at: releasedAt,
+      })
+      .where(
+        and(
+          eq(schema.scheduleReservations.schedule_request_id, scheduleRequestId),
+          eq(schema.scheduleReservations.state, 'PUBLISHED')
+        )
+      )
+      .returning({
+        id: schema.scheduleReservations.id,
+        screen_id: schema.scheduleReservations.screen_id,
+        publish_id: schema.scheduleReservations.publish_id,
+      });
+  }
+
   async finalizeRequestPublish(
     scheduleRequestId: string,
     publishId: string,

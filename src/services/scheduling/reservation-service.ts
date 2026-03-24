@@ -633,6 +633,64 @@ export class ScheduleReservationService {
       .where(eq(schema.scheduleRequests.id, params.scheduleRequestId));
   }
 
+  async takeDownPublishedRequest(
+    params: {
+      scheduleRequestId: string;
+      takenDownBy: string;
+      takedownReason?: string | null;
+    },
+    db: DBLike = getDatabase()
+  ) {
+    await this.expireStaleHolds(db);
+
+    const [request] = await db
+      .select()
+      .from(schema.scheduleRequests)
+      .where(eq(schema.scheduleRequests.id, params.scheduleRequestId));
+    if (!request) {
+      throw AppError.notFound('Schedule request not found');
+    }
+
+    if (request.status === 'TAKEN_DOWN') {
+      const publishedRows = await this.repo.listActiveByRequest(params.scheduleRequestId, db);
+      return {
+        request,
+        screenIds: Array.from(new Set(publishedRows.map((row: any) => row.screen_id))),
+        alreadyTakenDown: true,
+      };
+    }
+
+    if (request.status !== 'PUBLISHED') {
+      throw AppError.badRequest('Only published schedule requests can be taken down');
+    }
+
+    const releasedRows = await this.repo.markPublishedRequestReservationsReleased(
+      params.scheduleRequestId,
+      'request-taken-down-by-admin',
+      db
+    );
+
+    const now = new Date();
+    const [updatedRequest] = await db
+      .update(schema.scheduleRequests)
+      .set({
+        status: 'TAKEN_DOWN',
+        reservation_state: 'TAKEN_DOWN',
+        taken_down_at: now,
+        taken_down_by: params.takenDownBy,
+        takedown_reason: params.takedownReason ?? null,
+        updated_at: now,
+      })
+      .where(eq(schema.scheduleRequests.id, params.scheduleRequestId))
+      .returning();
+
+    return {
+      request: updatedRequest ?? request,
+      screenIds: Array.from(new Set(releasedRows.map((row: { screen_id: string }) => row.screen_id))),
+      alreadyTakenDown: false,
+    };
+  }
+
   async acquireDirectPublishedReservations(
     params: {
       scheduleId: string;

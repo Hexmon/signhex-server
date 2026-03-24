@@ -43,6 +43,7 @@ const presentationSlotItemSchema = z.object({
   duration_seconds: z.number().int().positive().optional(),
   fit_mode: z.string().optional(),
   audio_enabled: z.boolean().optional(),
+  loop_enabled: z.boolean().optional(),
 });
 
 export async function presentationRoutes(fastify: FastifyInstance) {
@@ -203,6 +204,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
             duration_seconds: i.duration_seconds,
             fit_mode: i.fit_mode,
             audio_enabled: i.audio_enabled,
+            loop_enabled: i.loop_enabled ?? false,
             created_at: i.created_at.toISOString?.() ?? i.created_at,
             media: mediaMap.get(i.media_id) ? serializeMediaRecord(mediaMap.get(i.media_id) as any) : null,
           })),
@@ -456,6 +458,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           duration_seconds: data.duration_seconds,
           fit_mode: data.fit_mode,
           audio_enabled: data.audio_enabled,
+          loop_enabled: data.loop_enabled,
         });
 
         return reply.status(CREATED).send({
@@ -467,6 +470,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           duration_seconds: item.duration_seconds,
           fit_mode: item.fit_mode,
           audio_enabled: item.audio_enabled,
+          loop_enabled: item.loop_enabled ?? false,
           created_at: item.created_at.toISOString?.() ?? item.created_at,
           media: {
             ...serializeMediaRecord(media),
