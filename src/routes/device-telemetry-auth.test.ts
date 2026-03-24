@@ -634,4 +634,97 @@ describe('Device telemetry auth runtime validation', () => {
     putObjectSpy.mockRestore();
     presignedSpy.mockRestore();
   });
+
+  it('accepts screenshot uploads above the default Fastify body limit', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const putObjectSpy = vi.spyOn(s3, 'putObject').mockResolvedValue({ etag: 'etag-large', sha256: 'sha-large' });
+    const presignedSpy = vi.spyOn(s3, 'getPresignedUrl').mockResolvedValue('https://cdn.example.com/screens/device-large.png');
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Large Screenshot Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const timestamp = new Date().toISOString();
+    const imageData = Buffer.alloc(950_000, 1).toString('base64');
+    expect(Buffer.byteLength(JSON.stringify({ device_id: deviceId, timestamp, image_data: imageData }), 'utf8')).toBeGreaterThan(
+      1_048_576
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device/screenshot',
+      headers: {
+        'x-device-serial': serial,
+      },
+      payload: {
+        device_id: deviceId,
+        timestamp,
+        image_data: imageData,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.CREATED);
+    const body = JSON.parse(response.body);
+    expect(body.success).toBe(true);
+    expect(body.timestamp).toBe(timestamp);
+    expect(putObjectSpy).toHaveBeenCalledOnce();
+    expect(presignedSpy).toHaveBeenCalledOnce();
+
+    putObjectSpy.mockRestore();
+    presignedSpy.mockRestore();
+  });
+
+  it('keeps the default body limit for other telemetry routes', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Oversized Heartbeat Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const oversizedBlob = 'x'.repeat(1_100_000);
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device/heartbeat',
+      headers: {
+        'x-device-serial': serial,
+      },
+      payload: {
+        device_id: deviceId,
+        status: 'ONLINE',
+        uptime: 100,
+        memory_usage: 10,
+        cpu_usage: 5,
+        metrics: {
+          blob: oversizedBlob,
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+    const body = JSON.parse(response.body);
+    expect(body.error.code).toBe('BAD_REQUEST');
+    expect(body.error.message).toBe('Request payload too large.');
+  });
 });

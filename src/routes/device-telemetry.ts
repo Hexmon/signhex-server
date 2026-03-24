@@ -21,6 +21,7 @@ const { CREATED } = HTTP_STATUS;
 const HEARTBEAT_BUCKET = 'logs-heartbeats';
 const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
 const SCREENSHOT_BUCKET = 'device-screenshots';
+const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
 const heartbeatSchema = z.object({
   device_id: z.string().min(1),
@@ -547,6 +548,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   fastify.post<{ Body: typeof screenshotSchema._type }>(
     apiEndpoints.deviceTelemetry.screenshot,
     {
+      bodyLimit: DEVICE_SCREENSHOT_BODY_LIMIT_BYTES,
       schema: {
         description: 'Upload device screenshot (device auth required)',
         tags: ['Device Telemetry'],

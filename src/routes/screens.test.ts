@@ -1129,6 +1129,7 @@ describe('Screens routes realtime playback bootstrap', () => {
 
     expect(response.statusCode).toBe(HTTP_STATUS.OK);
     const body = JSON.parse(response.body);
+    expect(typeof body.server_time).toBe('string');
     expect(body.default_media).toEqual(
       expect.objectContaining({
         media_id: fallbackMediaId,

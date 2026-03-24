@@ -967,6 +967,7 @@ Endpoint:
 
 Why this call exists:
 - uploads a base64 screenshot into object storage
+- accepts a larger JSON body than normal telemetry routes because base64 PNG screenshots are often bigger than 1 MiB
 
 ### Curl
 
@@ -991,6 +992,10 @@ curl 'http://localhost:3000/api/v1/device/screenshot' \
   "timestamp": "2026-03-11T06:42:00.100Z"
 }
 ```
+
+Notes:
+- the screenshot upload route is configured with a 4 MiB request body limit
+- other telemetry routes still use the default server parser limit
 
 ### Possible Error Responses
 

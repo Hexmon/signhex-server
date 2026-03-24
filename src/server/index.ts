@@ -7,6 +7,7 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import fastifyCookie from '@fastify/cookie';
 import { config as appConfig } from '@/config';
+import { apiEndpoints } from '@/config/apiEndpoints';
 import { authRoutes } from '@/routes/auth';
 import { userRoutes } from '@/routes/users';
 import { mediaRoutes } from '@/routes/media';
@@ -48,6 +49,7 @@ import { getIdleTimeoutSeconds, getRuntimeLogLevelSetting, preloadSettingsCache 
 import { setRuntimeLogLevel } from '@/utils/logger';
 
 const REFRESHED_AUTH_KEY = Symbol.for('signhex.refreshedAuth');
+const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
 type RefreshedAuthState = {
   token: string;
@@ -178,7 +180,16 @@ export async function createServer() {
   });
 
   fastify.setErrorHandler((error, request, reply) => {
-    const appError = toAppError(error);
+    const isBodyTooLarge = typeof error === 'object' && error !== null && (error as any).code === 'FST_ERR_CTP_BODY_TOO_LARGE';
+    const requestPath = request.url.split('?')[0];
+    const appError = isBodyTooLarge
+      ? requestPath === apiEndpoints.deviceTelemetry.screenshot
+        ? AppError.badRequest('Screenshot payload too large for device upload.', {
+            route: apiEndpoints.deviceTelemetry.screenshot,
+            limit_bytes: DEVICE_SCREENSHOT_BODY_LIMIT_BYTES,
+          })
+        : AppError.badRequest('Request payload too large.')
+      : toAppError(error);
     const statusCode = appError.statusCode;
     const logPayload: Record<string, unknown> = {
       err: error,

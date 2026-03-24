@@ -884,6 +884,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const screenId = (request.params as any).id;
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
+        const serverTime = new Date().toISOString();
         const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId)).limit(1);
         if (!screen) {
           throw AppError.notFound('Screen not found');
@@ -901,6 +902,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         if (!latest) {
           if (emergency) {
             return reply.send({
+              server_time: serverTime,
               screen_id: screenId,
               publish: null,
               snapshot: null,
@@ -911,6 +913,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           }
           if (defaultMediaPayload.default_media) {
             return reply.send({
+              server_time: serverTime,
               screen_id: screenId,
               publish: null,
               snapshot: null,
@@ -985,6 +988,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         return reply.send({
+          server_time: serverTime,
           screen_id: screenId,
           publish: {
             publish_id: latest.publish_id,

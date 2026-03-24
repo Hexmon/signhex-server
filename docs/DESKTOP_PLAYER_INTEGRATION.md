@@ -111,6 +111,7 @@ This flow is derived from code (routes + utils) and the existing player guides. 
 - `POST /api/v1/device/screenshot`
 - Payload: `{ device_id, timestamp, image_data }` (base64)
 - Side effects: uploads PNG to MinIO `device-screenshots`.
+- This route intentionally uses a higher request body limit than ordinary telemetry because full-size PNG screenshots exceed the default Fastify 1 MiB parser limit. Current route limit: 4 MiB.
 - Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.post(apiEndpoints.deviceTelemetry.screenshot)
 
 ## 7) Default media fallback
