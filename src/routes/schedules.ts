@@ -17,11 +17,12 @@ import { createLogger } from '@/utils/logger';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { publishScheduleSnapshot, resolvePresentations } from '@/routes/schedule-publish-helper';
-import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 import z from 'zod';
 import { AppError } from '@/utils/app-error';
 import { serializeMediaRecord } from '@/utils/media';
 import { canAccessOwnedResource, getDepartmentUserIds, isAdminLike, isDepartmentScopedRole } from '@/rbac/policy';
+import { createScheduleReservationService } from '@/services/scheduling/reservation-service';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('schedule-routes');
 const { CREATED } = HTTP_STATUS;
@@ -39,6 +40,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
   const scheduleRepo = createScheduleRepository();
   const scheduleItemRepo = createScheduleItemRepository();
   const presentationRepo = createPresentationRepository();
+  const reservationService = createScheduleReservationService();
   const db = getDatabase();
 
   const validateStartEnd = (start: string, end: string) => {
@@ -346,6 +348,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const payload = await verifyAccessToken(token);
 
         const schedule = await assertScheduleAccess(payload, (request.params as any).id);
+        await reservationService.assertScheduleMutable(schedule.id, db);
 
         return reply.send({
           id: schedule.id,
@@ -385,6 +388,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         if (!ability.can('read', 'Schedule')) throw AppError.forbidden('Forbidden');
 
         const schedule = await assertScheduleAccess(payload, (request.params as any).id);
+        await reservationService.assertScheduleMutable(schedule.id, db);
 
         const items = await scheduleItemRepo.listBySchedule(schedule.id);
         const presMap = await resolvePresentations(items.map((i: any) => i.presentation_id));
@@ -613,6 +617,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const existingSchedule = await assertScheduleAccess(payload, (request.params as any).id);
+        await reservationService.assertScheduleMutable(existingSchedule.id, db);
 
         const nextStartAt = startAt ?? existingSchedule.start_at;
         const nextEndAt = endAt ?? existingSchedule.end_at;
@@ -708,8 +713,21 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           if (req.schedule_id && req.schedule_id !== (request.params as any).id) {
             throw AppError.badRequest('Schedule request does not match this schedule');
           }
-          if (req.status !== 'APPROVED') {
-            throw AppError.badRequest('Schedule request must be APPROVED before publish');
+          const validation = await reservationService.validateApprovedRequestForPublish(req.id, db);
+          if (validation.alreadyPublished && validation.publishId) {
+            const [existingPublish] = await db
+              .select()
+              .from(schema.publishes)
+              .where(eq(schema.publishes.id, validation.publishId));
+            if (!existingPublish) {
+              throw AppError.conflict('The request is marked as published but the publish record could not be found.');
+            }
+            return reply.send({
+              message: 'Schedule was already published successfully',
+              schedule_id: (request.params as any).id,
+              publish_id: existingPublish.id,
+              snapshot_id: existingPublish.snapshot_id,
+            });
           }
           scheduleRequest = req;
         }
@@ -723,19 +741,38 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           db,
           scheduleRepo,
           scheduleItemRepo,
+          onPublished: async ({ tx, publish }) => {
+            if (scheduleRequest) {
+              await reservationService.finalizeRequestPublish(
+                {
+                  scheduleRequestId: scheduleRequest.id,
+                  publishId: publish.id,
+                },
+                tx
+              );
+              return;
+            }
+
+            await reservationService.acquireDirectPublishedReservations(
+              {
+                scheduleId: (request.params as any).id,
+                ownerUserId: payload.sub,
+                publishId: publish.id,
+                explicitScreenIds: uniqueScreens,
+                explicitScreenGroupIds: uniqueGroups,
+              },
+              tx
+            );
+          },
         });
 
-        if (scheduleRequest) {
-          await db
-            .update(schema.scheduleRequests)
-            .set({ updated_at: new Date() })
-            .where(eq(schema.scheduleRequests.id, scheduleRequest.id));
-        }
-
-        emitScreensRefreshRequired(fastify, {
+        await dispatchPlaybackRefresh(fastify, {
           reason: 'PUBLISH',
-          screen_ids: publishResult.resolvedScreenIds,
-          group_ids: uniqueGroups,
+          screenIds: publishResult.resolvedScreenIds,
+          groupIds: uniqueGroups,
+          createdBy: payload.sub,
+          publishId: publishResult.publish.id,
+          snapshotId: publishResult.snapshot.id,
         });
 
         return reply.send({

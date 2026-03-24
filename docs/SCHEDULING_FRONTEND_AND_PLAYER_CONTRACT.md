@@ -1,101 +1,171 @@
 # Scheduling Frontend and Player Contract
 
-## Admin APIs
-### `POST /api/v1/schedules`
+## Frontend contract
+### Schedule creation remains split in two phases
+1. build schedule and schedule items
+2. submit request for approval
+
+Drafting is still lightweight. Ownership starts only at request submission.
+
+## Request flow APIs
+### `POST /api/v1/schedule-requests`
+Behavior:
+- creates the request
+- resolves concrete screen targets
+- acquires temporary `HELD` reservations
+- fails with `409` on overlap
+
 Request:
 ```json
 {
-  "name": "Lobby Morning",
-  "description": "Optional",
-  "timezone": "Asia/Kolkata",
-  "start_at": "2026-03-14T04:00:00.000Z",
-  "end_at": "2026-03-14T10:00:00.000Z"
+  "schedule_id": "uuid",
+  "notes": "Optional"
 }
 ```
-Notes:
-- `timezone` is stored for audit/display only.
-- `start_at` and `end_at` remain UTC execution timestamps.
 
-### `POST /api/v1/schedules/:id/items`
+Success response includes:
+```json
+{
+  "id": "uuid",
+  "schedule_id": "uuid",
+  "status": "PENDING",
+  "reservation_summary": {
+    "state": "HELD",
+    "token": "uuid",
+    "version": 1,
+    "hold_expires_at": "2026-03-20T10:00:00.000Z",
+    "published_at": null
+  }
+}
+```
+
+### `POST /api/v1/schedule-requests/:id/approve`
+Behavior:
+- validates current hold ownership
+- validates `schedules.revision`
+- promotes `HELD -> RESERVED`
+
+### `POST /api/v1/schedule-requests/:id/reject`
+Behavior:
+- releases active reservations
+- request becomes `REJECTED`
+
+### `POST /api/v1/schedule-requests/:id/cancel`
+Behavior:
+- allowed for request owner or admin
+- only for `PENDING` or `APPROVED`
+- request becomes `CANCELLED`
+
+### `POST /api/v1/schedule-requests/:id/publish`
+Behavior:
+- requires valid approved reservation ownership
+- fails if request is stale or reservation was lost
+- success transitions request reservation summary to `PUBLISHED`
+- repeat publish is idempotent
+
+## Reservation preview API
+### `POST /api/v1/schedule-reservations/preview`
+Use this to render authoritative occupancy/conflict state in the scheduler.
+
 Request:
 ```json
 {
-  "presentation_id": "uuid",
-  "start_at": "2026-03-14T05:00:00.000Z",
-  "end_at": "2026-03-14T06:00:00.000Z",
-  "priority": 0,
+  "start_at": "2026-03-20T10:00:00.000Z",
+  "end_at": "2026-03-20T11:00:00.000Z",
   "screen_ids": ["uuid"],
   "screen_group_ids": []
 }
 ```
-Rules:
-- Item must stay within schedule bounds.
-- Overlap for the same effective targets is rejected.
 
-### `POST /api/v1/schedules/:id/publish`
-Request:
+Response:
 ```json
 {
-  "screen_ids": ["uuid"],
-  "screen_group_ids": [],
-  "notes": "Optional publish note",
-  "schedule_request_id": "uuid"
+  "resolved_screen_ids": ["uuid"],
+  "reservation_conflicts": [
+    {
+      "screen_id": "uuid",
+      "screen_name": "Lobby Screen",
+      "start_at": "2026-03-20T10:00:00.000Z",
+      "end_at": "2026-03-20T11:00:00.000Z",
+      "conflict_start_at": "2026-03-20T10:15:00.000Z",
+      "conflict_end_at": "2026-03-20T10:45:00.000Z",
+      "state": "RESERVED",
+      "hold_expires_at": null,
+      "owned_by_current_user": false
+    }
+  ]
 }
 ```
-Rules:
-- Publish creates an immutable snapshot.
-- Latest successful publish targeting a screen is authoritative for that screen.
-- Publish is atomic.
-- Publish rejects missing/non-ready presentation assets and unsupported codecs.
 
-## Device API
-### `GET /api/v1/device/:deviceId/snapshot`
-Headers:
-- `x-device-serial: <serial>`
-- optional `If-None-Match: "<snapshot_id>"`
+Render guidance:
+- `HELD`: pending request hold
+- `RESERVED`: approved request ownership
+- `PUBLISHED`: currently published ownership
+- `owned_by_current_user = true`: show as informational, not another-user conflict
 
-Response shape:
+## Conflict error payload
+Submission or direct publish conflicts return:
 ```json
 {
-  "device_id": "uuid",
+  "success": false,
+  "error": {
+    "code": "CONFLICT",
+    "message": "Selected screens already have active schedule ownership for part of this time window.",
+    "details": {
+      "conflict_type": "SCREEN_TIME_WINDOW_CONFLICT",
+      "reservation_conflicts": []
+    }
+  }
+}
+```
+
+Frontend should:
+- show the screen name
+- show the conflicting window
+- show the state
+- show hold expiry if present
+- refetch request detail after approval/publish failures
+
+## Device / player snapshot contract
+### `GET /api/v1/device/:deviceId/snapshot`
+Headers:
+- `x-device-serial: <serial>` or CMS bearer token for inspection
+- optional `If-None-Match: "<snapshot_id>"`
+
+Response publish block may now include:
+```json
+{
   "publish": {
     "publish_id": "uuid",
     "schedule_id": "uuid",
     "snapshot_id": "uuid",
-    "published_at": "2026-03-14T10:00:00.000Z"
-  },
-  "snapshot": {
-    "schedule": {
-      "id": "uuid",
-      "name": "Lobby Morning",
-      "timezone": "Asia/Kolkata",
-      "start_at": "...",
-      "end_at": "...",
-      "items": [
-        {
-          "id": "uuid",
-          "start_at": "...",
-          "end_at": "...",
-          "priority": 0,
-          "screen_ids": [],
-          "screen_group_ids": [],
-          "presentation": {
-            "id": "uuid",
-            "layout": { "id": "uuid", "spec": {} },
-            "items": [],
-            "slots": []
-          }
-        }
-      ]
-    }
-  },
-  "emergency": null,
-  "default_media": null,
-  "default_media_resolution": { "source": "NONE", "aspect_ratio": null }
+    "published_at": "2026-03-20T10:00:00.000Z",
+    "reservation_version": 3,
+    "selection_reason": "active_reservation"
+  }
 }
 ```
-Behavior:
-- `ETag` is the current `snapshot_id` when schedule payload is authoritative.
-- `304 Not Modified` is returned on matching `If-None-Match` when no emergency is changing the payload.
-- Player must evaluate scheduled items locally against UTC timestamps.
-- Player must not use legacy `/v1/device/:deviceId/schedule` or `/v1/device/:deviceId/emergency` as the production contract.
+
+`selection_reason` values:
+- `active_reservation`
+- `upcoming_reservation`
+
+Player expectations:
+- keep using the snapshot endpoint as the production source of truth
+- do not resolve booking conflicts on-device
+- preserve precedence:
+  - emergency
+  - scheduled snapshot
+  - default media
+  - offline
+- after publish, backend also queues `REFRESH` device commands for resolved target screens
+- player should fetch a fresh snapshot on `REFRESH` and then rely on its local schedule boundary timer for exact `start_at` activation
+- CMS realtime sockets are for dashboard/admin refresh, not the player playback authority
+
+## Screen inspection endpoints
+Screen inspection routes now align with reservation-driven selection semantics:
+- `/api/v1/screens/:id/now-playing`
+- `/api/v1/screens/:id/availability`
+- `/api/v1/screens/:id/snapshot`
+
+These should not be treated as independent scheduling authorities; they are inspection views over the reservation-backed publish selection model.

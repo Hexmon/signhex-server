@@ -18,6 +18,10 @@ import {
   buildScreenPlaybackStateById,
   buildScreensOverviewPayload,
   getActiveEmergencyForScreen,
+  getGroupIdsForScreen,
+  getLatestPublishForScreen,
+  filterItemsForScreen,
+  buildTimeline,
 } from '@/screens/playback';
 import { emitScreensRefreshRequired, setupScreensNamespace } from '@/realtime/screens-namespace';
 import { serializeMediaRecord } from '@/utils/media';
@@ -817,20 +821,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, screenId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
+        const latest = await getLatestPublishForScreen(screenId, db);
 
         if (!latest) {
           return reply.send({
@@ -855,6 +846,8 @@ export async function screenRoutes(fastify: FastifyInstance) {
             schedule_id: latest.schedule_id,
             snapshot_id: latest.snapshot_id,
             published_at: latest.published_at.toISOString?.() ?? latest.published_at,
+            reservation_version: (latest as any).reservation_version ?? null,
+            selection_reason: (latest as any).selection_reason ?? null,
             schedule_start_at: schedulePayload?.start_at ?? null,
             schedule_end_at: schedulePayload?.end_at ?? null,
           },
@@ -903,20 +896,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
         const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
 
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, screenId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
+        const latest = await getLatestPublishForScreen(screenId, db);
 
         if (!latest) {
           if (emergency) {
@@ -1011,6 +991,8 @@ export async function screenRoutes(fastify: FastifyInstance) {
             schedule_id: latest.schedule_id,
             snapshot_id: latest.snapshot_id,
             published_at: latest.published_at.toISOString?.() ?? latest.published_at,
+            reservation_version: (latest as any).reservation_version ?? null,
+            selection_reason: (latest as any).selection_reason ?? null,
           },
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,

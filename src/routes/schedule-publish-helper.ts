@@ -116,6 +116,14 @@ export interface PublishScheduleParams {
   db?: DB;
   scheduleRepo?: ScheduleRepository;
   scheduleItemRepo?: ScheduleItemRepository;
+  onPublished?: (context: {
+    tx: DB;
+    publish: typeof schema.publishes.$inferSelect;
+    snapshot: typeof schema.scheduleSnapshots.$inferSelect;
+    schedule: typeof schema.schedules.$inferSelect;
+    scheduleItems: any[];
+    resolvedScreenIds: string[];
+  }) => Promise<void>;
 }
 
 export async function publishScheduleSnapshot(params: PublishScheduleParams) {
@@ -431,6 +439,17 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
             screen_group_id: t.screen_group_id,
           }))
         );
+    }
+
+    if (params.onPublished) {
+      await params.onPublished({
+        tx: tx as DB,
+        publish,
+        snapshot,
+        schedule,
+        scheduleItems,
+        resolvedScreenIds: Array.from(resolvedScreenIds),
+      });
     }
 
     return { snapshot, publish };

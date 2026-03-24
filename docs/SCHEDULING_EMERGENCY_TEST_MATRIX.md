@@ -1,37 +1,45 @@
 # Scheduling and Emergency Test Matrix
 
-## Scheduling
-- Create schedule with UTC windows and timezone metadata.
-- Reject invalid timezone.
-- Reject `start_at >= end_at`.
-- Reject schedule item outside schedule bounds.
-- Reject overlapping schedule items for same effective targets.
-- Publish succeeds with valid presentation/layout/media graph.
-- Publish rejects missing presentation.
-- Publish rejects missing layout.
-- Publish rejects missing media.
-- Publish rejects non-`READY` media.
-- Publish rejects unsupported screen codec.
-- Device snapshot returns latest successful publish for target screen.
-- Device snapshot returns `ETag` and `304` on matching `If-None-Match`.
-- Offline player catch-up uses `snapshot_id` / `published_at`.
+## Reservation and scheduling ownership
+- Submit request for screen/time window and verify `HELD`.
+- Submit overlapping request for same screen/time from another user and verify `409 CONFLICT`.
+- Submit non-overlapping request for same screen and verify success.
+- Submit overlapping request on different screen and verify success.
+- Submit request using screen group and verify conflicts are evaluated per concrete member screen.
+- Retry the same submission and verify idempotent hold response.
 
-## Emergency
-- Trigger global emergency.
-- Trigger group emergency concurrently with global.
-- Trigger screen emergency concurrently with group/global.
-- Resolver precedence is `GLOBAL > GROUP > SCREEN`.
-- Same-scope precedence is severity then recency.
-- Expired emergency is ignored by resolver.
-- Clear persists `clear_reason`.
-- Status returns `active_count` and `active_emergencies`.
-- History returns lifecycle and scope metadata.
-- Trigger rejects mixed scope payload.
-- Unauthorized trigger/clear blocked.
+## Approval and release
+- Approve held request and verify `RESERVED`.
+- Reject held request and verify request becomes `REJECTED` and reservations become `RELEASED`.
+- Cancel pending request as owner and verify `CANCELLED`.
+- Cancel approved request as admin and verify `CANCELLED`.
+- Let a hold expire and verify request/reservations become `EXPIRED`.
 
-## Resilience
-- Schedule dry-run passes.
-- Emergency dry-run passes.
-- Existing screens/device lifecycle dry-runs remain green.
-- Device snapshot still works with default media only.
-- Emergency does not break default-media fallback contract.
+## Publish and stale write protection
+- Publish approved request with valid reservation and verify success.
+- Repeat publish for same published request and verify idempotent response.
+- Mutate schedule after hold acquisition and verify approval/publish fails with stale reservation conflict.
+- Direct admin publish into a reserved window and verify `409`.
+- Simultaneous conflicting publish attempts do not both succeed.
+
+## Runtime determinism
+- Device snapshot selects active `PUBLISHED` reservation for the screen.
+- If no active reservation exists, device snapshot selects nearest upcoming `PUBLISHED` reservation.
+- Snapshot publish metadata includes deterministic selection information.
+- Screen availability/now-playing endpoints align with reservation-backed selection.
+- Publish queues deduplicated `REFRESH` device commands for affected screens.
+- Emergency trigger and clear queue `REFRESH` device commands for affected screens.
+- A device already running the player updates without restart after the next command poll cycle.
+
+## Emergency and fallback regression
+- Emergency still overrides reserved/published schedule playback.
+- Clearing emergency returns device to reservation-backed schedule playback.
+- Default media still appears when no active published reservation exists.
+- Offline/default media flows remain unchanged when there is no publish.
+
+## Operational and UX checks
+- Preview API returns authoritative overlaps for selected screens/groups.
+- Conflict payload contains screen name, window, state, and hold expiry where applicable.
+- Request list/detail exposes `reservation_summary`.
+- Submitted/approved schedules cannot be edited in place.
+- CMS scheduler shows authoritative conflict feedback before submit and on submit failure.

@@ -145,6 +145,14 @@ describe('Emergency routes production contract', () => {
         audit_note: 'Global notice',
       })
     );
+
+    const refreshCommands = await db
+      .select()
+      .from(schema.deviceCommands)
+      .where(eq(schema.deviceCommands.screen_id, screenId));
+    const pendingRefreshCommands = refreshCommands.filter((command) => command.type === 'REFRESH' && command.status === 'PENDING');
+    expect(pendingRefreshCommands).toHaveLength(1);
+    expect((pendingRefreshCommands[0]?.payload as { reason?: string } | null)?.reason).toBe('EMERGENCY');
   });
 
   it('requires exactly one target scope and persists clear_reason on clear', async () => {

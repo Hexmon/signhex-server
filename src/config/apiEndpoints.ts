@@ -71,8 +71,12 @@ export const apiEndpoints = {
     update: withBase('/schedule-requests/:id'),
     approve: withBase('/schedule-requests/:id/approve'),
     reject: withBase('/schedule-requests/:id/reject'),
+    cancel: withBase('/schedule-requests/:id/cancel'),
     publish: withBase('/schedule-requests/:id/publish'),
     statusSummary: withBase('/schedule-requests/status-summary'),
+  },
+  scheduleReservations: {
+    preview: withBase('/schedule-reservations/preview'),
   },
   screens: {
     create: withBase('/screens'),

@@ -13,7 +13,7 @@ import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { serializeMediaRecord } from '@/utils/media';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
-import { buildScreenPlaybackStateById, getActiveEmergencyForScreen, getGroupIdsForScreen } from '@/screens/playback';
+import { buildScreenPlaybackStateById, getActiveEmergencyForScreen, getGroupIdsForScreen, getLatestPublishForScreen } from '@/screens/playback';
 import { emitScreenPreviewUpdate, emitScreenStateUpdate } from '@/realtime/screens-namespace';
 
 const logger = createLogger('device-telemetry-routes');
@@ -212,20 +212,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
         const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
 
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, deviceId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
+        const latest = await getLatestPublishForScreen(deviceId, db);
 
         if (!latest) {
           if (emergency) {
@@ -313,12 +300,14 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         return reply.send({
           device_id: deviceId,
-          publish: {
-            publish_id: latest.publish_id,
-            schedule_id: latest.schedule_id,
-            snapshot_id: latest.snapshot_id,
-            published_at: latest.published_at.toISOString?.() ?? latest.published_at,
-          },
+            publish: {
+              publish_id: latest.publish_id,
+              schedule_id: latest.schedule_id,
+              snapshot_id: latest.snapshot_id,
+              published_at: latest.published_at.toISOString?.() ?? latest.published_at,
+              reservation_version: (latest as any).reservation_version ?? null,
+              selection_reason: (latest as any).selection_reason ?? null,
+            },
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
           emergency,

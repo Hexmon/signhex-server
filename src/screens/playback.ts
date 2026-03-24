@@ -3,6 +3,7 @@ import { getDatabase, schema } from '@/db';
 import { resolveDefaultMediaForScreen, resolveMediaUrl } from '@/utils/default-media';
 import { getPresignedUrl } from '@/s3';
 import { serializeMediaRecord } from '@/utils/media';
+import { createScheduleReservationRepository } from '@/db/repositories/schedule-reservation';
 
 type ScreenRecord = typeof schema.screens.$inferSelect;
 type ScreenGroupRecord = typeof schema.screenGroups.$inferSelect;
@@ -130,22 +131,38 @@ export async function getLatestPublishForScreen(
   screenId: string,
   db = getDatabase()
 ) {
-  const [latest] = await db
-    .select({
-      publish_id: schema.publishes.id,
-      schedule_id: schema.publishes.schedule_id,
-      snapshot_id: schema.publishes.snapshot_id,
-      published_at: schema.publishes.published_at,
-      payload: schema.scheduleSnapshots.payload,
-    })
-    .from(schema.publishTargets)
-    .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-    .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-    .where(eq(schema.publishTargets.screen_id, screenId))
-    .orderBy(desc(schema.publishes.published_at))
-    .limit(1);
+  const reservationRepo = createScheduleReservationRepository();
+  await reservationRepo.expireStaleHolds(new Date(), db);
 
-  return latest || null;
+  const active = await reservationRepo.findCurrentPublishedForScreen(screenId, new Date(), db);
+  if (active) {
+    return {
+      publish_id: active.publish_id,
+      schedule_id: active.schedule_id,
+      snapshot_id: active.snapshot_id,
+      published_at: active.published_at,
+      payload: active.payload,
+      reservation_version: active.reservation_version,
+      selection_reason: 'active_reservation' as const,
+      reservation_start_at: active.start_at,
+      reservation_end_at: active.end_at,
+    };
+  }
+
+  const upcoming = await reservationRepo.findUpcomingPublishedForScreen(screenId, new Date(), db);
+  if (!upcoming) return null;
+
+  return {
+    publish_id: upcoming.publish_id,
+    schedule_id: upcoming.schedule_id,
+    snapshot_id: upcoming.snapshot_id,
+    published_at: upcoming.published_at,
+    payload: upcoming.payload,
+    reservation_version: upcoming.reservation_version,
+    selection_reason: 'upcoming_reservation' as const,
+    reservation_start_at: upcoming.start_at,
+    reservation_end_at: upcoming.end_at,
+  };
 }
 
 export function filterItemsForScreen(items: any[], screenId: string, groupIds: string[]) {
@@ -574,6 +591,8 @@ export async function buildScreenPlaybackState(
           schedule_id: latest.schedule_id,
           snapshot_id: latest.snapshot_id,
           published_at: toIso(latest.published_at),
+          reservation_version: (latest as any).reservation_version ?? null,
+          selection_reason: (latest as any).selection_reason ?? null,
           schedule_start_at: schedulePayload?.start_at ?? null,
           schedule_end_at: schedulePayload?.end_at ?? null,
         }

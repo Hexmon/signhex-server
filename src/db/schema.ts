@@ -23,7 +23,22 @@ export const requestStatusEnum = pgEnum('request_status', [
   'REJECTED',
   'COMPLETED',
 ]);
-export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', ['PENDING', 'APPROVED', 'REJECTED']);
+export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', [
+  'PENDING',
+  'APPROVED',
+  'REJECTED',
+  'CANCELLED',
+  'PUBLISHED',
+  'EXPIRED',
+]);
+export const scheduleReservationStateEnum = pgEnum('schedule_reservation_state', [
+  'HELD',
+  'RESERVED',
+  'PUBLISHED',
+  'RELEASED',
+  'EXPIRED',
+  'CANCELLED',
+]);
 export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
 export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
@@ -212,6 +227,7 @@ export const schedules = pgTable(
     timezone: varchar('timezone', { length: 100 }),
     start_at: timestamp('start_at').notNull(),
     end_at: timestamp('end_at').notNull(),
+    revision: integer('revision').notNull().default(1),
     is_active: boolean('is_active').notNull().default(true),
     created_by: uuid('created_by').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
@@ -345,6 +361,11 @@ export const scheduleRequests = pgTable(
     status: scheduleRequestStatusEnum('status').notNull().default('PENDING'),
     review_notes: text('review_notes'),
     notes: text('notes'),
+    reservation_token: uuid('reservation_token'),
+    reservation_version: integer('reservation_version'),
+    reservation_state: varchar('reservation_state', { length: 50 }),
+    hold_expires_at: timestamp('hold_expires_at'),
+    published_at: timestamp('published_at'),
     requested_by: uuid('requested_by').notNull(),
     reviewed_by: uuid('reviewed_by'),
     reviewed_at: timestamp('reviewed_at'),
@@ -355,6 +376,39 @@ export const scheduleRequests = pgTable(
     statusIdx: index('schedule_requests_status_idx').on(table.status),
     scheduleIdx: index('schedule_requests_schedule_id_idx').on(table.schedule_id),
     requesterIdx: index('schedule_requests_requested_by_idx').on(table.requested_by),
+    reservationStateIdx: index('schedule_requests_reservation_state_idx').on(table.reservation_state),
+  })
+);
+
+export const scheduleReservations = pgTable(
+  'schedule_reservations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    screen_id: uuid('screen_id').notNull(),
+    schedule_id: uuid('schedule_id').notNull(),
+    schedule_item_id: uuid('schedule_item_id').notNull(),
+    schedule_request_id: uuid('schedule_request_id'),
+    owner_user_id: uuid('owner_user_id').notNull(),
+    state: scheduleReservationStateEnum('state').notNull(),
+    start_at: timestamp('start_at').notNull(),
+    end_at: timestamp('end_at').notNull(),
+    hold_expires_at: timestamp('hold_expires_at'),
+    reservation_token: uuid('reservation_token').notNull(),
+    reservation_version: integer('reservation_version').notNull().default(1),
+    publish_id: uuid('publish_id'),
+    approved_at: timestamp('approved_at'),
+    published_at: timestamp('published_at'),
+    released_at: timestamp('released_at'),
+    release_reason: text('release_reason'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    screenWindowIdx: index('schedule_reservations_screen_window_idx').on(table.screen_id, table.start_at, table.end_at),
+    requestIdx: index('schedule_reservations_request_idx').on(table.schedule_request_id),
+    scheduleIdx: index('schedule_reservations_schedule_idx').on(table.schedule_id),
+    publishIdx: index('schedule_reservations_publish_idx').on(table.publish_id),
+    stateExpiryIdx: index('schedule_reservations_state_expiry_idx').on(table.state, table.hold_expires_at),
   })
 );
 

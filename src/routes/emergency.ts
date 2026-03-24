@@ -14,8 +14,8 @@ import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
 import { getOrCreateSocketServer } from '@/realtime/socket-server';
-import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 import { defineAbilityFor } from '@/rbac';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('emergency-routes');
 const { CREATED } = HTTP_STATUS;
@@ -481,10 +481,12 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
         const serializedEmergency = await serializeEmergency(emergency);
         io.emit('emergency:triggered', serializedEmergency);
-        emitScreensRefreshRequired(fastify, {
+        await dispatchPlaybackRefresh(fastify, {
           reason: 'EMERGENCY',
-          screen_ids: affectedScreenIds,
-          group_ids: uniqueGroupIds,
+          screenIds: affectedScreenIds,
+          groupIds: uniqueGroupIds,
+          targetAll,
+          createdBy: payload.sub,
         });
         logger.warn(
           {
@@ -598,10 +600,12 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
         const serializedEmergency = await serializeEmergency(emergency);
         io.emit('emergency:cleared', serializedEmergency);
-        emitScreensRefreshRequired(fastify, {
+        await dispatchPlaybackRefresh(fastify, {
           reason: 'EMERGENCY',
-          screen_ids: affectedScreenIds,
-          group_ids: ((emergency as any).screen_group_ids || []) as string[],
+          screenIds: affectedScreenIds,
+          groupIds: ((emergency as any).screen_group_ids || []) as string[],
+          targetAll: (emergency as any).target_all === true,
+          createdBy: payload.sub,
         });
         logger.info(
           {

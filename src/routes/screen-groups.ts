@@ -11,7 +11,7 @@ import { getDatabase, schema } from '@/db';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
-import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('screen-group-routes');
 const { CREATED } = HTTP_STATUS;
@@ -121,10 +121,11 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
 
         const data = screenGroupSchema.parse(request.body);
         const group = await repo.create(data);
-        emitScreensRefreshRequired(fastify, {
+        await dispatchPlaybackRefresh(fastify, {
           reason: 'GROUP_MEMBERSHIP',
-          screen_ids: Array.from(new Set(data.screen_ids || [])),
-          group_ids: [group.id],
+          screenIds: Array.from(new Set(data.screen_ids || [])),
+          groupIds: [group.id],
+          createdBy: payload.sub,
         });
 
         return reply.status(CREATED).send({
@@ -668,10 +669,11 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const group = await repo.update((request.params as any).id, data);
         if (!group) throw AppError.notFound('Screen group not found');
         const members = await repo.members(group.id);
-        emitScreensRefreshRequired(fastify, {
+        await dispatchPlaybackRefresh(fastify, {
           reason: 'GROUP_MEMBERSHIP',
-          screen_ids: Array.from(new Set([...beforeMembers.map((m: any) => m.screen_id), ...members.map((m: any) => m.screen_id)])),
-          group_ids: [group.id],
+          screenIds: Array.from(new Set([...beforeMembers.map((m: any) => m.screen_id), ...members.map((m: any) => m.screen_id)])),
+          groupIds: [group.id],
+          createdBy: payload.sub,
         });
 
         return reply.send({
@@ -796,10 +798,11 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         const members = await repo.members(group.id);
 
         await repo.delete(group.id);
-        emitScreensRefreshRequired(fastify, {
+        await dispatchPlaybackRefresh(fastify, {
           reason: 'GROUP_MEMBERSHIP',
-          screen_ids: Array.from(new Set(members.map((m: any) => m.screen_id))),
-          group_ids: [group.id],
+          screenIds: Array.from(new Set(members.map((m: any) => m.screen_id))),
+          groupIds: [group.id],
+          createdBy: payload.sub,
         });
         return reply.status(204).send();
       } catch (error) {

@@ -1,4 +1,4 @@
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class ScheduleRepository {
@@ -70,7 +70,11 @@ export class ScheduleRepository {
     const db = getDatabase();
     const result = await db
       .update(schema.schedules)
-      .set({ ...data, updated_at: new Date() })
+      .set({
+        ...data,
+        revision: sql`${schema.schedules.revision} + 1`,
+        updated_at: new Date(),
+      })
       .where(eq(schema.schedules.id, id))
       .returning();
     return result[0] || null;
