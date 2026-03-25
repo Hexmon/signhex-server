@@ -216,27 +216,14 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const latest = await getLatestPublishForScreen(deviceId, db);
 
         if (!latest) {
-          if (emergency) {
-            return reply.send({
-              device_id: deviceId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency,
-              ...defaultMediaPayload,
-            });
-          }
-          if (defaultMediaPayload.default_media) {
-            return reply.send({
-              device_id: deviceId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency: null,
-              ...defaultMediaPayload,
-            });
-          }
-          throw AppError.notFound('No publish found for this device');
+          return reply.send({
+            device_id: deviceId,
+            publish: null,
+            snapshot: null,
+            media_urls: undefined,
+            emergency: emergency ?? null,
+            ...defaultMediaPayload,
+          });
         }
 
         const snapshotVersion = String(latest.snapshot_id);

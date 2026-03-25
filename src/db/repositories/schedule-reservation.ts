@@ -216,6 +216,34 @@ export class ScheduleReservationRepository {
       });
   }
 
+  async markPublishedReservationsReleasedByPublishId(
+    publishId: string,
+    releaseReason: string,
+    db: DBLike = getDatabase()
+  ) {
+    const releasedAt = new Date();
+    return db
+      .update(schema.scheduleReservations)
+      .set({
+        state: 'RELEASED',
+        released_at: releasedAt,
+        release_reason: releaseReason,
+        hold_expires_at: null,
+        updated_at: releasedAt,
+      })
+      .where(
+        and(
+          eq(schema.scheduleReservations.publish_id, publishId),
+          eq(schema.scheduleReservations.state, 'PUBLISHED')
+        )
+      )
+      .returning({
+        id: schema.scheduleReservations.id,
+        screen_id: schema.scheduleReservations.screen_id,
+        schedule_request_id: schema.scheduleReservations.schedule_request_id,
+      });
+  }
+
   async finalizeRequestPublish(
     scheduleRequestId: string,
     publishId: string,
@@ -266,6 +294,7 @@ export class ScheduleReservationRepository {
         and(
           eq(schema.scheduleReservations.screen_id, screenId),
           eq(schema.scheduleReservations.state, 'PUBLISHED'),
+          eq(schema.publishes.status, 'ACTIVE'),
           lt(schema.scheduleReservations.start_at, now),
           gt(schema.scheduleReservations.end_at, now)
         )
@@ -300,6 +329,7 @@ export class ScheduleReservationRepository {
         and(
           eq(schema.scheduleReservations.screen_id, screenId),
           eq(schema.scheduleReservations.state, 'PUBLISHED'),
+          eq(schema.publishes.status, 'ACTIVE'),
           gt(schema.scheduleReservations.start_at, now)
         )
       )

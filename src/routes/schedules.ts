@@ -36,6 +36,10 @@ const scheduleItemSchema = z.object({
   screen_group_ids: z.array(z.string().uuid()).default([]),
 });
 
+const takeDownPublishSchema = z.object({
+  reason: z.string().optional(),
+});
+
 export async function scheduleRoutes(fastify: FastifyInstance) {
   const scheduleRepo = createScheduleRepository();
   const scheduleItemRepo = createScheduleItemRepository();
@@ -792,6 +796,71 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
   );
 
   // Poll single publish
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    apiEndpoints.schedules.takeDownPublish,
+    {
+      schema: {
+        description: 'Take down a publish record and remove it from targeted screens',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        if (!isAdminLike(payload.role)) {
+          throw AppError.forbidden('Forbidden');
+        }
+
+        const [publish] = await db
+          .select()
+          .from(schema.publishes)
+          .where(eq(schema.publishes.id, (request.params as any).id));
+        if (!publish) {
+          throw AppError.notFound('Publish not found');
+        }
+
+        await assertScheduleAccess(payload, publish.schedule_id);
+        const body = takeDownPublishSchema.parse(request.body ?? {});
+        const takedownResult = await db.transaction(async (tx) =>
+          reservationService.takeDownPublish(
+            {
+              publishId: publish.id,
+              takenDownBy: payload.sub,
+              takedownReason: body.reason ?? null,
+            },
+            tx
+          )
+        );
+
+        if (takedownResult.screenIds.length > 0) {
+          await dispatchPlaybackRefresh(fastify, {
+            reason: 'TAKE_DOWN',
+            screenIds: takedownResult.screenIds,
+            createdBy: payload.sub,
+            publishId: publish.id,
+          });
+        }
+
+        const responsePublish = takedownResult.publish ?? publish;
+        return reply.send({
+          ...responsePublish,
+          published_at: responsePublish.published_at.toISOString?.() ?? responsePublish.published_at,
+          taken_down_at: responsePublish.taken_down_at?.toISOString?.() ?? responsePublish.taken_down_at ?? null,
+          resolved_screen_ids: takedownResult.screenIds,
+          message: takedownResult.alreadyTakenDown
+            ? 'Publish was already taken down'
+            : 'Publish removed from targeted screens.',
+        });
+      } catch (error) {
+        logger.error(error, 'Take down publish error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
   fastify.get<{ Params: { id: string } }>(
     apiEndpoints.schedules.publishStatus,
     {

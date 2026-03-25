@@ -70,6 +70,10 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
     return {
       id: pairing.id,
+      pairing_code:
+        typeof pairing.pairing_code === 'string' && pairing.pairing_code.trim().length > 0
+          ? pairing.pairing_code.trim()
+          : null,
       created_at: pairing.created_at?.toISOString?.() ?? pairing.created_at,
       expires_at: pairing.expires_at?.toISOString?.() ?? pairing.expires_at,
       confirmed,
@@ -156,6 +160,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
   const issuePairingCode = async (deviceId: string, expiresIn: number) => {
     const existingScreen = await screenRepo.findById(deviceId);
+    const retiredPairings = await pairingRepo.retireActiveByDeviceId(deviceId);
     const pairingCode = randomBytes(3).toString('hex').toUpperCase();
     const expiresAt = new Date();
     expiresAt.setSeconds(expiresAt.getSeconds() + expiresIn);
@@ -168,6 +173,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
     return {
       pairing,
+      retired_pairing_count: retiredPairings.length,
       pairing_code: pairingCode,
       expires_at: expiresAt.toISOString(),
       expires_in: expiresIn,
@@ -210,6 +216,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
             deviceId: data.device_id,
             pairingCode: responseBody.pairing_code,
             expiresAt: responseBody.expires_at,
+            retiredPairingCount: responseBody.retired_pairing_count,
           },
           'Pairing code generated'
         );
@@ -492,12 +499,22 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
         const data = confirmPairingSchema.parse(request.body);
 
-        const pairing = await pairingRepo.findByCode(data.pairing_code);
+        const pairing = await pairingRepo.findAnyByCode(data.pairing_code);
         if (!pairing) {
+          throw AppError.notFound('Invalid or expired pairing code');
+        }
+        if (pairing.expires_at && pairing.expires_at.getTime() <= Date.now()) {
           throw AppError.notFound('Invalid or expired pairing code');
         }
         if (!pairing.device_id) {
           throw AppError.badRequest('Pairing missing device reference');
+        }
+        const latestActivePairing = await pairingRepo.findActiveByDeviceId(pairing.device_id);
+        if (latestActivePairing && latestActivePairing.id !== pairing.id) {
+          throw AppError.conflict('This recovery code has been superseded. Generate or use the latest recovery code.');
+        }
+        if (pairing.used) {
+          throw AppError.conflict('This pairing code is no longer active. Generate a fresh recovery code and try again.');
         }
         const existing = await screenRepo.findById(pairing.device_id);
 

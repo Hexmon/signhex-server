@@ -281,15 +281,59 @@ describe('Hybrid schedule reservations', () => {
   it('allows an admin to take down a published request and clears active ownership for the screen', async () => {
     const db = getDatabase();
     const screenId = randomUUID();
+    const fallbackMediaId = randomUUID();
     const now = new Date();
     const startAt = new Date(now.getTime() + 180 * 60 * 1000);
     const endAt = new Date(now.getTime() + 240 * 60 * 1000);
+
+    await db.insert(schema.media).values({
+      id: fallbackMediaId,
+      name: 'Take Down Default Media',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+      width: 1920,
+      height: 1080,
+    });
 
     await db.insert(schema.screens).values({
       id: screenId,
       name: 'Take Down Screen',
       status: 'OFFLINE',
+      aspect_ratio: '16:9',
     });
+
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_targets'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_variants'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_id'));
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_id',
+        value: fallbackMediaId,
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: fallbackMediaId,
+          updated_at: new Date(),
+        },
+      });
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_variants',
+        value: { '16:9': fallbackMediaId },
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: { '16:9': fallbackMediaId },
+          updated_at: new Date(),
+        },
+      });
 
     const publishedSchedule = await seedReadySchedule({
       screenId,
@@ -374,6 +418,150 @@ describe('Hybrid schedule reservations', () => {
       headers: { authorization: `Bearer ${tokenOne}` },
     });
 
-    expect(deviceSnapshot.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+    expect(deviceSnapshot.statusCode).toBe(HTTP_STATUS.OK);
+    const snapshotBody = JSON.parse(deviceSnapshot.body);
+    expect(snapshotBody.publish).toBeNull();
+    expect(snapshotBody.default_media).toEqual(
+      expect.objectContaining({
+        media_id: fallbackMediaId,
+        id: fallbackMediaId,
+      })
+    );
+    expect(snapshotBody.default_media_resolution).toEqual({
+      source: 'ASPECT_RATIO',
+      aspect_ratio: '16:9',
+    });
+  });
+
+  it('allows an admin to take down a direct publish and fall back to default media', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const fallbackMediaId = randomUUID();
+    const now = new Date();
+    const startAt = new Date(now.getTime() + 260 * 60 * 1000);
+    const endAt = new Date(now.getTime() + 320 * 60 * 1000);
+
+    await db.insert(schema.media).values({
+      id: fallbackMediaId,
+      name: 'Direct Publish Fallback Media',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+      width: 1920,
+      height: 1080,
+    });
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Direct Publish Screen',
+      status: 'OFFLINE',
+      aspect_ratio: '16:9',
+    });
+
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_targets'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_variants'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_id'));
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_id',
+        value: fallbackMediaId,
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: fallbackMediaId,
+          updated_at: new Date(),
+        },
+      });
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_variants',
+        value: { '16:9': fallbackMediaId },
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: { '16:9': fallbackMediaId },
+          updated_at: new Date(),
+        },
+      });
+
+    const directSchedule = await seedReadySchedule({
+      screenId,
+      createdBy: testUser.id,
+      name: 'Direct Publish Schedule',
+      startAt,
+      endAt,
+    });
+
+    const published = await server.inject({
+      method: 'POST',
+      url: `/api/v1/schedules/${directSchedule.scheduleId}/publish`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+      payload: {},
+    });
+
+    expect(published.statusCode).toBe(HTTP_STATUS.OK);
+    const publishedBody = JSON.parse(published.body);
+    const publishId = publishedBody.publish_id as string;
+
+    const takenDown = await server.inject({
+      method: 'POST',
+      url: `/api/v1/publishes/${publishId}/take-down`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+      payload: { reason: 'Direct publish removed by admin' },
+    });
+
+    expect(takenDown.statusCode).toBe(HTTP_STATUS.OK);
+    const takenDownBody = JSON.parse(takenDown.body);
+    expect(takenDownBody.status).toBe('TAKEN_DOWN');
+    expect(takenDownBody.takedown_reason).toBe('Direct publish removed by admin');
+    expect(takenDownBody.resolved_screen_ids).toContain(screenId);
+
+    const reservations = await db
+      .select()
+      .from(schema.scheduleReservations)
+      .where(eq(schema.scheduleReservations.publish_id, publishId));
+    expect(reservations.length).toBeGreaterThan(0);
+    expect(reservations.every((row) => row.state === 'RELEASED')).toBe(true);
+    expect(reservations.every((row) => row.release_reason === 'publish-taken-down-by-admin')).toBe(true);
+
+    const [publish] = await db
+      .select()
+      .from(schema.publishes)
+      .where(eq(schema.publishes.id, publishId));
+    expect(publish?.status).toBe('TAKEN_DOWN');
+    expect(publish?.taken_down_by).toBe(testUser.id);
+    expect(publish?.takedown_reason).toBe('Direct publish removed by admin');
+
+    const refreshCommands = await db
+      .select()
+      .from(schema.deviceCommands)
+      .where(eq(schema.deviceCommands.screen_id, screenId));
+    expect(refreshCommands.some((command) => command.type === 'REFRESH' && command.status === 'PENDING')).toBe(true);
+
+    const deviceSnapshot = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${screenId}/snapshot`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+    });
+
+    expect(deviceSnapshot.statusCode).toBe(HTTP_STATUS.OK);
+    const snapshotBody = JSON.parse(deviceSnapshot.body);
+    expect(snapshotBody.publish).toBeNull();
+    expect(snapshotBody.default_media).toEqual(
+      expect.objectContaining({
+        media_id: fallbackMediaId,
+        id: fallbackMediaId,
+      })
+    );
+    expect(snapshotBody.default_media_resolution).toEqual({
+      source: 'ASPECT_RATIO',
+      aspect_ratio: '16:9',
+    });
   });
 });

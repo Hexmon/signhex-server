@@ -251,6 +251,91 @@ describe('Device Pairing Routes', () => {
     expect(statusBody.active_pairing).toBeTruthy();
     expect(statusBody.active_pairing.confirmed).toBe(true);
     expect(statusBody.active_pairing.mode).toBe('RECOVERY');
+    expect(statusBody.active_pairing.pairing_code).toBe(generated.pairing_code);
+  });
+
+  it('rejects superseded recovery codes and keeps only the latest active code per device', async () => {
+    const deviceId = randomUUID();
+    const db = getDatabase();
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Superseded Recovery Screen',
+      status: 'OFFLINE',
+    });
+
+    const firstGenerateRes = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device-pairing/generate',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        device_id: deviceId,
+        expires_in: 600,
+      },
+    });
+    expect(firstGenerateRes.statusCode).toBe(HTTP_STATUS.CREATED);
+    const firstGenerated = JSON.parse(firstGenerateRes.body);
+
+    const secondGenerateRes = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device-pairing/generate',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        device_id: deviceId,
+        expires_in: 600,
+      },
+    });
+    expect(secondGenerateRes.statusCode).toBe(HTTP_STATUS.CREATED);
+    const secondGenerated = JSON.parse(secondGenerateRes.body);
+
+    expect(secondGenerated.pairing_code).not.toBe(firstGenerated.pairing_code);
+
+    const staleConfirmRes = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device-pairing/confirm',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        pairing_code: firstGenerated.pairing_code,
+        name: 'Superseded Recovery Screen',
+      },
+    });
+
+    expect(staleConfirmRes.statusCode).toBe(HTTP_STATUS.CONFLICT);
+    const staleConfirmBody = JSON.parse(staleConfirmRes.body);
+    expect(staleConfirmBody.error.message).toBe(
+      'This recovery code has been superseded. Generate or use the latest recovery code.'
+    );
+
+    const latestConfirmRes = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device-pairing/confirm',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        pairing_code: secondGenerated.pairing_code,
+        name: 'Superseded Recovery Screen',
+        location: 'Lobby',
+      },
+    });
+
+    expect(latestConfirmRes.statusCode).toBe(HTTP_STATUS.OK);
+
+    const statusRes = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device-pairing/status?device_id=${deviceId}`,
+    });
+
+    expect(statusRes.statusCode).toBe(HTTP_STATUS.OK);
+    const statusBody = JSON.parse(statusRes.body);
+    expect(statusBody.active_pairing?.pairing_code).toBe(secondGenerated.pairing_code);
+    expect(statusBody.active_pairing?.mode).toBe('RECOVERY');
   });
 
   it('returns structured recovery diagnostics for an expired device certificate', async () => {

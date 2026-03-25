@@ -168,6 +168,143 @@ describe('Device telemetry auth runtime validation', () => {
     );
   });
 
+  it('returns aspect-ratio and global default media for authenticated devices when no target assignment exists', async () => {
+    const db = getDatabase();
+    const aspectDeviceId = randomUUID();
+    const globalDeviceId = randomUUID();
+    const aspectSerial = `serial-${randomUUID()}`;
+    const globalSerial = `serial-${randomUUID()}`;
+    const aspectMediaId = randomUUID();
+    const globalMediaId = randomUUID();
+
+    await db.insert(schema.media).values([
+      {
+        id: aspectMediaId,
+        name: 'Aspect Ratio Device Default',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1920,
+        height: 1080,
+      },
+      {
+        id: globalMediaId,
+        name: 'Global Device Default',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1280,
+        height: 720,
+      },
+    ]);
+
+    await db.insert(schema.screens).values([
+      {
+        id: aspectDeviceId,
+        name: 'Aspect Ratio Device',
+        status: 'OFFLINE',
+        aspect_ratio: '16:9',
+      } as any,
+      {
+        id: globalDeviceId,
+        name: 'Global Fallback Device',
+        status: 'OFFLINE',
+        aspect_ratio: '4:3',
+      } as any,
+    ]);
+
+    await db.insert(schema.deviceCertificates).values([
+      {
+        screen_id: aspectDeviceId,
+        serial: aspectSerial,
+        certificate_pem: 'dummy-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+      {
+        screen_id: globalDeviceId,
+        serial: globalSerial,
+        certificate_pem: 'dummy-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      },
+    ]);
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_targets',
+        value: [],
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: [],
+          updated_at: new Date(),
+        },
+      });
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_variants',
+        value: { '16:9': aspectMediaId },
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: { '16:9': aspectMediaId },
+          updated_at: new Date(),
+        },
+      });
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_id',
+        value: globalMediaId,
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: globalMediaId,
+          updated_at: new Date(),
+        },
+      });
+
+    const aspectResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${aspectDeviceId}/default-media`,
+      headers: {
+        'x-device-serial': aspectSerial,
+      },
+    });
+
+    expect(aspectResponse.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(aspectResponse.body)).toEqual(
+      expect.objectContaining({
+        source: 'ASPECT_RATIO',
+        aspect_ratio: '16:9',
+        media_id: aspectMediaId,
+      })
+    );
+
+    const globalResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${globalDeviceId}/default-media`,
+      headers: {
+        'x-device-serial': globalSerial,
+      },
+    });
+
+    expect(globalResponse.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(globalResponse.body)).toEqual(
+      expect.objectContaining({
+        source: 'GLOBAL',
+        aspect_ratio: '4:3',
+        media_id: globalMediaId,
+      })
+    );
+  });
+
   it('returns resolved target-based default media and resolution metadata in device snapshot fallback responses', async () => {
     const db = getDatabase();
     const deviceId = randomUUID();
@@ -245,6 +382,59 @@ describe('Device telemetry auth runtime validation', () => {
     );
     expect(body.default_media_resolution).toEqual({
       source: 'SCREEN',
+      aspect_ratio: '16:9',
+    });
+  });
+
+  it('returns an empty snapshot payload for a registered device with no publish or default media', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_id'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_variants'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_targets'));
+    await db
+      .update(schema.emergencies)
+      .set({
+        is_active: false,
+        cleared_at: new Date(),
+        clear_reason: 'device-empty-snapshot-test-reset',
+        updated_at: new Date(),
+      })
+      .where(eq(schema.emergencies.is_active, true));
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Empty Snapshot Device',
+      status: 'ACTIVE',
+      aspect_ratio: '16:9',
+    } as any);
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${deviceId}/snapshot?include_urls=true`,
+      headers: {
+        'x-device-serial': serial,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(body.device_id).toBe(deviceId);
+    expect(body.publish).toBeNull();
+    expect(body.snapshot).toBeNull();
+    expect(body.emergency).toBeNull();
+    expect(body.default_media).toBeNull();
+    expect(body.default_media_resolution).toEqual({
+      source: 'NONE',
       aspect_ratio: '16:9',
     });
   });

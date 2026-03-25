@@ -8,7 +8,7 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
 import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
@@ -182,7 +182,12 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
               .from(schema.publishTargets)
               .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
               .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-              .where(eq(schema.publishTargets.screen_id, screenId))
+              .where(
+                and(
+                  eq(schema.publishTargets.screen_id, screenId),
+                  eq(schema.publishes.status, 'ACTIVE')
+                )
+              )
               .orderBy(desc(schema.publishes.published_at))
               .limit(1);
 
@@ -280,7 +285,12 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
           .from(schema.publishTargets)
           .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
           .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_group_id, group.id))
+          .where(
+            and(
+              eq(schema.publishTargets.screen_group_id, group.id),
+              eq(schema.publishes.status, 'ACTIVE')
+            )
+          )
           .orderBy(desc(schema.publishes.published_at))
           .limit(1);
 
@@ -727,7 +737,12 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
               .from(schema.publishTargets)
               .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
               .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-              .where(eq(schema.publishTargets.screen_id, screenId))
+              .where(
+                and(
+                  eq(schema.publishTargets.screen_id, screenId),
+                  eq(schema.publishes.status, 'ACTIVE')
+                )
+              )
               .orderBy(desc(schema.publishes.published_at))
               .limit(1);
 

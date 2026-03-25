@@ -239,6 +239,44 @@ export async function getDefaultMediaTargetAssignments(
   }));
 }
 
+export async function pruneDefaultMediaTargetsForScreen(
+  screenId: string,
+  db = getDatabase()
+): Promise<number> {
+  const [setting] = await db
+    .select()
+    .from(schema.settings)
+    .where(eq(schema.settings.key, DEFAULT_MEDIA_TARGETS_SETTING_KEY));
+
+  if (!setting) {
+    return 0;
+  }
+
+  const assignments = extractDefaultMediaTargets(setting.value);
+  if (assignments.length === 0) {
+    return 0;
+  }
+
+  const nextAssignments = assignments.filter(
+    (assignment) => !(assignment.target_type === 'SCREEN' && assignment.target_id === screenId)
+  );
+
+  const removedCount = assignments.length - nextAssignments.length;
+  if (removedCount === 0) {
+    return 0;
+  }
+
+  await db
+    .update(schema.settings)
+    .set({
+      value: nextAssignments,
+      updated_at: new Date(),
+    })
+    .where(eq(schema.settings.key, DEFAULT_MEDIA_TARGETS_SETTING_KEY));
+
+  return removedCount;
+}
+
 export async function resolveDefaultMediaForScreen(
   screen: {
     id?: string | null;
@@ -250,6 +288,7 @@ export async function resolveDefaultMediaForScreen(
 ): Promise<ResolvedDefaultMedia> {
   const aspect_ratio = resolveAspectRatio(screen);
   const screenId = screen.id ?? null;
+
   if (screenId) {
     const assignments = await getDefaultMediaTargetAssignments(db);
     const matchingAssignments = assignments.filter(
@@ -287,6 +326,35 @@ export async function resolveDefaultMediaForScreen(
         media_url: groupAssignment.media_url,
       };
     }
+  }
+
+  if (aspect_ratio) {
+    const variants = await getDefaultMediaVariantsMap(db);
+    const aspectMediaId = variants[aspect_ratio];
+
+    if (aspectMediaId) {
+      const aspectMedia = await loadMediaRecord(aspectMediaId, db);
+      if (aspectMedia.media) {
+        return {
+          source: 'ASPECT_RATIO',
+          aspect_ratio,
+          media_id: aspectMedia.media_id,
+          media: aspectMedia.media,
+          media_url: aspectMedia.media_url,
+        };
+      }
+    }
+  }
+
+  const globalDefault = await getDefaultMedia(db);
+  if (globalDefault?.media) {
+    return {
+      source: 'GLOBAL',
+      aspect_ratio,
+      media_id: globalDefault.media_id,
+      media: globalDefault.media,
+      media_url: globalDefault.media_url,
+    };
   }
 
   return {

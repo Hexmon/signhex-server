@@ -61,6 +61,7 @@ export const apiEndpoints = {
     publishes: withBase('/schedules/:id/publishes'),
     updatePublishTarget: withBase('/publishes/:publishId/targets/:targetId'),
     publishStatus: withBase('/publishes/:id'),
+    takeDownPublish: withBase('/publishes/:id/take-down'),
     items: withBase('/schedules/:id/items'),
     item: withBase('/schedules/:id/items/:itemId'),
   },

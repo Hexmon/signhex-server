@@ -11,7 +11,7 @@ import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, gte, lte, sql } from 'drizzle-orm';
 import { deleteObject, getPresignedUrl, getObject } from '@/s3';
 import { getAspectRatioName, KNOWN_ASPECT_RATIOS, resolveAspectRatio } from '@/utils/aspect-ratio';
-import { resolveDefaultMediaForScreen } from '@/utils/default-media';
+import { pruneDefaultMediaTargetsForScreen, resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import {
   buildScreenScheduleTimelinePayload,
@@ -900,29 +900,15 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const latest = await getLatestPublishForScreen(screenId, db);
 
         if (!latest) {
-          if (emergency) {
-            return reply.send({
-              server_time: serverTime,
-              screen_id: screenId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency,
-              ...defaultMediaPayload,
-            });
-          }
-          if (defaultMediaPayload.default_media) {
-            return reply.send({
-              server_time: serverTime,
-              screen_id: screenId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency: null,
-              ...defaultMediaPayload,
-            });
-          }
-          throw AppError.notFound('No publish found for this screen');
+          return reply.send({
+            server_time: serverTime,
+            screen_id: screenId,
+            publish: null,
+            snapshot: null,
+            media_urls: undefined,
+            emergency: emergency ?? null,
+            ...defaultMediaPayload,
+          });
         }
 
         const rawPayload = (latest.payload as any) || {};
@@ -1134,6 +1120,9 @@ export async function screenRoutes(fastify: FastifyInstance) {
           const heartbeatsDeleted = await tx.delete(schema.heartbeats).where(eq(schema.heartbeats.screen_id, screenId));
           const popDeleted = await tx.delete(schema.proofOfPlay).where(eq(schema.proofOfPlay.screen_id, screenId));
           const screenshotsDeleted = await tx.delete(schema.screenshots).where(eq(schema.screenshots.screen_id, screenId));
+          const reservationsDeleted = await tx
+            .delete(schema.scheduleReservations)
+            .where(eq(schema.scheduleReservations.screen_id, screenId));
           const publishTargetsDeleted = await tx
             .delete(schema.publishTargets)
             .where(eq(schema.publishTargets.screen_id, screenId));
@@ -1142,6 +1131,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           const groupMembersDeleted = await tx
             .delete(schema.screenGroupMembers)
             .where(eq(schema.screenGroupMembers.screen_id, screenId));
+          const defaultMediaTargetsRemoved = await pruneDefaultMediaTargetsForScreen(screenId, tx);
 
           await tx.delete(schema.screens).where(eq(schema.screens.id, screenId));
 
@@ -1150,10 +1140,12 @@ export async function screenRoutes(fastify: FastifyInstance) {
             heartbeats: (heartbeatsDeleted as any)?.length ?? 0,
             proof_of_play: (popDeleted as any)?.length ?? 0,
             screenshots: (screenshotsDeleted as any)?.length ?? 0,
+            schedule_reservations: (reservationsDeleted as any)?.length ?? 0,
             publish_targets: (publishTargetsDeleted as any)?.length ?? 0,
             device_pairings: (pairingsDeleted as any)?.length ?? 0,
             device_certificates: (certsDeleted as any)?.length ?? 0,
             screen_group_members: (groupMembersDeleted as any)?.length ?? 0,
+            default_media_targets: defaultMediaTargetsRemoved,
           };
         });
 

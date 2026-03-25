@@ -40,6 +40,7 @@ export const scheduleReservationStateEnum = pgEnum('schedule_reservation_state',
   'EXPIRED',
   'CANCELLED',
 ]);
+export const publishStatusEnum = pgEnum('publish_status', ['ACTIVE', 'TAKEN_DOWN']);
 export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
 export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
@@ -287,10 +288,15 @@ export const publishes = pgTable(
     schedule_id: uuid('schedule_id').notNull(),
     snapshot_id: uuid('snapshot_id').notNull(),
     published_by: uuid('published_by').notNull(),
+    status: publishStatusEnum('status').notNull().default('ACTIVE'),
+    taken_down_at: timestamp('taken_down_at'),
+    taken_down_by: uuid('taken_down_by'),
+    takedown_reason: text('takedown_reason'),
     published_at: timestamp('published_at').notNull().defaultNow(),
   },
   (table) => ({
     scheduleIdIdx: index('publishes_schedule_id_idx').on(table.schedule_id),
+    statusIdx: index('publishes_status_idx').on(table.status),
   })
 );
 

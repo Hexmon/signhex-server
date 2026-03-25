@@ -633,6 +633,30 @@ export class ScheduleReservationService {
       .where(eq(schema.scheduleRequests.id, params.scheduleRequestId));
   }
 
+  private async markPublishesTakenDown(
+    publishIds: string[],
+    takenDownBy: string,
+    takedownReason: string | null | undefined,
+    db: DBLike = getDatabase()
+  ) {
+    const uniquePublishIds = Array.from(new Set(publishIds.filter(Boolean)));
+    if (uniquePublishIds.length === 0) {
+      return [];
+    }
+
+    const now = new Date();
+    return db
+      .update(schema.publishes)
+      .set({
+        status: 'TAKEN_DOWN',
+        taken_down_at: now,
+        taken_down_by: takenDownBy,
+        takedown_reason: takedownReason ?? null,
+      })
+      .where(inArray(schema.publishes.id, uniquePublishIds as any))
+      .returning();
+  }
+
   async takeDownPublishedRequest(
     params: {
       scheduleRequestId: string;
@@ -651,11 +675,25 @@ export class ScheduleReservationService {
       throw AppError.notFound('Schedule request not found');
     }
 
+    const requestReservationRows = await db
+      .select({
+        screen_id: schema.scheduleReservations.screen_id,
+        publish_id: schema.scheduleReservations.publish_id,
+      })
+      .from(schema.scheduleReservations)
+      .where(eq(schema.scheduleReservations.schedule_request_id, params.scheduleRequestId));
+
+    const reservedScreenIds = Array.from(
+      new Set(requestReservationRows.map((row: { screen_id: string }) => row.screen_id))
+    );
+    const publishIds = Array.from(
+      new Set(requestReservationRows.map((row: { publish_id: string | null }) => row.publish_id).filter(Boolean))
+    ) as string[];
+
     if (request.status === 'TAKEN_DOWN') {
-      const publishedRows = await this.repo.listActiveByRequest(params.scheduleRequestId, db);
       return {
         request,
-        screenIds: Array.from(new Set(publishedRows.map((row: any) => row.screen_id))),
+        screenIds: reservedScreenIds,
         alreadyTakenDown: true,
       };
     }
@@ -669,6 +707,8 @@ export class ScheduleReservationService {
       'request-taken-down-by-admin',
       db
     );
+
+    await this.markPublishesTakenDown(publishIds, params.takenDownBy, params.takedownReason, db);
 
     const now = new Date();
     const [updatedRequest] = await db
@@ -686,8 +726,115 @@ export class ScheduleReservationService {
 
     return {
       request: updatedRequest ?? request,
-      screenIds: Array.from(new Set(releasedRows.map((row: { screen_id: string }) => row.screen_id))),
+      screenIds: Array.from(
+        new Set([
+          ...reservedScreenIds,
+          ...releasedRows.map((row: { screen_id: string }) => row.screen_id),
+        ])
+      ),
       alreadyTakenDown: false,
+    };
+  }
+
+  async takeDownPublish(
+    params: {
+      publishId: string;
+      takenDownBy: string;
+      takedownReason?: string | null;
+    },
+    db: DBLike = getDatabase()
+  ) {
+    await this.expireStaleHolds(db);
+
+    const [publish] = await db
+      .select()
+      .from(schema.publishes)
+      .where(eq(schema.publishes.id, params.publishId));
+    if (!publish) {
+      throw AppError.notFound('Publish not found');
+    }
+
+    const publishReservations = await db
+      .select({
+        screen_id: schema.scheduleReservations.screen_id,
+        schedule_request_id: schema.scheduleReservations.schedule_request_id,
+      })
+      .from(schema.scheduleReservations)
+      .where(eq(schema.scheduleReservations.publish_id, params.publishId));
+
+    const screenIds = Array.from(
+      new Set(publishReservations.map((row: { screen_id: string }) => row.screen_id))
+    );
+    const linkedRequestIds = Array.from(
+      new Set(
+        publishReservations
+          .map((row: { schedule_request_id: string | null }) => row.schedule_request_id)
+          .filter(Boolean)
+      )
+    ) as string[];
+
+    if (linkedRequestIds.length > 1) {
+      throw AppError.conflict('Publish is linked to multiple schedule requests and cannot be taken down safely.', {
+        conflict_type: 'INVALID_PUBLISH_LINKAGE',
+      });
+    }
+
+    if (linkedRequestIds[0]) {
+      const requestResult = await this.takeDownPublishedRequest(
+        {
+          scheduleRequestId: linkedRequestIds[0],
+          takenDownBy: params.takenDownBy,
+          takedownReason: params.takedownReason ?? null,
+        },
+        db
+      );
+
+      await this.markPublishesTakenDown([params.publishId], params.takenDownBy, params.takedownReason, db);
+
+      const [updatedPublish] = await db
+        .select()
+        .from(schema.publishes)
+        .where(eq(schema.publishes.id, params.publishId));
+
+      return {
+        publish: updatedPublish ?? publish,
+        screenIds: requestResult.screenIds.length > 0 ? requestResult.screenIds : screenIds,
+        alreadyTakenDown: requestResult.alreadyTakenDown || updatedPublish?.status === 'TAKEN_DOWN',
+        scheduleRequestId: linkedRequestIds[0],
+      };
+    }
+
+    if (publish.status === 'TAKEN_DOWN') {
+      return {
+        publish,
+        screenIds,
+        alreadyTakenDown: true,
+        scheduleRequestId: null,
+      };
+    }
+
+    const releasedRows = await this.repo.markPublishedReservationsReleasedByPublishId(
+      params.publishId,
+      'publish-taken-down-by-admin',
+      db
+    );
+    const [updatedPublish] = await this.markPublishesTakenDown(
+      [params.publishId],
+      params.takenDownBy,
+      params.takedownReason,
+      db
+    );
+
+    return {
+      publish: updatedPublish ?? publish,
+      screenIds: Array.from(
+        new Set([
+          ...screenIds,
+          ...releasedRows.map((row: { screen_id: string }) => row.screen_id),
+        ])
+      ),
+      alreadyTakenDown: false,
+      scheduleRequestId: null,
     };
   }
 

@@ -641,6 +641,8 @@ describe('Screens routes realtime playback bootstrap', () => {
     const heartbeatStorageId = randomUUID();
     const popStorageId = randomUUID();
     const screenshotStorageId = randomUUID();
+    const mediaId = randomUUID();
+    const otherScreenId = randomUUID();
 
     const deleteObjectSpy = vi.spyOn(s3, 'deleteObject').mockResolvedValue(undefined);
 
@@ -674,6 +676,67 @@ describe('Screens routes realtime playback bootstrap', () => {
       },
     ]);
 
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: 'Delete Screen Default Media',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+    });
+
+    await db.insert(schema.scheduleReservations).values({
+      screen_id: screenId,
+      schedule_id: randomUUID(),
+      schedule_item_id: randomUUID(),
+      owner_user_id: testUser.id,
+      state: 'HELD',
+      start_at: new Date(Date.now() + 60_000),
+      end_at: new Date(Date.now() + 120_000),
+      hold_expires_at: new Date(Date.now() + 180_000),
+      reservation_token: randomUUID(),
+      reservation_version: 1,
+    });
+
+    await db
+      .insert(schema.settings)
+      .values({
+        key: 'default_media_targets',
+        value: [
+          {
+            target_type: 'SCREEN',
+            target_id: screenId,
+            media_id: mediaId,
+            aspect_ratio: '16:9',
+          },
+          {
+            target_type: 'SCREEN',
+            target_id: otherScreenId,
+            media_id: mediaId,
+            aspect_ratio: '16:9',
+          },
+        ],
+      })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: {
+          value: [
+            {
+              target_type: 'SCREEN',
+              target_id: screenId,
+              media_id: mediaId,
+              aspect_ratio: '16:9',
+            },
+            {
+              target_type: 'SCREEN',
+              target_id: otherScreenId,
+              media_id: mediaId,
+              aspect_ratio: '16:9',
+            },
+          ],
+          updated_at: new Date(),
+        },
+      });
+
     await db.insert(schema.heartbeats).values({
       screen_id: screenId,
       status: 'ONLINE',
@@ -701,6 +764,9 @@ describe('Screens routes realtime playback bootstrap', () => {
     const body = JSON.parse(response.body) as {
       id: string;
       message: string;
+      cleanup: {
+        default_media_targets: number;
+      };
       storage_cleanup: {
         deleted: Array<{ id: string }>;
         failed: Array<{ id: string }>;
@@ -720,6 +786,25 @@ describe('Screens routes realtime playback bootstrap', () => {
       .from(schema.storageObjects)
       .where(eq(schema.storageObjects.bucket, 'logs-heartbeats'));
     expect(storageRows.some((row) => row.id === heartbeatStorageId)).toBe(false);
+
+    const reservations = await db
+      .select()
+      .from(schema.scheduleReservations)
+      .where(eq(schema.scheduleReservations.screen_id, screenId));
+    expect(reservations).toHaveLength(0);
+
+    const [targetsSetting] = await db
+      .select()
+      .from(schema.settings)
+      .where(eq(schema.settings.key, 'default_media_targets'));
+    expect(targetsSetting?.value).toEqual([
+      {
+        target_type: 'SCREEN',
+        target_id: otherScreenId,
+        media_id: mediaId,
+        aspect_ratio: '16:9',
+      },
+    ]);
   });
 
   it('returns resolved aspect ratios with defaults catalog', async () => {
@@ -1139,6 +1224,51 @@ describe('Screens routes realtime playback bootstrap', () => {
     );
     expect(body.default_media_resolution).toEqual({
       source: 'ASPECT_RATIO',
+      aspect_ratio: '16:9',
+    });
+  });
+
+  it('returns an empty snapshot payload for an existing screen with no publish or default media', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_id'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_variants'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_targets'));
+    await db
+      .update(schema.emergencies)
+      .set({
+        is_active: false,
+        cleared_at: new Date(),
+        clear_reason: 'screen-empty-snapshot-test-reset',
+        updated_at: new Date(),
+      })
+      .where(eq(schema.emergencies.is_active, true));
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Unassigned Snapshot Screen',
+      status: 'ACTIVE',
+      aspect_ratio: '16:9',
+    } as any);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/snapshot?include_urls=true`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(typeof body.server_time).toBe('string');
+    expect(body.publish).toBeNull();
+    expect(body.snapshot).toBeNull();
+    expect(body.emergency).toBeNull();
+    expect(body.default_media).toBeNull();
+    expect(body.default_media_resolution).toEqual({
+      source: 'NONE',
       aspect_ratio: '16:9',
     });
   });
