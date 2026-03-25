@@ -13,6 +13,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { inArray } from 'drizzle-orm';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('presentation-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, NO_CONTENT, UNAUTHORIZED } = HTTP_STATUS;
@@ -65,7 +66,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -73,7 +74,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
 
         if (data.layout_id) {
           const layout = await layoutRepo.findById(data.layout_id);
-          if (!layout) return reply.status(NOT_FOUND).send({ error: 'Layout not found' });
+          if (!layout) throw AppError.notFound('Layout not found');
         }
 
         const presentation = await presRepo.create({
@@ -111,7 +112,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -158,14 +159,14 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
 
         const presentation = await presRepo.findById((request.params as any).id);
         if (!presentation) {
-          return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+          throw AppError.notFound('Presentation not found');
         }
 
         let layout: any = null;
@@ -228,14 +229,14 @@ export async function presentationRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Presentation')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Presentation')) throw AppError.forbidden('Forbidden');
 
         const presentation = await presRepo.findById((request.params as any).id);
-        if (!presentation) return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+        if (!presentation) throw AppError.notFound('Presentation not found');
 
         const items = await presItemRepo.listByPresentation(presentation.id);
         const mediaIds = items.map((i: any) => i.media_id);
@@ -289,25 +290,25 @@ export async function presentationRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Presentation')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('update', 'Presentation')) throw AppError.forbidden('Forbidden');
 
         const presentation = await presRepo.findById((request.params as any).id);
-        if (!presentation) return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+        if (!presentation) throw AppError.notFound('Presentation not found');
 
         const data = presentationItemSchema.parse(request.body);
 
         const media = await mediaRepo.findById(data.media_id);
-        if (!media) return reply.status(NOT_FOUND).send({ error: 'Media not found' });
+        if (!media) throw AppError.notFound('Media not found');
 
         const existing = await presItemRepo.listByPresentation(presentation.id);
         const desiredOrder =
           data.order ?? (existing.length ? Math.max(...existing.map((i: any) => i.order)) + 1 : 0);
         if (data.order !== undefined && existing.some((i: any) => i.order === desiredOrder)) {
-          return reply.status(BAD_REQUEST).send({ error: 'Order already used in this presentation' });
+          throw AppError.badRequest('Order already used in this presentation');
         }
 
         const item = await presItemRepo.create({
@@ -355,18 +356,18 @@ export async function presentationRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Presentation')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('update', 'Presentation')) throw AppError.forbidden('Forbidden');
 
         const presentation = await presRepo.findById((request.params as any).id);
-        if (!presentation) return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+        if (!presentation) throw AppError.notFound('Presentation not found');
 
         const item = await presItemRepo.findById((request.params as any).itemId);
         if (!item || item.presentation_id !== presentation.id) {
-          return reply.status(NOT_FOUND).send({ error: 'Presentation item not found' });
+          throw AppError.notFound('Presentation item not found');
         }
 
         await presItemRepo.delete(item.id);
@@ -391,13 +392,13 @@ export async function presentationRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Presentation')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Presentation')) throw AppError.forbidden('Forbidden');
 
         const presentation = await presRepo.findById((request.params as any).id);
-        if (!presentation) return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+        if (!presentation) throw AppError.notFound('Presentation not found');
 
         const slots = await slotItemRepo.listByPresentation(presentation.id);
         const mediaIds = slots.map((i: any) => i.media_id);
@@ -439,21 +440,21 @@ export async function presentationRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Presentation')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('update', 'Presentation')) throw AppError.forbidden('Forbidden');
 
         const presentation = await presRepo.findById((request.params as any).id);
-        if (!presentation) return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+        if (!presentation) throw AppError.notFound('Presentation not found');
 
         if (!(presentation as any).layout_id) {
-          return reply.status(BAD_REQUEST).send({ error: 'Presentation has no layout assigned' });
+          throw AppError.badRequest('Presentation has no layout assigned');
         }
 
         const data = presentationSlotItemSchema.parse(request.body);
         const media = await mediaRepo.findById(data.media_id);
-        if (!media) return reply.status(NOT_FOUND).send({ error: 'Media not found' });
+        if (!media) throw AppError.notFound('Media not found');
 
         const existing = await slotItemRepo.listByPresentation(presentation.id);
         const order =
@@ -513,17 +514,17 @@ export async function presentationRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Presentation')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('update', 'Presentation')) throw AppError.forbidden('Forbidden');
 
         const presentation = await presRepo.findById((request.params as any).id);
-        if (!presentation) return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+        if (!presentation) throw AppError.notFound('Presentation not found');
 
         const item = await slotItemRepo.findById((request.params as any).slotItemId);
         if (!item || item.presentation_id !== presentation.id) {
-          return reply.status(NOT_FOUND).send({ error: 'Presentation slot item not found' });
+          throw AppError.notFound('Presentation slot item not found');
         }
 
         await slotItemRepo.delete(item.id);
@@ -549,7 +550,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -557,13 +558,13 @@ export async function presentationRoutes(fastify: FastifyInstance) {
         const data = createPresentationSchema.partial().parse(request.body);
         if (data.layout_id) {
           const layout = await layoutRepo.findById(data.layout_id);
-          if (!layout) return reply.status(NOT_FOUND).send({ error: 'Layout not found' });
+          if (!layout) throw AppError.notFound('Layout not found');
         }
 
         const presentation = await presRepo.update((request.params as any).id, data);
 
         if (!presentation) {
-          return reply.status(NOT_FOUND).send({ error: 'Presentation not found' });
+          throw AppError.notFound('Presentation not found');
         }
 
         return reply.send({
@@ -596,7 +597,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);

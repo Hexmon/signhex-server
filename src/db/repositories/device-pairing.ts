@@ -54,6 +54,16 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
+  async updateDeviceInfo(id: string, device_info: Record<string, any> | null) {
+    const db = getDatabase();
+    const result = await db
+      .update(schema.devicePairings)
+      .set({ device_info })
+      .where(eq(schema.devicePairings.id, id))
+      .returning();
+    return result[0] || null;
+  }
+
   async list(options: {
     page?: number;
     limit?: number;

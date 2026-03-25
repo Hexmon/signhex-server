@@ -13,7 +13,6 @@ import {
 } from 'drizzle-orm/pg-core';
 
 // Enums
-export const roleEnum = pgEnum('role', ['ADMIN', 'OPERATOR', 'DEPARTMENT']);
 export const requestStatusEnum = pgEnum('request_status', [
   'OPEN',
   'IN_PROGRESS',
@@ -30,6 +29,22 @@ export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TES
 export const commandStatusEnum = pgEnum('command_status', ['PENDING', 'SENT', 'ACKNOWLEDGED', 'COMPLETED', 'FAILED']);
 
 // Users table
+export const roles = pgTable(
+  'roles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 100 }).notNull().unique(),
+    description: text('description'),
+    permissions: jsonb('permissions').notNull().default({}),
+    is_system: boolean('is_system').notNull().default(false),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    nameIdx: uniqueIndex('roles_name_idx').on(table.name),
+  })
+);
+
 export const users = pgTable(
   'users',
   {
@@ -38,7 +53,7 @@ export const users = pgTable(
     password_hash: text('password_hash').notNull(),
     first_name: varchar('first_name', { length: 100 }),
     last_name: varchar('last_name', { length: 100 }),
-    role: roleEnum('role').notNull().default('OPERATOR'),
+    role_id: uuid('role_id').notNull(),
     department_id: uuid('department_id'),
     is_active: boolean('is_active').notNull().default(true),
     ext: jsonb('ext'),
@@ -47,6 +62,7 @@ export const users = pgTable(
   },
   (table) => ({
     emailIdx: uniqueIndex('users_email_idx').on(table.email),
+    roleIdx: index('users_role_id_idx').on(table.role_id),
   })
 );
 

@@ -6,7 +6,9 @@ import { AuthError } from '@/auth/errors';
 export interface JWTPayload extends JoseJWTPayload {
   sub: string; // user ID
   email: string;
+  role_id: string;
   role: string;
+  department_id?: string;
   jti: string; // JWT ID for revocation
   iat: number;
   exp: number;
@@ -18,7 +20,9 @@ const secret = encoder.encode(appConfig.JWT_SECRET);
 export async function generateAccessToken(
   userId: string,
   email: string,
-  role: string
+  roleId: string,
+  roleName: string,
+  departmentId?: string | null
 ): Promise<{ token: string; jti: string; expiresAt: Date }> {
   const jti = randomUUID();
   const expiresAt = new Date(Date.now() + appConfig.JWT_EXPIRY * 1000);
@@ -26,7 +30,9 @@ export async function generateAccessToken(
   const token = await new SignJWT({
     sub: userId,
     email,
-    role,
+    role_id: roleId,
+    role: roleName,
+    department_id: departmentId ?? undefined,
     jti,
   })
     .setProtectedHeader({ alg: 'HS256' })

@@ -10,16 +10,18 @@ import { respondWithError } from '@/utils/errors';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
 import { getDefaultMedia } from '@/utils/default-media';
+import { AppError } from '@/utils/app-error';
+import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
 
 const logger = createLogger('device-telemetry-routes');
-const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 const HEARTBEAT_BUCKET = 'logs-heartbeats';
 const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
 
 const heartbeatSchema = z.object({
   device_id: z.string().min(1),
   status: z.enum(['ONLINE', 'OFFLINE', 'ERROR']),
-  uptime: z.number().int().nonnegative(),
+  uptime: z.number().nonnegative(),
   memory_usage: z.number().nonnegative(),
   cpu_usage: z.number().nonnegative(),
   temperature: z.number().optional(),
@@ -106,41 +108,6 @@ const snapshotQuerySchema = z.object({
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
-  const authenticateDeviceSnapshot = async (request: FastifyRequest, deviceId: string) => {
-    const certSerial =
-      (request.headers['x-device-serial'] as string) ||
-      (request.headers['x-device-cert'] as string) ||
-      (request.headers['x-device-cert-serial'] as string);
-
-    if (certSerial) {
-      const [cert] = await db
-        .select()
-        .from(schema.deviceCertificates)
-        .where(
-          and(
-            eq(schema.deviceCertificates.screen_id, deviceId),
-            eq(schema.deviceCertificates.serial, certSerial),
-            eq(schema.deviceCertificates.is_revoked, false)
-          )
-        );
-      if (cert) return { ok: true, type: 'device' as const };
-      return { ok: false, status: UNAUTHORIZED, error: 'Invalid or revoked device certificate' };
-    }
-
-    const token = extractTokenFromHeader(request.headers.authorization);
-    if (!token) return { ok: false, status: UNAUTHORIZED, error: 'Missing authorization header' };
-    try {
-      const payload = await verifyAccessToken(token);
-      const ability = defineAbilityFor(payload.role as any, payload.sub);
-      if (!ability.can('read', 'Screen')) {
-        return { ok: false, status: FORBIDDEN, error: 'Forbidden' };
-      }
-      return { ok: true, type: 'user' as const };
-    } catch (err) {
-      logger.error(err, 'Device snapshot auth error');
-      return { ok: false, status: UNAUTHORIZED, error: 'Invalid token' };
-    }
-  };
   const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
     const rows = await db
       .select({ group_id: schema.screenGroupMembers.group_id })
@@ -222,7 +189,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     });
   };
 
-  // Latest publish snapshot for device (no auth; assume mTLS/device auth upstream)
+  // Latest publish snapshot for device (device auth required; CMS JWT allowed)
   fastify.get<{ Params: { deviceId: string }; Querystring: typeof snapshotQuerySchema._type }>(
     apiEndpoints.deviceTelemetry.snapshot,
     {
@@ -234,11 +201,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const deviceId = (request.params as any).deviceId;
-        const auth = await authenticateDeviceSnapshot(request, deviceId);
-        if (!auth.ok) {
-          const status = (auth as any).status || UNAUTHORIZED;
-          return reply.status(status).send({ error: auth.error });
-        }
+        await authenticateDeviceOrThrow(request, deviceId, { allowUserToken: true });
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
 
@@ -294,7 +257,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
               default_media: defaultMediaPayload,
             });
           }
-          return reply.status(NOT_FOUND).send({ error: 'No publish found for this device' });
+          throw AppError.notFound('No publish found for this device');
         }
 
         const rawPayload = (latest.payload as any) || {};
@@ -383,16 +346,16 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('update', 'Screen')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('update', 'Screen')) throw AppError.forbidden('Forbidden');
 
         const data = createCommandSchema.parse(request.body);
         const screenId = (request.params as any).deviceId;
 
         const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId));
-        if (!screen) return reply.status(NOT_FOUND).send({ error: 'Screen not found' });
+        if (!screen) throw AppError.notFound('Screen not found');
 
         const [command] = await db
           .insert(schema.deviceCommands)
@@ -420,25 +383,26 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Device heartbeat (no auth required - mTLS authenticated)
+  // Device heartbeat (device auth required)
   fastify.post<{ Body: typeof heartbeatSchema._type }>(
     apiEndpoints.deviceTelemetry.heartbeat,
     {
       schema: {
-        description: 'Device heartbeat (mTLS authenticated)',
+        description: 'Device heartbeat (device auth required)',
         tags: ['Device Telemetry'],
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const data = heartbeatSchema.parse(request.body);
+        await authenticateDeviceOrThrow(request, data.device_id);
         const [screen] = await db
           .select({ id: schema.screens.id })
           .from(schema.screens)
           .where(eq(schema.screens.id, data.device_id));
 
         if (!screen) {
-          return reply.status(NOT_FOUND).send({ error: 'Device not registered' });
+          throw AppError.notFound('Device not registered');
         }
 
         const receivedAt = new Date();
@@ -519,18 +483,19 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Proof of Play (PoP) report
+  // Proof of Play (PoP) report (device auth required)
   fastify.post<{ Body: typeof proofOfPlaySchema._type }>(
     apiEndpoints.deviceTelemetry.proofOfPlay,
     {
       schema: {
-        description: 'Report proof of play (mTLS authenticated)',
+        description: 'Report proof of play (device auth required)',
         tags: ['Device Telemetry'],
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const data = proofOfPlaySchema.parse(request.body);
+        await authenticateDeviceOrThrow(request, data.device_id);
 
         const receivedAt = new Date();
         const startedAt = new Date(data.start_time);
@@ -581,18 +546,19 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Device screenshot
+  // Device screenshot (device auth required)
   fastify.post<{ Body: typeof screenshotSchema._type }>(
     apiEndpoints.deviceTelemetry.screenshot,
     {
       schema: {
-        description: 'Upload device screenshot (mTLS authenticated)',
+        description: 'Upload device screenshot (device auth required)',
         tags: ['Device Telemetry'],
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const data = screenshotSchema.parse(request.body);
+        await authenticateDeviceOrThrow(request, data.device_id);
 
         // Decode base64 image
         const imageBuffer = Buffer.from(data.image_data, 'base64');
@@ -622,18 +588,19 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Get pending commands for device
+  // Get pending commands for device (device auth required)
   fastify.get<{ Params: { deviceId: string } }>(
     apiEndpoints.deviceTelemetry.commands,
     {
       schema: {
-        description: 'Get pending commands for device (mTLS authenticated)',
+        description: 'Get pending commands for device (device auth required)',
         tags: ['Device Telemetry'],
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const deviceId = (request.params as any).deviceId;
+        await authenticateDeviceOrThrow(request, deviceId);
 
         const pendingCommands = await db.transaction(async (tx) => {
           const commands = await tx
@@ -674,18 +641,19 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Acknowledge command
+  // Acknowledge command (device auth required)
   fastify.post<{ Params: { deviceId: string; commandId: string } }>(
     apiEndpoints.deviceTelemetry.ackCommand,
     {
       schema: {
-        description: 'Acknowledge command execution (mTLS authenticated)',
+        description: 'Acknowledge command execution (device auth required)',
         tags: ['Device Telemetry'],
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { deviceId, commandId } = request.params as any;
+        await authenticateDeviceOrThrow(request, deviceId);
 
         const acknowledgedAt = new Date();
 
@@ -699,7 +667,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .returning({ id: schema.deviceCommands.id });
 
         if (!updatedCommand) {
-          return reply.status(NOT_FOUND).send({ error: 'Command not found' });
+          throw AppError.notFound('Command not found');
         }
 
         logger.info({ deviceId, commandId }, 'Command acknowledged');

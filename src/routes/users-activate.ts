@@ -6,6 +6,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('user-activate-route');
 const { BAD_REQUEST, NOT_FOUND } = HTTP_STATUS;
@@ -31,12 +32,12 @@ export async function userActivateRoutes(fastify: FastifyInstance) {
         const data = activateSchema.parse(request.body);
         const token = data.token.trim().toLowerCase();
         const user = await userRepo.findByInviteToken(token);
-        if (!user) return reply.status(NOT_FOUND).send({ error: 'Invalid or expired token' });
+        if (!user) throw AppError.notFound('Invalid or expired token');
 
         const now = new Date();
         const expiresAt = user.ext?.invite_expires_at ? new Date(user.ext.invite_expires_at) : null;
         if (expiresAt && expiresAt < now) {
-          return reply.status(BAD_REQUEST).send({ error: 'Invite token expired' });
+          throw AppError.badRequest('Invite token expired');
         }
 
         validatePasswordStrength(data.password);

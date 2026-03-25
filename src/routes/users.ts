@@ -8,12 +8,15 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
+import { createRoleRepository } from '@/db/repositories/role';
 
 const logger = createLogger('user-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 
 export async function userRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
+  const roleRepo = createRoleRepository();
 
   // Create user (admin only)
   fastify.post<{ Body: typeof createUserSchema._type }>(
@@ -29,25 +32,30 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'User')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = createUserSchema.parse(request.body);
         const passwordHash = await hashPassword(data.password);
+
+        const role = await roleRepo.findById(data.role_id);
+        if (!role) {
+          throw AppError.notFound('Role not found');
+        }
 
         const user = await userRepo.create({
           email: data.email,
           password_hash: passwordHash,
           first_name: data.first_name,
           last_name: data.last_name,
-          role: data.role,
+          role_id: data.role_id,
           department_id: data.department_id,
         });
 
@@ -56,7 +64,8 @@ export async function userRoutes(fastify: FastifyInstance) {
           email: user.email,
           first_name: user.first_name,
           last_name: user.last_name,
-          role: user.role,
+          role: role.name,
+          role_id: user.role_id,
           department_id: user.department_id,
           is_active: user.is_active,
           created_at: user.created_at.toISOString(),
@@ -83,7 +92,7 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -92,10 +101,18 @@ export async function userRoutes(fastify: FastifyInstance) {
         const result = await userRepo.list({
           page: query.page,
           limit: query.limit,
-          role: query.role,
+          role_id: query.role_id,
           department_id: query.department_id,
           is_active: query.is_active === 'true' ? true : query.is_active === 'false' ? false : undefined,
         });
+
+        const rolesById = new Map<string, any>();
+        for (const item of result.items) {
+          if (!rolesById.has(item.role_id)) {
+            const role = await roleRepo.findById(item.role_id);
+            rolesById.set(item.role_id, role);
+          }
+        }
 
         return reply.send({
           items: result.items.map((user) => ({
@@ -103,7 +120,8 @@ export async function userRoutes(fastify: FastifyInstance) {
             email: user.email,
             first_name: user.first_name,
             last_name: user.last_name,
-            role: user.role,
+            role: rolesById.get(user.role_id)?.name ?? null,
+            role_id: user.role_id,
             department_id: user.department_id,
             is_active: user.is_active,
             created_at: user.created_at.toISOString(),
@@ -136,22 +154,25 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
 
         const user = await userRepo.findById((request.params as any).id);
         if (!user) {
-          return reply.status(NOT_FOUND).send({ error: 'User not found' });
+          throw AppError.notFound('User not found');
         }
+
+        const role = await roleRepo.findById(user.role_id);
 
         return reply.send({
           id: user.id,
           email: user.email,
           first_name: user.first_name,
           last_name: user.last_name,
-          role: user.role,
+          role: role?.name ?? null,
+          role_id: user.role_id,
           department_id: user.department_id,
           is_active: user.is_active,
           created_at: user.created_at.toISOString(),
@@ -178,29 +199,38 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('update', 'User')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = updateUserSchema.parse(request.body);
+        if (data.role_id) {
+          const role = await roleRepo.findById(data.role_id);
+          if (!role) {
+            throw AppError.notFound('Role not found');
+          }
+        }
         const user = await userRepo.update((request.params as any).id, data);
 
         if (!user) {
-          return reply.status(NOT_FOUND).send({ error: 'User not found' });
+          throw AppError.notFound('User not found');
         }
+
+        const role = await roleRepo.findById(user.role_id);
 
         return reply.send({
           id: user.id,
           email: user.email,
           first_name: user.first_name,
           last_name: user.last_name,
-          role: user.role,
+          role: role?.name ?? null,
+          role_id: user.role_id,
           department_id: user.department_id,
           is_active: user.is_active,
           created_at: user.created_at.toISOString(),
@@ -227,20 +257,20 @@ export async function userRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('delete', 'User')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const userId = (request.params as any).id;
         const user = await userRepo.findById(userId);
         if (!user) {
-          return reply.status(NOT_FOUND).send({ error: 'User not found' });
+          throw AppError.notFound('User not found');
         }
 
         await userRepo.delete(userId);

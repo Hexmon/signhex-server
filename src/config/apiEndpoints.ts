@@ -72,10 +72,12 @@ export const apiEndpoints = {
     approve: withBase('/schedule-requests/:id/approve'),
     reject: withBase('/schedule-requests/:id/reject'),
     publish: withBase('/schedule-requests/:id/publish'),
+    statusSummary: withBase('/schedule-requests/status-summary'),
   },
   screens: {
     create: withBase('/screens'),
     list: withBase('/screens'),
+    aspectRatios: withBase('/screens/aspect-ratios'),
     overview: withBase('/screens/overview'),
     get: withBase('/screens/:id'),
     update: withBase('/screens/:id'),
@@ -94,6 +96,7 @@ export const apiEndpoints = {
     availableScreens: withBase('/screen-groups/available-screens'),
     get: withBase('/screen-groups/:id'),
     availability: withBase('/screen-groups/:id/availability'),
+    snapshot: withBase('/screen-groups/:id/snapshot'),
     screenshotSettings: withBase('/screen-groups/:id/screenshot-settings'),
     screenshot: withBase('/screen-groups/:id/screenshot'),
     update: withBase('/screen-groups/:id'),
@@ -198,6 +201,16 @@ export const apiEndpoints = {
     offlineScreens: withBase('/reports/offline-screens'),
     storage: withBase('/reports/storage'),
     systemHealth: withBase('/reports/system-health'),
+  },
+  roles: {
+    create: withBase('/roles'),
+    list: withBase('/roles'),
+    get: withBase('/roles/:id'),
+    update: withBase('/roles/:id'),
+    delete: withBase('/roles/:id'),
+  },
+  permissions: {
+    metadata: withBase('/permissions/metadata'),
   },
   screenGroupNowPlaying: {
     get: withBase('/screen-groups/:id/now-playing'),

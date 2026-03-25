@@ -15,7 +15,7 @@ describe('Auth Routes', () => {
   });
 
   describe('POST /api/v1/auth/login', () => {
-    it('should return 400 for invalid email', async () => {
+    it('should return 422 for invalid email', async () => {
       const response = await server.inject({
         method: 'POST',
         url: '/api/v1/auth/login',
@@ -25,7 +25,11 @@ describe('Auth Routes', () => {
         },
       });
 
-      expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNPROCESSABLE_CONTENT);
+      const body = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+      expect(Array.isArray(body.error.details)).toBe(true);
     });
 
     it('should return 401 for invalid credentials', async () => {
@@ -39,6 +43,9 @@ describe('Auth Routes', () => {
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+      const body = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error.code).toBe('UNAUTHORIZED');
     });
 
     it('should return JWT token for valid credentials', async () => {
@@ -54,8 +61,8 @@ describe('Auth Routes', () => {
 
       expect(response.statusCode).toBe(HTTP_STATUS.OK);
       const body = JSON.parse(response.body);
-      expect(body).toHaveProperty('access_token');
-      expect(body).toHaveProperty('expires_in');
+      expect(body).toHaveProperty('user');
+      expect(body).toHaveProperty('expiresAt');
     });
   });
 
@@ -67,6 +74,11 @@ describe('Auth Routes', () => {
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+      const body = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error.code).toBe('UNAUTHORIZED');
+      expect(response.headers['x-request-id']).toBeDefined();
+      expect(body.error.traceId).toBe(response.headers['x-request-id']);
     });
 
     it('should return 401 with invalid token', async () => {
