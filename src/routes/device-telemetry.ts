@@ -9,12 +9,9 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
-import { resolveDefaultMediaForScreen } from '@/utils/default-media';
+import { getDefaultMedia } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
-import { serializeMediaRecord } from '@/utils/media';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
-import { buildScreenPlaybackStateById, getActiveEmergencyForScreen, getGroupIdsForScreen, getLatestPublishForScreen } from '@/screens/playback';
-import { emitScreenPreviewUpdate, emitScreenStateUpdate } from '@/realtime/screens-namespace';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
@@ -121,6 +118,76 @@ const normalizeEtagToken = (value: string) =>
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
+  const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
+    const rows = await db
+      .select({ group_id: schema.screenGroupMembers.group_id })
+      .from(schema.screenGroupMembers)
+      .where(eq(schema.screenGroupMembers.screen_id, screenId));
+    return rows.map((r) => r.group_id);
+  };
+
+  const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
+    if (!mediaId) return null;
+    const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+    if (!media) return null;
+    try {
+      if ((media as any).ready_object_id) {
+        const [stor] = await db
+          .select()
+          .from(schema.storageObjects)
+          .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
+        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
+      }
+      if ((media as any).source_bucket && (media as any).source_object_key) {
+        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
+    const [emergency] = await db
+      .select()
+      .from(schema.emergencies)
+      .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
+      .orderBy(desc(schema.emergencies.created_at))
+      .limit(1);
+    if (!emergency) return null;
+
+    const emergencyScreenIds = ((emergency as any).screen_ids || []) as string[];
+    const emergencyGroupIds = ((emergency as any).screen_group_ids || []) as string[];
+    const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
+    const targetAll = (emergency as any).target_all === true || !hasTargets;
+
+    if (!targetAll) {
+      if (emergencyScreenIds.includes(screenId)) {
+        // ok
+      } else {
+        const groupIds = await getGroupIdsForScreen(screenId);
+        const groupMatch = emergencyGroupIds.some((gid) => groupIds.includes(gid));
+        if (!groupMatch) return null;
+      }
+    }
+
+    const mediaUrl = includeUrls ? await resolveEmergencyMediaUrl((emergency as any).media_id) : null;
+    return {
+      id: emergency.id,
+      emergency_type_id: (emergency as any).emergency_type_id ?? null,
+      triggered_by: emergency.triggered_by,
+      message: emergency.message,
+      severity: emergency.priority,
+      media_id: (emergency as any).media_id ?? null,
+      media_url: mediaUrl,
+      screen_ids: emergencyScreenIds,
+      screen_group_ids: emergencyGroupIds,
+      target_all: (emergency as any).target_all ?? false,
+      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
+      cleared_at: emergency.cleared_at?.toISOString?.() ?? emergency.cleared_at,
+    };
+  };
+
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
     return items.filter((i) => {
       const itemScreens = (i.screen_ids || []) as string[];
@@ -216,20 +283,41 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const latest = await getLatestPublishForScreen(deviceId, db);
 
         if (!latest) {
-          return reply.send({
-            device_id: deviceId,
-            publish: null,
-            snapshot: null,
-            media_urls: undefined,
-            emergency: emergency ?? null,
-            ...defaultMediaPayload,
-          });
-        }
+          const defaultMedia = await getDefaultMedia(db);
+          const defaultMediaPayload = defaultMedia?.media
+            ? {
+                id: defaultMedia.media.id,
+                name: defaultMedia.media.name,
+                type: defaultMedia.media.type,
+                status: defaultMedia.media.status,
+                duration_seconds: defaultMedia.media.duration_seconds,
+                width: defaultMedia.media.width,
+                height: defaultMedia.media.height,
+                media_url: includeUrls ? defaultMedia.media_url : null,
+              }
+            : null;
 
-        const snapshotVersion = String(latest.snapshot_id);
-        reply.header('ETag', `"${snapshotVersion}"`);
-        if (!emergency && ifNoneMatchValues.some((value) => value === '*' || value === snapshotVersion)) {
-          return reply.status(304).send();
+          if (emergency) {
+            return reply.send({
+              device_id: deviceId,
+              publish: null,
+              snapshot: null,
+              media_urls: undefined,
+              emergency,
+              default_media: defaultMediaPayload,
+            });
+          }
+          if (defaultMediaPayload) {
+            return reply.send({
+              device_id: deviceId,
+              publish: null,
+              snapshot: null,
+              media_urls: undefined,
+              emergency: null,
+              default_media: defaultMediaPayload,
+            });
+          }
+          throw AppError.notFound('No publish found for this device');
         }
 
         const rawPayload = (latest.payload as any) || {};
@@ -266,16 +354,24 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
             mediaUrls = {};
             for (const m of medias as any[]) {
+              const filename = (m as any).original_filename ?? m.name ?? 'file';
+              const contentDisposition = buildContentDisposition(filename, 'inline');
               try {
                 if (m.ready_object_id) {
                   const stor = storageMap.get(m.ready_object_id);
                   if (stor) {
-                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, 3600);
+                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, {
+                      expiresIn: 3600,
+                      responseContentDisposition: contentDisposition,
+                    });
                     continue;
                   }
                 }
                 if (m.source_bucket && m.source_object_key) {
-                  mediaUrls[m.id] = await getPresignedUrl(m.source_bucket, m.source_object_key, 3600);
+                  mediaUrls[m.id] = await getPresignedUrl(m.source_bucket, m.source_object_key, {
+                    expiresIn: 3600,
+                    responseContentDisposition: contentDisposition,
+                  });
                 } else {
                   mediaUrls[m.id] = null;
                 }

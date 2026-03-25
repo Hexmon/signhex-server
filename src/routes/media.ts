@@ -1,5 +1,4 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import path from 'path';
 import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/schemas/media';
 import { createMediaRepository } from '@/db/repositories/media';
 import type { MediaUsageReference } from '@/db/repositories/media';
@@ -17,14 +16,6 @@ import { deleteObject } from '@/s3';
 import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
-import { deriveMediaDisplayName, sanitizeStorageFilename, serializeMediaRecord } from '@/utils/media';
-import {
-  canAccessOwnedResource,
-  canReadAdminSharedResource,
-  getAdminUserIds,
-  getDepartmentUserIds,
-  isDepartmentScopedRole,
-} from '@/rbac/policy';
 
 const logger = createLogger('media-routes');
 const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
@@ -86,6 +77,8 @@ export async function mediaRoutes(fastify: FastifyInstance) {
   };
 
   const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
+    const filename = (media as any).original_filename ?? media.name ?? 'file';
+    const contentDisposition = buildContentDisposition(filename, 'inline');
     try {
       if (media.ready_object_id) {
         const obj = readyMap?.get(media.ready_object_id) ||
@@ -94,12 +87,18 @@ export async function mediaRoutes(fastify: FastifyInstance) {
             .from(schema.storageObjects)
             .where(eq(schema.storageObjects.id, media.ready_object_id)))[0];
         if (obj) {
-          return await getPresignedUrl(obj.bucket, obj.object_key, 3600);
+          return await getPresignedUrl(obj.bucket, obj.object_key, {
+            expiresIn: 3600,
+            responseContentDisposition: contentDisposition,
+          });
         }
       }
 
       if (media.source_bucket && media.source_object_key) {
-        return await getPresignedUrl(media.source_bucket, media.source_object_key, 3600);
+        return await getPresignedUrl(media.source_bucket, media.source_object_key, {
+          expiresIn: 3600,
+          responseContentDisposition: contentDisposition,
+        });
       }
     } catch (err) {
       logger.warn(err, 'Failed to generate media URL');
@@ -133,8 +132,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
         const data = presignUploadSchema.parse(request.body);
         const mediaId = randomUUID();
-        const originalFilename = path.basename(data.filename);
-        const safeFilename = sanitizeStorageFilename(originalFilename);
+        const safeFilename = path.basename(data.filename);
         const objectKey = `${mediaId}/${safeFilename}`;
         const bucket = 'media-source';
 
@@ -153,8 +151,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         // Create media record
         const media = await mediaRepo.create({
           id: mediaId,
-          name: originalFilename,
-          display_name: deriveMediaDisplayName(data.display_name, originalFilename),
+          name: data.filename,
           type: inferredType as any,
           status: PENDINGSTATUS,
           source_bucket: bucket,
@@ -169,6 +166,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           media_id: media.id,
           bucket,
           object_key: objectKey,
+          original_filename: originalFilename,
           expires_in: 3600,
         });
       } catch (error) {
@@ -203,15 +201,25 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const data = createMediaSchema.parse(request.body);
+        const originalFilename = normalizeOriginalFilename(data.name);
+        const displayName = normalizeDisplayName(originalFilename);
+        const { hint } = sanitizeFilenameHint(originalFilename);
         const media = await mediaRepo.create({
           name: data.name,
-          display_name: data.display_name ?? data.name,
           type: data.type,
           status: 'PENDING',
           created_by: payload.sub,
         });
 
-        return reply.status(CREATED).send(serializeMediaRecord(media));
+        return reply.status(CREATED).send({
+          id: media.id,
+          name: media.name,
+          type: media.type,
+          status: media.status,
+          created_by: media.created_by,
+          created_at: media.created_at.toISOString(),
+          updated_at: media.updated_at.toISOString(),
+        });
       } catch (error) {
         logger.error(error, 'Create media error');
         return respondWithError(reply, error);
@@ -261,9 +269,23 @@ export async function mediaRoutes(fastify: FastifyInstance) {
             const media_url = await resolveMediaUrl(m, readyMap);
             const statusState = resolveApiStatus(m, media_url);
             return {
-              ...serializeMediaRecord(m, media_url),
-              status: statusState.status,
-              status_reason: statusState.status_reason,
+              id: m.id,
+              name: m.name,
+              type: m.type,
+              status: m.status,
+              source_bucket: m.source_bucket,
+              source_object_key: m.source_object_key,
+              source_content_type: m.source_content_type,
+              source_size: m.source_size,
+              ready_object_id: m.ready_object_id,
+              thumbnail_object_id: m.thumbnail_object_id,
+              duration_seconds: m.duration_seconds,
+              width: m.width,
+              height: m.height,
+              created_by: m.created_by,
+              created_at: m.created_at.toISOString(),
+              updated_at: m.updated_at.toISOString(),
+              media_url,
             };
           })
         );
@@ -322,9 +344,23 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         const statusState = resolveApiStatus(media, media_url);
 
         return reply.send({
-          ...serializeMediaRecord(media, media_url),
-          status: statusState.status,
-          status_reason: statusState.status_reason,
+          id: media.id,
+          name: media.name,
+          type: media.type,
+          status: media.status,
+          source_bucket: media.source_bucket,
+          source_object_key: media.source_object_key,
+          source_content_type: media.source_content_type,
+          source_size: media.source_size,
+          ready_object_id: media.ready_object_id,
+          thumbnail_object_id: media.thumbnail_object_id,
+          duration_seconds: media.duration_seconds,
+          width: media.width,
+          height: media.height,
+          created_by: media.created_by,
+          created_at: media.created_at.toISOString(),
+          updated_at: media.updated_at.toISOString(),
+          media_url,
         });
       } catch (error) {
         logger.error(error, 'Get media error');

@@ -13,9 +13,6 @@ import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
-import { getOrCreateSocketServer } from '@/realtime/socket-server';
-import { defineAbilityFor } from '@/rbac';
-import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('emergency-routes');
 const { CREATED } = HTTP_STATUS;
@@ -119,16 +116,26 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     if (!mediaId) return null;
     const media = await mediaRepo.findById(mediaId);
     if (!media) return null;
+    const filename = (media as any).original_filename ?? media.name ?? 'file';
+    const contentDisposition = buildContentDisposition(filename, 'inline');
     try {
       if (media.ready_object_id) {
         const [stor] = await db
           .select()
           .from(schema.storageObjects)
           .where(inArray(schema.storageObjects.id, [media.ready_object_id] as any));
-        if (stor) return await getPresignedUrl(stor.bucket, stor.object_key, 3600);
+        if (stor) {
+          return await getPresignedUrl(stor.bucket, stor.object_key, {
+            expiresIn: 3600,
+            responseContentDisposition: contentDisposition,
+          });
+        }
       }
       if (media.source_bucket && media.source_object_key) {
-        return await getPresignedUrl(media.source_bucket, media.source_object_key, 3600);
+        return await getPresignedUrl(media.source_bucket, media.source_object_key, {
+          expiresIn: 3600,
+          responseContentDisposition: contentDisposition,
+        });
       }
     } catch {
       return null;

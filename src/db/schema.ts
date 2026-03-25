@@ -143,7 +143,6 @@ export const media = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
-    display_name: varchar('display_name', { length: 255 }),
     type: mediaTypeEnum('type').notNull(),
     status: mediaStatusEnum('status').notNull().default('PENDING'),
     source_object_id: uuid('source_object_id'),

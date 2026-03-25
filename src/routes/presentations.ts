@@ -259,7 +259,16 @@ export async function presentationRoutes(fastify: FastifyInstance) {
               duration_seconds: i.duration_seconds,
               created_at: i.created_at.toISOString?.() ?? i.created_at,
               media: media
-                ? serializeMediaRecord(media)
+                ? {
+                    id: media.id,
+                    name: media.name,
+                    type: media.type,
+                    status: media.status,
+                    source_bucket: media.source_bucket,
+                    source_object_key: media.source_object_key,
+                    ready_object_id: media.ready_object_id,
+                    thumbnail_object_id: media.thumbnail_object_id,
+                  }
                 : null,
             };
           }),
@@ -320,7 +329,14 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           duration_seconds: item.duration_seconds,
           created_at: item.created_at.toISOString?.() ?? item.created_at,
           media: {
-            ...serializeMediaRecord(media),
+            id: media.id,
+            name: media.name,
+            type: media.type,
+            status: media.status,
+            source_bucket: media.source_bucket,
+            source_object_key: media.source_object_key,
+            ready_object_id: media.ready_object_id,
+            thumbnail_object_id: media.thumbnail_object_id,
           },
         });
       } catch (error) {
@@ -473,7 +489,14 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           loop_enabled: item.loop_enabled ?? false,
           created_at: item.created_at.toISOString?.() ?? item.created_at,
           media: {
-            ...serializeMediaRecord(media),
+            id: media.id,
+            name: media.name,
+            type: media.type,
+            status: media.status,
+            source_bucket: media.source_bucket,
+            source_object_key: media.source_object_key,
+            ready_object_id: media.ready_object_id,
+            thumbnail_object_id: media.thumbnail_object_id,
           },
         });
       } catch (error) {

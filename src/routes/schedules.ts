@@ -429,7 +429,16 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
                       order: pi.order,
                       duration_seconds: pi.duration_seconds,
                       media: pi.media
-                        ? serializeMediaRecord(pi.media)
+                        ? {
+                            id: pi.media.id,
+                            name: pi.media.name,
+                            type: pi.media.type,
+                            status: pi.media.status,
+                            source_bucket: pi.media.source_bucket,
+                            source_object_key: pi.media.source_object_key,
+                            ready_object_id: pi.media.ready_object_id,
+                            thumbnail_object_id: pi.media.thumbnail_object_id,
+                          }
                         : null,
                     })),
                     slots: (pres.slots || []).map((si: any) => ({
@@ -442,7 +451,16 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
                       audio_enabled: si.audio_enabled,
                       loop_enabled: si.loop_enabled ?? false,
                       media: si.media
-                        ? serializeMediaRecord(si.media)
+                        ? {
+                            id: si.media.id,
+                            name: si.media.name,
+                            type: si.media.type,
+                            status: si.media.status,
+                            source_bucket: si.media.source_bucket,
+                            source_object_key: si.media.source_object_key,
+                            ready_object_id: si.media.ready_object_id,
+                            thumbnail_object_id: si.media.thumbnail_object_id,
+                          }
                         : null,
                     })),
                   }
