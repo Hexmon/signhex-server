@@ -11,6 +11,8 @@ import { config as appConfig } from '@/config';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { isLockedOut, recordFailedAttempt, resetAttempts } from '@/auth/login-throttle';
+import { AppError } from '@/utils/app-error';
+import { createRoleRepository } from '@/db/repositories/role';
 
 const logger = createLogger('auth-routes');
 const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, TOO_MANY_REQUESTS, UNAUTHORIZED } = HTTP_STATUS;
@@ -18,6 +20,7 @@ const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, TOO_MANY_REQUESTS, UNAUTHORIZED } = H
 export async function authRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
   const sessionRepo = createSessionRepository();
+  const roleRepo = createRoleRepository();
 
   // Login
   fastify.post<{ Body: typeof loginSchema._type }>(
@@ -49,31 +52,45 @@ export async function authRoutes(fastify: FastifyInstance) {
         const throttleKey = `${email.toLowerCase()}:${request.ip}`;
         const locked = isLockedOut(throttleKey, appConfig.LOGIN_LOCKOUT_WINDOW_SECONDS * 1000);
         if (locked.locked) {
-          return reply
-            .status(TOO_MANY_REQUESTS)
-            .send({ error: 'Too many failed attempts. Try again later.', retry_after_seconds: locked.retryAfter });
+          throw new AppError({
+            statusCode: TOO_MANY_REQUESTS,
+            code: 'RATE_LIMITED',
+            message: 'Too many failed attempts. Try again later.',
+            details: { retry_after_seconds: locked.retryAfter },
+          });
         }
 
         const user = await userRepo.findByEmail(email);
         if (!user) {
           recordFailedAttempt(throttleKey, appConfig.LOGIN_MAX_ATTEMPTS, appConfig.LOGIN_LOCKOUT_WINDOW_SECONDS * 1000);
-          return reply.status(UNAUTHORIZED).send({ error: 'Invalid credentials' });
+          throw AppError.unauthorized('Invalid credentials');
         }
 
         const passwordValid = await verifyPassword(password, user.password_hash);
         if (!passwordValid) {
           recordFailedAttempt(throttleKey, appConfig.LOGIN_MAX_ATTEMPTS, appConfig.LOGIN_LOCKOUT_WINDOW_SECONDS * 1000);
-          return reply.status(UNAUTHORIZED).send({ error: 'Invalid credentials' });
+          throw AppError.unauthorized('Invalid credentials');
         }
         resetAttempts(throttleKey);
 
-        const { is_active, id, role, first_name, last_name } = user || {}
+        const { is_active, id, role_id, first_name, last_name, department_id } = user || {}
 
         if (!is_active) {
-          return reply.status(FORBIDDEN).send({ error: 'User account is inactive' });
+          throw AppError.forbidden('User account is inactive');
         }
 
-        const { token, jti, expiresAt } = await generateAccessToken(id, email, role);
+        const role = await roleRepo.findById(role_id);
+        if (!role) {
+          throw AppError.forbidden('Role not found');
+        }
+
+        const { token, jti, expiresAt } = await generateAccessToken(
+          id,
+          email,
+          role.id,
+          role.name,
+          department_id
+        );
         const csrfToken = randomUUID();
 
         await sessionRepo.create({
@@ -113,7 +130,8 @@ export async function authRoutes(fastify: FastifyInstance) {
             email: email,
             first_name: first_name,
             last_name: last_name,
-            role: role,
+            role: role.name,
+            role_id: role.id,
           },
           expiresAt: expiresAt.toISOString(),
         };
@@ -144,7 +162,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -158,7 +176,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         return reply.send({ message: 'Logged out successfully' });
       } catch (error) {
         logger.error(error, 'Logout error');
-        return reply.status(UNAUTHORIZED).send({ error: 'Invalid token' });
+        throw AppError.unauthorized('Invalid token');
       }
     }
   );
@@ -177,7 +195,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -185,20 +203,23 @@ export async function authRoutes(fastify: FastifyInstance) {
         // Check if token is revoked
         const session = await sessionRepo.findByJti(payload.jti);
         if (!session) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Token has been revoked' });
+          throw AppError.unauthorized('Token has been revoked');
         }
 
         const user = await userRepo.findById(payload.sub);
         if (!user) {
-          return reply.status(NOT_FOUND).send({ error: 'User not found' });
+          throw AppError.notFound('User not found');
         }
+
+        const role = await roleRepo.findById(user.role_id);
 
         return reply.send({
           id: user.id,
           email: user.email,
           first_name: user.first_name,
           last_name: user.last_name,
-          role: user.role,
+          role: role?.name ?? null,
+          role_id: user.role_id,
           department_id: user.department_id,
           is_active: user.is_active,
           created_at: user.created_at.toISOString(),
@@ -206,7 +227,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Get me error');
-        return reply.status(UNAUTHORIZED).send({ error: 'Invalid token' });
+        throw AppError.unauthorized('Invalid token');
       }
     }
   );

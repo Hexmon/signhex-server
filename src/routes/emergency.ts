@@ -12,7 +12,6 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
-import { buildContentDisposition } from '@/utils/object-key';
 
 const logger = createLogger('emergency-routes');
 const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -69,7 +68,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
   const requireAdmin = (payload: any, reply: FastifyReply) => {
     if (payload.role !== 'ADMIN') {
-      reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+      throw AppError.forbidden('Forbidden');
       return false;
     }
     return true;
@@ -110,7 +109,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     if (screenIds.length) {
       const rows = await db.select({ id: schema.screens.id }).from(schema.screens).where(inArray(schema.screens.id, screenIds as any));
       if (rows.length !== screenIds.length) {
-        throw new Error('One or more screen_ids are invalid');
+        throw AppError.badRequest('One or more screen_ids are invalid');
       }
     }
     if (groupIds.length) {
@@ -119,7 +118,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         .from(schema.screenGroups)
         .where(inArray(schema.screenGroups.id, groupIds as any));
       if (rows.length !== groupIds.length) {
-        throw new Error('One or more screen_group_ids are invalid');
+        throw AppError.badRequest('One or more screen_group_ids are invalid');
       }
     }
   };
@@ -137,14 +136,14 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         if (!requireAdmin(payload, reply)) return;
 
         const data = emergencyTypeSchema.parse(request.body);
         if (data.media_id) {
           const media = await mediaRepo.findById(data.media_id);
-          if (!media) return reply.status(BAD_REQUEST).send({ error: 'Media not found' });
+          if (!media) throw AppError.badRequest('Media not found');
         }
 
         const created = await emergencyTypeRepo.create({
@@ -185,7 +184,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         if (!requireAdmin(payload, reply)) return;
 
@@ -229,12 +228,12 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         if (!requireAdmin(payload, reply)) return;
 
         const type = await emergencyTypeRepo.findById((request.params as any).id);
-        if (!type) return reply.status(NOT_FOUND).send({ error: 'Emergency type not found' });
+        if (!type) throw AppError.notFound('Emergency type not found');
 
         return reply.send({
           id: type.id,
@@ -266,18 +265,18 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         if (!requireAdmin(payload, reply)) return;
 
         const data = emergencyTypeUpdateSchema.parse(request.body);
         if (Object.prototype.hasOwnProperty.call(data, 'media_id') && data.media_id) {
           const media = await mediaRepo.findById(data.media_id);
-          if (!media) return reply.status(BAD_REQUEST).send({ error: 'Media not found' });
+          if (!media) throw AppError.badRequest('Media not found');
         }
 
         const updated = await emergencyTypeRepo.update((request.params as any).id, data);
-        if (!updated) return reply.status(NOT_FOUND).send({ error: 'Emergency type not found' });
+        if (!updated) throw AppError.notFound('Emergency type not found');
 
         return reply.send({
           id: updated.id,
@@ -309,12 +308,12 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         if (!requireAdmin(payload, reply)) return;
 
         const existing = await emergencyTypeRepo.findById((request.params as any).id);
-        if (!existing) return reply.status(NOT_FOUND).send({ error: 'Emergency type not found' });
+        if (!existing) throw AppError.notFound('Emergency type not found');
 
         await emergencyTypeRepo.delete(existing.id);
         return reply.status(204).send();
@@ -339,7 +338,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -347,32 +346,32 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
 
         const data = triggerEmergencySchema.parse(request.body);
         if (!data.emergency_type_id && !data.message) {
-          return reply.status(BAD_REQUEST).send({ error: 'emergency_type_id or message is required' });
+          throw AppError.badRequest('emergency_type_id or message is required');
         }
 
         // Check if there's already an active emergency
         const active = await emergencyRepo.getActive();
         if (active) {
-          return reply.status(CONFLICT).send({ error: 'Emergency already active' });
+          throw AppError.conflict('Emergency already active');
         }
 
         const type = data.emergency_type_id
           ? await emergencyTypeRepo.findById(data.emergency_type_id)
           : null;
         if (data.emergency_type_id && !type) {
-          return reply.status(NOT_FOUND).send({ error: 'Emergency type not found' });
+          throw AppError.notFound('Emergency type not found');
         }
 
         const message = data.message ?? type?.message;
         if (!message) {
-          return reply.status(BAD_REQUEST).send({ error: 'Emergency message is required' });
+          throw AppError.badRequest('Emergency message is required');
         }
         const severity = data.severity ?? (type?.severity as any) ?? 'HIGH';
         const mediaId = data.media_id ?? type?.media_id ?? null;
 
         if (mediaId) {
           const media = await mediaRepo.findById(mediaId);
-          if (!media) return reply.status(BAD_REQUEST).send({ error: 'Media not found' });
+          if (!media) throw AppError.badRequest('Media not found');
         }
 
         const uniqueScreenIds = Array.from(new Set(data.screen_ids || []));
@@ -452,7 +451,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -505,7 +504,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -514,7 +513,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const emergency = await emergencyRepo.clear((request.params as any).id, payload.sub);
 
         if (!emergency) {
-          return reply.status(NOT_FOUND).send({ error: 'Emergency not found' });
+          throw AppError.notFound('Emergency not found');
         }
 
         io.emit('emergency:cleared', {
@@ -574,7 +573,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);

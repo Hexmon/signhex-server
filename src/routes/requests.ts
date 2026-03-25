@@ -12,6 +12,7 @@ import { getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('request-routes');
 const { BAD_REQUEST, CREATED, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -70,7 +71,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -115,7 +116,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -167,14 +168,14 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
 
         const req = await reqRepo.findById((request.params as any).id);
         if (!req) {
-          return reply.status(NOT_FOUND).send({ error: 'Request not found' });
+          throw AppError.notFound('Request not found');
         }
 
         const attachments = await db
@@ -217,7 +218,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -226,7 +227,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
         const req = await reqRepo.update((request.params as any).id, data);
 
         if (!req) {
-          return reply.status(NOT_FOUND).send({ error: 'Request not found' });
+          throw AppError.notFound('Request not found');
         }
 
         return reply.send({
@@ -262,7 +263,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
@@ -316,7 +317,7 @@ export async function requestRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);

@@ -14,7 +14,8 @@ export const loginResponseSchema = z.object({
     email: z.string().email(),
     first_name: z.string().optional(),
     last_name: z.string().optional(),
-    role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']),
+    role: z.string().nullable(),
+    role_id: z.string().uuid(),
   }),
   expiresAt: z.string().datetime(),
 });
@@ -26,7 +27,8 @@ export const meResponseSchema = z.object({
   email: z.string().email(),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
-  role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']),
+  role: z.string().nullable(),
+  role_id: z.string().uuid(),
   department_id: z.string().uuid().optional(),
   is_active: z.boolean(),
   created_at: z.string().datetime(),
@@ -34,4 +36,3 @@ export const meResponseSchema = z.object({
 });
 
 export type MeResponse = z.infer<typeof meResponseSchema>;
-

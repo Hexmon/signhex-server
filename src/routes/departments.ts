@@ -7,6 +7,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('department-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -38,14 +39,14 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Department')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = createDepartmentSchema.parse(request.body);
@@ -79,7 +80,7 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -125,14 +126,14 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
 
         const department = await deptRepo.findById((request.params as any).id);
         if (!department) {
-          return reply.status(NOT_FOUND).send({ error: 'Department not found' });
+          throw AppError.notFound('Department not found');
         }
 
         return reply.send({
@@ -163,21 +164,21 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('update', 'Department')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = createDepartmentSchema.partial().parse(request.body);
         const department = await deptRepo.update((request.params as any).id, data);
 
         if (!department) {
-          return reply.status(NOT_FOUND).send({ error: 'Department not found' });
+          throw AppError.notFound('Department not found');
         }
 
         return reply.send({
@@ -208,20 +209,20 @@ export async function departmentRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('delete', 'Department')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const departmentId = (request.params as any).id;
         const exists = await deptRepo.findById(departmentId);
         if (!exists) {
-          return reply.status(NOT_FOUND).send({ error: 'Department not found' });
+          throw AppError.notFound('Department not found');
         }
 
         await deptRepo.delete(departmentId);

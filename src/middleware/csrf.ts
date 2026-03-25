@@ -1,6 +1,6 @@
 import { FastifyPluginAsync } from 'fastify';
-import { HTTP_STATUS } from '@/http-status-codes';
 import { config as appConfig } from '@/config';
+import { AppError } from '@/utils/app-error';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CSRF_HEADER_NAMES = ['x-csrf-token', 'x-xsrf-token'];
@@ -29,9 +29,7 @@ export const csrfProtectionPlugin: FastifyPluginAsync = async (fastify) => {
     const csrfHeader = CSRF_HEADER_NAMES.map((name) => request.headers[name] as string | undefined).find(Boolean);
 
     if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
-      return reply
-        .status(HTTP_STATUS.FORBIDDEN)
-        .send({ error: 'Invalid CSRF token' });
+      throw AppError.forbidden('Invalid CSRF token');
     }
   });
 };

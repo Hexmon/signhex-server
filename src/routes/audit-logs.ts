@@ -7,6 +7,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('audit-log-routes');
 const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -38,14 +39,14 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('read', 'AuditLog')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const query = listAuditLogsQuerySchema.parse(request.query);
@@ -98,19 +99,19 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('read', 'AuditLog')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const log = await auditRepo.findById(request.params.id);
         if (!log) {
-          return reply.status(NOT_FOUND).send({ error: 'Audit log not found' });
+          throw AppError.notFound('Audit log not found');
         }
 
         return reply.send({

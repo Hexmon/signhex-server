@@ -1,4 +1,4 @@
-import { eq, and, sql, desc, or } from 'drizzle-orm';
+import { eq, and, sql, desc, or, getTableColumns } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class UserRepository {
@@ -7,7 +7,7 @@ export class UserRepository {
     password_hash: string;
     first_name?: string;
     last_name?: string;
-    role: 'ADMIN' | 'OPERATOR' | 'DEPARTMENT';
+    role_id: string;
     department_id?: string;
   }) {
     const db = getDatabase();
@@ -38,7 +38,7 @@ export class UserRepository {
     invited_before?: Date;
     invited_after?: Date;
     email?: string;
-    role?: 'ADMIN' | 'OPERATOR' | 'DEPARTMENT';
+    role_id?: string;
     department_id?: string;
   }) {
     const db = getDatabase();
@@ -57,8 +57,8 @@ export class UserRepository {
     if (options.email) {
       conditions.push(sql`LOWER(${schema.users.email}) LIKE ${'%' + options.email.toLowerCase() + '%'}`);
     }
-    if (options.role) {
-      conditions.push(eq(schema.users.role, options.role));
+    if (options.role_id) {
+      conditions.push(eq(schema.users.role_id, options.role_id));
     }
     if (options.department_id) {
       conditions.push(eq(schema.users.department_id, options.department_id));
@@ -93,8 +93,12 @@ export class UserRepository {
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const items = await db
-      .select()
+      .select({
+        ...getTableColumns(schema.users),
+        role: schema.roles.name,
+      })
       .from(schema.users)
+      .leftJoin(schema.roles, eq(schema.users.role_id, schema.roles.id))
       .where(whereClause)
       .orderBy(desc(schema.users.created_at))
       .limit(limit)
@@ -129,7 +133,7 @@ export class UserRepository {
   async list(options: {
     page?: number;
     limit?: number;
-    role?: string;
+    role_id?: string;
     department_id?: string;
     is_active?: boolean;
   }) {
@@ -141,8 +145,8 @@ export class UserRepository {
     let query = db.select().from(schema.users);
 
     const conditions = [];
-    if (options.role) {
-      conditions.push(eq(schema.users.role, options.role as any));
+    if (options.role_id) {
+      conditions.push(eq(schema.users.role_id, options.role_id as any));
     }
     if (options.department_id) {
       conditions.push(eq(schema.users.department_id, options.department_id));

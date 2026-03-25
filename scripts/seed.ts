@@ -13,6 +13,29 @@ async function seed() {
     await initializeDatabase();
     const db = getDatabase();
 
+    // Create system roles
+    logger.info('Creating system roles...');
+    const systemRoles = ['SUPER_ADMIN', 'ADMIN', 'OPERATOR', 'DEPARTMENT'] as const;
+    const roleIdByName = new Map<string, string>();
+
+    for (const name of systemRoles) {
+      const [existingRole] = await db.select().from(schema.roles).where(eq(schema.roles.name, name));
+      const role =
+        existingRole ??
+        (
+          await db
+            .insert(schema.roles)
+            .values({
+              name,
+              description: `${name} role`,
+              is_system: true,
+              permissions: { grants: [] },
+            })
+            .returning()
+        )[0];
+      roleIdByName.set(name, role.id);
+    }
+
     // Create admin user
     logger.info('Creating admin user...');
     const adminPasswordHash = await hashPassword(appConfig.ADMIN_PASSWORD);
@@ -28,7 +51,7 @@ async function seed() {
         password_hash: adminPasswordHash,
         first_name: 'Admin',
         last_name: 'User',
-        role: 'ADMIN',
+        role_id: roleIdByName.get('SUPER_ADMIN') ?? roleIdByName.get('ADMIN')!,
         is_active: true,
       });
       logger.info(`Admin user created: ${appConfig.ADMIN_EMAIL}`);

@@ -12,9 +12,14 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('device-pairing-routes');
 const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
+
+function looksBase64(value: string) {
+  return /^[A-Za-z0-9+/=\\r\\n]+$/.test(value);
+}
 
 const generatePairingCodeSchema = z.object({
   device_id: z.string().min(1),
@@ -67,14 +72,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'DevicePairing')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = generatePairingCodeSchema.parse(request.body);
@@ -126,10 +131,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const query = pairingStatusQuerySchema.parse(request.query);
         const screen = await screenRepo.findById(query.device_id);
+        const pairing = await pairingRepo.findByDeviceId(query.device_id);
+        const pairingInfo = (pairing?.device_info || {}) as Record<string, any>;
+        const confirmed = Boolean(pairingInfo?.pairing?.confirmed);
 
         return reply.send({
           device_id: query.device_id,
-          paired: Boolean(screen),
+          paired: Boolean(screen) || confirmed,
+          confirmed,
           screen: screen
             ? {
                 id: screen.id,
@@ -216,24 +225,78 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
+        if (config.NODE_ENV === 'development' && request.body && typeof request.body === 'object') {
+          const rawBody = request.body as Record<string, unknown>;
+          if ('pairingCode' in rawBody && !('pairing_code' in rawBody)) {
+            logger.warn({ keys: Object.keys(rawBody) }, 'Possible schema mismatch: pairingCode used instead of pairing_code');
+          }
+          if (typeof rawBody.csr === 'string') {
+            const trimmed = rawBody.csr.trim();
+            if (!trimmed.startsWith('-----BEGIN CERTIFICATE REQUEST-----') && looksBase64(trimmed)) {
+              logger.warn('CSR appears to be base64 without PEM header/footer');
+            }
+          }
+        }
         const data = completePairingSchema.parse(request.body);
 
         // Find pairing by code
         const pairing = await pairingRepo.findByCode(data.pairing_code);
         if (!pairing) {
-          return reply.status(NOT_FOUND).send({ error: 'Invalid or expired pairing code' });
+          throw AppError.notFound('Invalid or expired pairing code');
         }
         if (!pairing.device_id) {
-          return reply.status(BAD_REQUEST).send({ error: 'Pairing is missing a device id' });
+          throw AppError.badRequest('Pairing is missing a device id');
         }
         const deviceId = pairing.device_id;
+        const pairingInfo = (pairing.device_info || {}) as Record<string, any>;
+        const pairingMeta = (pairingInfo?.pairing || {}) as Record<string, any>;
+        const confirmed = pairingMeta.confirmed === true;
+        const screenName =
+          typeof pairingMeta.screen_name === 'string' && pairingMeta.screen_name.trim()
+            ? pairingMeta.screen_name.trim()
+            : null;
+        const screenLocation =
+          typeof pairingMeta.screen_location === 'string' && pairingMeta.screen_location.trim()
+            ? pairingMeta.screen_location.trim()
+            : null;
+
+        if (!confirmed || !screenName) {
+          throw AppError.conflict('Pairing not confirmed');
+        }
 
         const csr = data.csr.trim();
         if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
-          return reply.status(BAD_REQUEST).send({ error: 'Invalid CSR format' });
+          throw AppError.badRequest('Invalid CSR format');
+        }
+        const csrBody = csr
+          .replace('-----BEGIN CERTIFICATE REQUEST-----', '')
+          .replace('-----END CERTIFICATE REQUEST-----', '')
+          .replace(/\\s+/g, '');
+        try {
+          const decoded = Buffer.from(csrBody, 'base64').toString('utf8');
+          const match = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+          if (match && match[0].toLowerCase() !== deviceId.toLowerCase()) {
+            throw AppError.conflict('CSR deviceId does not match pairing deviceId');
+          }
+          if (config.NODE_ENV === 'development' && !decoded.includes(deviceId)) {
+            logger.warn({ deviceId }, 'CSR does not appear to include deviceId in subject');
+          }
+        } catch (err) {
+          if (err instanceof AppError) throw err;
+          if (config.NODE_ENV === 'development') {
+            logger.warn({ deviceId }, 'Failed to decode CSR for deviceId check');
+          }
         }
 
-        const caCert = await readFile(config.CA_CERT_PATH, 'utf8');
+        let caCert: string;
+        try {
+          caCert = await readFile(config.CA_CERT_PATH, 'utf8');
+        } catch (err: any) {
+          if (err?.code === 'ENOENT') {
+            throw AppError.caCertMissing(`CA certificate not found at ${config.CA_CERT_PATH}`);
+          }
+          throw err;
+        }
         const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
 
         const signature = createHmac('sha256', caCert).update(csr).digest('base64');
@@ -248,6 +311,25 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           fingerprint,
           expires_at: expiresAt,
         });
+
+        const existingScreen = await screenRepo.findById(deviceId);
+        if (!existingScreen) {
+          const { pairing: _pairingMeta, ...deviceInfoRest } = pairingInfo;
+          const screenDeviceInfo: Record<string, any> = { ...(deviceInfoRest || {}) };
+          if (pairing.model && screenDeviceInfo.model == null) screenDeviceInfo.model = pairing.model;
+          if (pairing.codecs && screenDeviceInfo.codecs == null) screenDeviceInfo.codecs = pairing.codecs;
+
+          await screenRepo.create({
+            id: deviceId,
+            name: screenName,
+            location: screenLocation ?? undefined,
+            aspect_ratio: (pairing as any).aspect_ratio ?? null,
+            width: (pairing as any).width ?? null,
+            height: (pairing as any).height ?? null,
+            orientation: (pairing as any).orientation ?? null,
+            device_info: Object.keys(screenDeviceInfo).length > 0 ? screenDeviceInfo : null,
+          });
+        }
 
         await pairingRepo.markAsUsed(pairing.id);
 
@@ -265,6 +347,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           message: 'Device pairing completed. Certificate issued.',
           device_id: deviceId,
           certificate: certificatePem,
+          ca_certificate: caCert,
           fingerprint,
           expires_at: expiresAt.toISOString(),
         });
@@ -275,12 +358,12 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // Confirm pairing and create screen (admin)
+  // Confirm pairing (admin)
   fastify.post<{ Body: typeof confirmPairingSchema._type }>(
     apiEndpoints.devicePairing.confirm,
     {
       schema: {
-        description: 'Confirm pairing code and create screen (admin only)',
+        description: 'Confirm pairing code (admin only)',
         tags: ['Device Pairing'],
         security: [{ bearerAuth: [] }],
       },
@@ -289,62 +372,54 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Screen')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = confirmPairingSchema.parse(request.body);
 
         const pairing = await pairingRepo.findByCode(data.pairing_code);
         if (!pairing) {
-          return reply.status(NOT_FOUND).send({ error: 'Invalid or expired pairing code' });
+          throw AppError.notFound('Invalid or expired pairing code');
         }
         if (!pairing.device_id) {
-          return reply.status(BAD_REQUEST).send({ error: 'Pairing missing device reference' });
+          throw AppError.badRequest('Pairing missing device reference');
         }
         const existing = await screenRepo.findById(pairing.device_id);
         if (existing) {
-          return reply.status(CONFLICT).send({ error: 'Screen already exists for this device' });
+          throw AppError.conflict('Screen already exists for this device');
         }
 
-        const screen = await screenRepo.create({
-          id: pairing.device_id,
-          name: data.name,
-          location: data.location,
-          aspect_ratio: (pairing as any).aspect_ratio ?? null,
-          width: (pairing as any).width ?? null,
-          height: (pairing as any).height ?? null,
-          orientation: (pairing as any).orientation ?? null,
-          device_info: (pairing as any).device_info ?? {
-            model: (pairing as any).model ?? null,
-            codecs: (pairing as any).codecs ?? null,
+        const pairingInfo = (pairing.device_info || {}) as Record<string, any>;
+        const updatedInfo = {
+          ...pairingInfo,
+          pairing: {
+            ...(pairingInfo as any)?.pairing,
+            confirmed: true,
+            confirmed_at: new Date().toISOString(),
+            screen_name: data.name,
+            screen_location: data.location ?? null,
           },
-        });
+        };
 
-        await pairingRepo.markAsUsed(pairing.id);
+        await pairingRepo.updateDeviceInfo(pairing.id, updatedInfo);
 
-        logger.info({ pairingId: pairing.id, deviceId: pairing.device_id, screenId: screen.id }, 'Pairing confirmed and screen created');
+        logger.info({ pairingId: pairing.id, deviceId: pairing.device_id }, 'Pairing confirmed; awaiting device completion');
 
         return reply.status(OK).send({
-          message: 'Screen paired successfully',
-          screen: {
-            id: screen.id,
-            name: screen.name,
-            location: screen.location,
-            status: screen.status,
-            aspect_ratio: (screen as any).aspect_ratio ?? null,
-            width: (screen as any).width ?? null,
-            height: (screen as any).height ?? null,
-            orientation: (screen as any).orientation ?? null,
-            device_info: (screen as any).device_info ?? null,
-            created_at: screen.created_at.toISOString(),
-            updated_at: screen.updated_at.toISOString(),
+          message: 'Pairing confirmed. Awaiting device completion.',
+          pairing: {
+            id: pairing.id,
+            device_id: pairing.device_id,
+            pairing_code: pairing.pairing_code,
+            expires_at: pairing.expires_at?.toISOString?.() ?? pairing.expires_at,
+            confirmed_at: (updatedInfo as any).pairing?.confirmed_at,
           },
         });
       } catch (error) {
@@ -368,14 +443,14 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('read', 'DevicePairing')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const page = (request.query as any).page ? parseInt((request.query as any).page as string) : 1;

@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import { randomUUID } from 'crypto';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -32,7 +33,59 @@ import { userActivateRoutes } from '@/routes/users-activate';
 import { layoutRoutes } from '@/routes/layouts';
 import { screenGroupRoutes } from '@/routes/screen-groups';
 import { scheduleRequestRoutes } from '@/routes/schedule-requests';
+import { roleRoutes } from '@/routes/roles';
+import { permissionRoutes } from '@/routes/permissions';
 import csrfProtectionPlugin from '@/middleware/csrf';
+import { formatErrorResponse } from '@/utils/app-error';
+import { toAppError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
+
+type BodySummary = {
+  type: string;
+  keys?: string[];
+  length?: number;
+  csr?: { length: number; prefix: string };
+  pairing_code?: string;
+  pairingCode?: string;
+};
+
+function redactValue(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  if (value.length <= 8) return '[redacted]';
+  return `${value.slice(0, 3)}...${value.slice(-3)}`;
+}
+
+function summarizeRequestBody(body: unknown): BodySummary {
+  if (body === null || body === undefined) return { type: 'empty' };
+  if (Array.isArray(body)) return { type: 'array', length: body.length };
+  if (typeof body !== 'object') return { type: typeof body };
+
+  const obj = body as Record<string, unknown>;
+  const summary: BodySummary = { type: 'object', keys: Object.keys(obj) };
+
+  if (typeof obj.csr === 'string') {
+    summary.csr = {
+      length: obj.csr.length,
+      prefix: obj.csr.slice(0, 32),
+    };
+  }
+  if ('pairing_code' in obj) {
+    summary.pairing_code = redactValue(obj.pairing_code);
+  }
+  if ('pairingCode' in obj) {
+    summary.pairingCode = redactValue(obj.pairingCode);
+  }
+  return summary;
+}
+
+function sanitizeErrorMessage(message?: string) {
+  if (!message) return '';
+  let safe = message;
+  safe = safe.replace(/([A-Za-z]:)?[\\/][^\\s'"]+/g, '<path>');
+  safe = safe.replace(/(password|secret|token)=\\S+/gi, '$1=<redacted>');
+  safe = safe.slice(0, 220);
+  return safe;
+}
 
 export async function createServer() {
   const fastify = Fastify({
@@ -45,6 +98,55 @@ export async function createServer() {
         },
       },
     },
+    genReqId: (req) => {
+      const header = req.headers['x-request-id'];
+      if (Array.isArray(header) && header[0]) return header[0];
+      if (typeof header === 'string' && header.length > 0) return header;
+      return randomUUID();
+    },
+  });
+
+  fastify.addHook('onRequest', (request, reply, done) => {
+    reply.header('x-request-id', request.id);
+    done();
+  });
+
+  fastify.setErrorHandler((error, request, reply) => {
+    const appError = toAppError(error);
+    const statusCode = appError.statusCode;
+    const logPayload: Record<string, unknown> = {
+      err: error,
+      traceId: request.id,
+      method: request.method,
+      url: request.url,
+      statusCode,
+    };
+    if (appConfig.NODE_ENV === 'development') {
+      logPayload.body = summarizeRequestBody(request.body);
+    }
+    request.log.error(logPayload, 'Request failed');
+    if (error && typeof error === 'object' && 'code' in error) {
+      const errCode = (error as any).code;
+      const constraint = (error as any).constraint;
+      request.log.warn({ code: errCode, constraint }, 'Database or runtime error code detected');
+    }
+    if (appError.code === 'CA_CERT_MISSING') {
+      request.log.warn({ path: appConfig.CA_CERT_PATH }, 'CA certificate missing');
+    }
+
+    let clientError = appError;
+    if (appConfig.NODE_ENV === 'development' && appError.code === 'INTERNAL_ERROR') {
+      const message = error instanceof Error ? sanitizeErrorMessage(error.message) : '';
+      if (message) {
+        clientError = AppError.internal(`Internal error: ${message}`);
+      }
+    }
+
+    reply.status(clientError.statusCode).send(formatErrorResponse(clientError, request.id));
+  });
+
+  fastify.setNotFoundHandler(() => {
+    throw AppError.notFound('Route not found');
   });
 
   // Security middleware
@@ -153,6 +255,8 @@ export async function createServer() {
   await fastify.register(layoutRoutes);
   await fastify.register(screenGroupRoutes);
   await fastify.register(scheduleRequestRoutes);
+  await fastify.register(roleRoutes);
+  await fastify.register(permissionRoutes);
 
   return fastify;
 }

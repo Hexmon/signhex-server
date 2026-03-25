@@ -584,19 +584,43 @@ All endpoints return standard HTTP status codes:
 - **200**: Success
 - **201**: Created
 - **204**: No Content
-- **400**: Bad Request (validation error)
+- **400**: Bad Request
+- **422**: Validation error (invalid input)
 - **401**: Unauthorized (missing/invalid token)
 - **403**: Forbidden (insufficient permissions)
 - **404**: Not Found
 - **409**: Conflict (resource already exists)
+- **429**: Rate limited
 - **500**: Internal Server Error
 
-Example error response:
+Example error responses:
 
 ```json
 {
-  "error": "Invalid request",
-  "details": "Email already exists"
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Some fields are invalid.",
+    "details": [
+      {
+        "field": "name",
+        "message": "name must be at least 1 character"
+      }
+    ],
+    "traceId": "b6aaf8d4-6b39-47b0-9b2c-5334e2ac7f0d"
+  }
+}
+```
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "CONFLICT",
+    "message": "Email already exists.",
+    "details": null,
+    "traceId": "9e49a49a-4698-4a50-9b0a-b2f08f5b5e57"
+  }
 }
 ```
 

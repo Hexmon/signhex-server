@@ -13,13 +13,6 @@ import { respondWithError } from '@/utils/errors';
 import { deleteObject } from '@/s3';
 import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
-import {
-  buildContentDisposition,
-  buildObjectKey,
-  normalizeDisplayName,
-  normalizeOriginalFilename,
-  sanitizeFilenameHint,
-} from '@/utils/object-key';
 
 const logger = createLogger('media-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -81,14 +74,14 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Media')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = presignUploadSchema.parse(request.body);
@@ -158,14 +151,14 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
 
         if (!ability.can('create', 'Media')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = createMediaSchema.parse(request.body);
@@ -212,7 +205,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -286,7 +279,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
@@ -294,7 +287,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         const mediaId = (request.params as any).id;
         const media = await mediaRepo.findById(mediaId);
         if (!media) {
-          return reply.status(NOT_FOUND).send({ error: 'Media not found' });
+          throw AppError.notFound('Media not found');
         }
 
         const media_url = await resolveMediaUrl(media);
@@ -340,23 +333,23 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Media')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const data = completeUploadSchema.parse(request.body);
         const media = await mediaRepo.findById((request.params as any).id);
         if (!media) {
-          return reply.status(NOT_FOUND).send({ error: 'Media not found' });
+          throw AppError.notFound('Media not found');
         }
 
         if (!media.source_bucket || !media.source_object_key) {
-          return reply.status(BAD_REQUEST).send({ error: 'Media missing source object info' });
+          throw AppError.badRequest('Media missing source object info');
         }
 
         let head: any;
@@ -364,7 +357,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           head = await headObject(media.source_bucket, media.source_object_key);
         } catch (err) {
           logger.error(err, 'Head object failed');
-          return reply.status(BAD_REQUEST).send({ error: 'Source object not found in storage' });
+          throw AppError.badRequest('Source object not found in storage');
         }
 
         const updated = await mediaRepo.update(media.id, {
@@ -410,18 +403,18 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
-          return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+          throw AppError.unauthorized('Missing authorization header');
         }
 
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('delete', 'Media')) {
-          return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+          throw AppError.forbidden('Forbidden');
         }
 
         const media = await mediaRepo.findById((request.params as any).id);
         if (!media) {
-          return reply.status(NOT_FOUND).send({ error: 'Media not found' });
+          throw AppError.notFound('Media not found');
         }
 
         const hardDelete =

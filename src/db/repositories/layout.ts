@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, or, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class LayoutRepository {
@@ -19,23 +19,39 @@ export class LayoutRepository {
     return layout || null;
   }
 
-  async list(options: { page?: number; limit?: number; aspect_ratio?: string }) {
+  async list(options: { page?: number; limit?: number; aspect_ratio?: string; search?: string }) {
     const db = getDatabase();
     const page = options.page || 1;
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
     const conditions = [];
+    if (options.search?.trim()) {
+      const searchTerm = `%${options.search.trim()}%`;
+      conditions.push(
+        or(
+          sql`${schema.layouts.name} ILIKE ${searchTerm}`,
+          sql`${schema.layouts.description} ILIKE ${searchTerm}`,
+          sql`${schema.layouts.spec}::text ILIKE ${searchTerm}`
+        )
+      );
+    }
     if (options.aspect_ratio) {
       conditions.push(eq(schema.layouts.aspect_ratio, options.aspect_ratio));
     }
 
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
     let query = db.select().from(schema.layouts);
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
+    if (whereClause) {
+      query = query.where(whereClause) as any;
     }
 
-    const total = await db.select().from(schema.layouts).where(conditions.length ? and(...conditions) : undefined);
+    let totalQuery = db.select().from(schema.layouts);
+    if (whereClause) {
+      totalQuery = totalQuery.where(whereClause) as any;
+    }
+    const total = await totalQuery;
 
     const items = await query.orderBy(desc(schema.layouts.created_at)).limit(limit).offset(offset);
 

@@ -114,7 +114,7 @@ flowchart TD
   W0 -- "No approval (direct publish)" --> PUB1[POST /api/v1/schedules/:id/publish<br/>Body: { screen_ids?, screen_group_ids?, notes? }<br/>→ DONE]
 
   %% Approval workflow
-  W0 -- "Yes (approval required)" --> REQ1[POST /api/v1/schedule-requests<br/>Body: { schedule_id, payload, notes? }<br/>payload includes publish targets, e.g.:<br/>{ screen_ids?, screen_group_ids?, notes? }<br/>→ request_id]
+  W0 -- "Yes (approval required)" --> REQ1[POST /api/v1/schedule-requests<br/>Body: { schedule_id, notes? }<br/>→ request_id]
   REQ1 --> DEC1{Approve or Reject?}
   DEC1 -- "Reject" --> REJ1[POST /api/v1/schedule-requests/:id/reject<br/>Body: { comment? }<br/>→ DONE (no publish)]
   DEC1 -- "Approve" --> APP1[POST /api/v1/schedule-requests/:id/approve<br/>→ status APPROVED]
@@ -171,8 +171,8 @@ Detailed steps and which API to call:
      - `POST /api/v1/schedules/:id/publish` with `{ screen_ids?, screen_group_ids?, notes? }`
    - Approval workflow:
      - Create request: `POST /api/v1/schedule-requests`
-       - Body: `{ schedule_id, payload, notes? }`
-       - `payload` must match publish schema (e.g., `{ screen_ids: [...], screen_group_ids: [...] }`)
+       - Body: `{ schedule_id, notes? }`
+       - Targets are derived from schedule items at publish time.
      - Approve or reject:
        - `POST /api/v1/schedule-requests/:id/approve`
        - `POST /api/v1/schedule-requests/:id/reject`

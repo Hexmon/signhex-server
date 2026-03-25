@@ -7,6 +7,7 @@ import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
+import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('metrics-routes');
 const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
@@ -26,10 +27,10 @@ export async function metricsRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) return reply.status(UNAUTHORIZED).send({ error: 'Missing authorization header' });
+        if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        const ability = defineAbilityFor(payload.role as any, payload.sub);
-        if (!ability.can('read', 'Dashboard')) return reply.status(FORBIDDEN).send({ error: 'Forbidden' });
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Dashboard')) throw AppError.forbidden('Forbidden');
 
         const [usersCount] = await db.select({ count: sql<number>`count(*)` }).from(schema.users);
         const [mediaCount] = await db.select({ count: sql<number>`count(*)` }).from(schema.media);

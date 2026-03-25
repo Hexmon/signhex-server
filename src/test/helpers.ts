@@ -16,8 +16,9 @@ export async function createTestServer(): Promise<FastifyInstance> {
   return server;
 }
 
-export async function generateTestToken(userId: string, role: 'ADMIN' | 'OPERATOR' | 'DEPARTMENT' = 'ADMIN') {
-  const result = await generateAccessToken(userId, 'test@example.com', role);
+export async function generateTestToken(userId: string, role: keyof typeof testRoles = 'ADMIN') {
+  const roleRecord = testRoles[role];
+  const result = await generateAccessToken(userId, 'test@example.com', roleRecord.id, roleRecord.name);
   const sessionRepo = createSessionRepository();
   await sessionRepo.create({
     user_id: userId,
@@ -36,6 +37,30 @@ export async function cleanupDatabase() {
 export async function seedTestData() {
   const db = getDatabase();
 
+  await db
+    .insert(schema.roles)
+    .values([
+      {
+        id: testRoles.ADMIN.id,
+        name: testRoles.ADMIN.name,
+        permissions: {},
+        is_system: true,
+      },
+      {
+        id: testRoles.OPERATOR.id,
+        name: testRoles.OPERATOR.name,
+        permissions: {},
+        is_system: true,
+      },
+      {
+        id: testRoles.DEPARTMENT.id,
+        name: testRoles.DEPARTMENT.name,
+        permissions: {},
+        is_system: true,
+      },
+    ])
+    .onConflictDoNothing();
+
   await db.delete(schema.users).where(eq(schema.users.email, testUser.email));
 
   const passwordHash = await hashPassword(testUser.password);
@@ -45,7 +70,7 @@ export async function seedTestData() {
     password_hash: passwordHash,
     first_name: testUser.first_name,
     last_name: testUser.last_name,
-    role: testUser.role,
+    role_id: testUser.role_id,
     is_active: true,
   });
 }
@@ -61,7 +86,23 @@ export const testUser = {
   password: 'TestPassword123!',
   first_name: 'Test',
   last_name: 'User',
+  role_id: '00000000-0000-0000-0000-000000000010',
   role: 'ADMIN' as const,
+};
+
+export const testRoles = {
+  ADMIN: {
+    id: '00000000-0000-0000-0000-000000000010',
+    name: 'ADMIN',
+  },
+  OPERATOR: {
+    id: '00000000-0000-0000-0000-000000000011',
+    name: 'OPERATOR',
+  },
+  DEPARTMENT: {
+    id: '00000000-0000-0000-0000-000000000012',
+    name: 'DEPARTMENT',
+  },
 };
 
 export const testMedia = {

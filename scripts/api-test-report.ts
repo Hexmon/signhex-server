@@ -1,11 +1,13 @@
 import 'dotenv/config';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { performance } from 'perf_hooks';
 import { randomUUID } from 'crypto';
+import { execSync } from 'child_process';
 import { initializeS3, createBucketIfNotExists } from '../src/s3/index.js';
 import { apiEndpoints } from '../src/config/apiEndpoints.js';
+import { runReproDevicePairingComplete, PairingScenarioResult } from './repro-device-pairing-complete.js';
 
 type TestResult = {
   name: string;
@@ -50,6 +52,7 @@ const results: TestResult[] = [];
 const state: Record<string, string> = {};
 let bearerToken: string | null = null;
 let bucketsReady = false;
+let reproResults: PairingScenarioResult[] = [];
 
 function redactString(value: string): string {
   if (!value) return value;
@@ -209,6 +212,23 @@ async function main() {
   // Auth: me
   await runTest('Auth: me', 'Get current user', 'GET', apiEndpoints.auth.me, undefined, { auth: true });
 
+  // Roles (for role_id mapping)
+  const rolesRes = await runTest(
+    'Roles: list',
+    'List roles for role_id lookup',
+    'GET',
+    `${apiEndpoints.roles.list}?page=1&limit=100`,
+    undefined,
+    { auth: true }
+  );
+  if (rolesRes.ok && rolesRes.data?.items) {
+    for (const role of rolesRes.data.items) {
+      if (role?.name && role?.id) {
+        state[`role_${role.name}`] = role.id;
+      }
+    }
+  }
+
   // User invite + activate
   const inviteEmail = `qa-invite+${Date.now()}@hexmon.local`;
   const inviteRes = await runTest(
@@ -270,14 +290,18 @@ async function main() {
   }
 
   // Users
+  const operatorRoleId = state.role_OPERATOR;
   const userPayload = {
     email: `qa+${Date.now()}@hexmon.local`,
     password: 'TestPass123!',
     first_name: 'QA',
     last_name: 'User',
-    role: 'OPERATOR',
+    role_id: operatorRoleId,
   };
-  const userCreate = await runTest('Users: create', 'Create user', 'POST', apiEndpoints.users.create, userPayload, { auth: true });
+  const userCreate = await runTest('Users: create', 'Create user', 'POST', apiEndpoints.users.create, userPayload, {
+    auth: true,
+    note: operatorRoleId ? undefined : 'Missing OPERATOR role_id from /api/v1/roles',
+  });
   if (userCreate.ok && userCreate.data?.id) state.userId = userCreate.data.id;
   await runTest('Users: list', 'List users', 'GET', `${apiEndpoints.users.list}?page=1&limit=10`, undefined, { auth: true });
   if (state.userId) {
@@ -1255,6 +1279,19 @@ async function main() {
     { auth: true }
   );
 
+  try {
+    reproResults = await runReproDevicePairingComplete();
+  } catch (error: any) {
+    reproResults = [
+      {
+        scenario: 'repro-runner',
+        expectedStatus: 201,
+        actualStatus: null,
+        note: error?.message || String(error),
+      },
+    ];
+  }
+
   // Device telemetry
   if (state.screenId && bucketsReady) {
     await runTest(
@@ -1437,12 +1474,92 @@ function writeReport() {
     })
     .join('\n\n');
 
+  const commit = (() => {
+    try {
+      return execSync('git rev-parse --short HEAD', { cwd: projectRoot }).toString().trim();
+    } catch {
+      return null;
+    }
+  })();
+
+  const dbSummary = (() => {
+    if (!process.env.DATABASE_URL) return null;
+    try {
+      const url = new URL(process.env.DATABASE_URL);
+      return `${url.hostname}:${url.port || '5432'}${url.pathname}`;
+    } catch {
+      return null;
+    }
+  })();
+
+  const migrationsDir = path.join(projectRoot, 'drizzle');
+  const migrationsPresent = existsSync(migrationsDir) && readdirSync(migrationsDir).length > 0;
+
+  const reproTable = reproResults.length
+    ? reproResults
+        .map((r) => {
+          const status = r.actualStatus ?? 'ERR';
+          const ok = r.actualStatus === r.expectedStatus;
+          return `| ${r.scenario} | ${r.expectedStatus} | ${status} | ${ok ? '✅' : '❌'} | ${r.traceId ?? ''} | ${r.responsePreview ?? ''} |`;
+        })
+        .join('\n')
+    : 'No repro data collected.';
+
+  const reproCause = (() => {
+    const cause = reproResults.find((r) => r.responsePreview?.includes('CA_CERT_MISSING'));
+    if (cause) {
+      return 'Server missing CA certificate (CA_CERT_PATH) or file not found.';
+    }
+    const internal = reproResults.find((r) => r.actualStatus === 500);
+    if (internal) {
+      return 'Server returned 500 during pairing complete. Check server logs for traceId.';
+    }
+    return 'No server-side error detected in pairing complete repro.';
+  })();
+
+  const reproFix = (() => {
+    if (reproCause.includes('CA certificate')) {
+      return 'Place the CA certificate at CA_CERT_PATH or update CA_CERT_PATH to the correct file.';
+    }
+    if (reproCause.includes('500')) {
+      return 'Inspect server logs for the traceId; fix underlying server error or improve input validation.';
+    }
+    return 'No fix required.';
+  })();
+
   const markdown = `# API Test Report
 
 - Timestamp: ${new Date().toISOString()}
 - Base URL: ${baseUrl}
 - Auth user: ${adminEmail}
+- Server commit: ${commit ?? 'n/a'}
+- DB: ${dbSummary ?? 'n/a'}
+- Migrations present: ${migrationsPresent ? 'yes' : 'no'}
 - Total: ${results.length}, Passed: ${passed}, Failed: ${failed}
+
+## Repro: Device Pairing Complete
+
+### Curl commands
+\`\`\`bash
+curl -X POST "${baseUrl}/api/v1/device-pairing/request" \\
+  -H "Content-Type: application/json" \\
+  -d '{"device_label":"Repro Device","expires_in":600}'
+
+curl -X POST "${baseUrl}/api/v1/device-pairing/complete" \\
+  -H "Content-Type: application/json" \\
+  -d '{"pairing_code":"<PAIRING_CODE>","csr":"-----BEGIN CERTIFICATE REQUEST-----\\n<CSR>\\n-----END CERTIFICATE REQUEST-----"}'
+\`\`\`
+
+### Results
+| Scenario | Expected | Actual | Result | TraceId | Preview |
+| --- | --- | --- | --- | --- | --- |
+${reproTable}
+
+### Root cause conclusion
+- ${reproCause}
+- Recommended fix: ${reproFix}
+
+## Test Summary
 
 | Test | Method | Endpoint | Status | Result | Notes |
 | --- | --- | --- | --- | --- | --- |

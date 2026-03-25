@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
-import { createTestServer, generateTestToken, testUser, closeTestServer } from '@/test/helpers';
+import { createTestServer, generateTestToken, testUser, testRoles, closeTestServer } from '@/test/helpers';
 import { HTTP_STATUS } from '@/http-status-codes';
 
 describe('User Routes', () => {
@@ -26,7 +26,7 @@ describe('User Routes', () => {
           password: 'Password123!',
           first_name: 'New',
           last_name: 'User',
-          role: 'OPERATOR',
+          role_id: testRoles.OPERATOR.id,
         },
       });
 
@@ -46,18 +46,18 @@ describe('User Routes', () => {
           password: 'Password123!',
           first_name: 'New',
           last_name: 'User',
-          role: 'OPERATOR',
+          role_id: testRoles.OPERATOR.id,
         },
       });
 
       expect(response.statusCode).toBe(HTTP_STATUS.CREATED);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty('id');
-      expect(body.email).toBe('newuser@example.com');
-      expect(body.role).toBe('OPERATOR');
+      expect(body.email).toBe(uniqueEmail);
+      expect(body.role_id).toBe(testRoles.OPERATOR.id);
     });
 
-    it('should return 400 for invalid email', async () => {
+    it('should return 422 for invalid email', async () => {
       const response = await server.inject({
         method: 'POST',
         url: '/api/v1/users',
@@ -69,11 +69,14 @@ describe('User Routes', () => {
           password: 'Password123!',
           first_name: 'New',
           last_name: 'User',
-          role: 'OPERATOR',
+          role_id: testRoles.OPERATOR.id,
         },
       });
 
-      expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
+      expect(response.statusCode).toBe(HTTP_STATUS.UNPROCESSABLE_CONTENT);
+      const body = JSON.parse(response.body);
+      expect(body.success).toBe(false);
+      expect(body.error.code).toBe('VALIDATION_ERROR');
     });
   });
 
