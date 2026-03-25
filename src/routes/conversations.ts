@@ -10,7 +10,7 @@ import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('conversation-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const startConversationSchema = z.object({
   participant_id: z.string().uuid(),
@@ -96,7 +96,7 @@ export async function conversationRoutes(fastify: FastifyInstance) {
 
         const page = (request.query as any).page ? parseInt((request.query as any).page as string) : 1;
         const limit = (request.query as any).limit ? parseInt((request.query as any).limit as string) : 50;
-        const result = await repo.listMessages((request.params as any).id, page, limit);
+        const result = await repo.listMessages((request.params as any).id, page, limit, payload.sub);
         return reply.send(result);
       } catch (error) {
         logger.error(error, 'List messages error');

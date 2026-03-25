@@ -19,9 +19,13 @@ import { respondWithError } from '@/utils/errors';
 import { publishScheduleSnapshot, resolvePresentations } from '@/routes/schedule-publish-helper';
 import z from 'zod';
 import { AppError } from '@/utils/app-error';
+import { serializeMediaRecord } from '@/utils/media';
+import { canAccessOwnedResource, getDepartmentUserIds, isAdminLike, isDepartmentScopedRole } from '@/rbac/policy';
+import { createScheduleReservationService } from '@/services/scheduling/reservation-service';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('schedule-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const scheduleItemSchema = z.object({
   presentation_id: z.string().uuid(),
@@ -32,10 +36,15 @@ const scheduleItemSchema = z.object({
   screen_group_ids: z.array(z.string().uuid()).default([]),
 });
 
+const takeDownPublishSchema = z.object({
+  reason: z.string().optional(),
+});
+
 export async function scheduleRoutes(fastify: FastifyInstance) {
   const scheduleRepo = createScheduleRepository();
   const scheduleItemRepo = createScheduleItemRepository();
   const presentationRepo = createPresentationRepository();
+  const reservationService = createScheduleReservationService();
   const db = getDatabase();
 
   const validateStartEnd = (start: string, end: string) => {
@@ -57,6 +66,16 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       throw AppError.badRequest('start_at must be before end_at');
     }
     return { startAt, endAt };
+  };
+
+  const validateTimeZone = (timezone?: string | null) => {
+    if (!timezone) return null;
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: timezone });
+      return timezone;
+    } catch {
+      throw AppError.badRequest('Invalid timezone');
+    }
   };
 
   const targetsIntersect = (
@@ -89,6 +108,17 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     });
   };
 
+  const assertScheduleAccess = async (payload: { sub: string; role: string; department_id?: string }, scheduleId: string) => {
+    const schedule = await scheduleRepo.findById(scheduleId);
+    if (!schedule) throw AppError.notFound('Schedule not found');
+    const canAccessSchedule = await canAccessOwnedResource(
+      { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+      schedule.created_by
+    );
+    if (!canAccessSchedule) throw AppError.forbidden('Forbidden');
+    return schedule;
+  };
+
 
   // Create schedule
   fastify.post<{ Body: typeof createScheduleSchema._type }>(
@@ -119,8 +149,10 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const endIso =
           data.end_at ?? new Date(new Date(startIso).getTime() + 24 * 60 * 60 * 1000).toISOString();
         const { startAt, endAt } = validateStartEnd(startIso, endIso);
+        const timezone = validateTimeZone(data.timezone);
         const schedule = await scheduleRepo.create({
           ...data,
+          timezone,
           start_at: startAt,
           end_at: endAt,
           created_by: payload.sub,
@@ -130,6 +162,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           id: schedule.id,
           name: schedule.name,
           description: schedule.description,
+          timezone: schedule.timezone ?? null,
           start_at: schedule.start_at.toISOString(),
           end_at: schedule.end_at.toISOString(),
           is_active: schedule.is_active,
@@ -161,7 +194,8 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
+        await assertScheduleAccess(payload, (request.params as any).id);
 
         const publishes = await db
           .select()
@@ -215,6 +249,16 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         if (!ability.can('update', 'Schedule')) {
           throw AppError.forbidden('Forbidden');
         }
+        if (!isAdminLike(payload.role)) {
+          throw AppError.forbidden('Forbidden');
+        }
+
+        const [publish] = await db
+          .select()
+          .from(schema.publishes)
+          .where(eq(schema.publishes.id, (request.params as any).publishId));
+        if (!publish) throw AppError.notFound('Publish not found');
+        await assertScheduleAccess(payload, publish.schedule_id);
 
         const body = request.body as any;
         const [target] = await db
@@ -249,13 +293,17 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
 
         const query = listSchedulesQuerySchema.parse(request.query);
+        const createdByIds = isDepartmentScopedRole(payload.role)
+          ? await getDepartmentUserIds(payload.department_id)
+          : undefined;
         const result = await scheduleRepo.list({
           page: query.page,
           limit: query.limit,
           is_active: query.is_active === 'true' ? true : query.is_active === 'false' ? false : undefined,
+          created_by_ids: createdByIds,
         });
 
         return reply.send({
@@ -263,6 +311,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
             id: s.id,
             name: s.name,
             description: s.description,
+            timezone: s.timezone ?? null,
             start_at: s.start_at?.toISOString(),
             end_at: s.end_at?.toISOString(),
             is_active: s.is_active,
@@ -300,17 +349,16 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
 
-        const schedule = await scheduleRepo.findById((request.params as any).id);
-        if (!schedule) {
-          throw AppError.notFound('Schedule not found');
-        }
+        const schedule = await assertScheduleAccess(payload, (request.params as any).id);
+        await reservationService.assertScheduleMutable(schedule.id, db);
 
         return reply.send({
           id: schedule.id,
           name: schedule.name,
           description: schedule.description,
+          timezone: schedule.timezone ?? null,
           start_at: schedule.start_at?.toISOString(),
           end_at: schedule.end_at?.toISOString(),
           is_active: schedule.is_active,
@@ -343,8 +391,8 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'Schedule')) throw AppError.forbidden('Forbidden');
 
-        const schedule = await scheduleRepo.findById((request.params as any).id);
-        if (!schedule) throw AppError.notFound('Schedule not found');
+        const schedule = await assertScheduleAccess(payload, (request.params as any).id);
+        await reservationService.assertScheduleMutable(schedule.id, db);
 
         const items = await scheduleItemRepo.listBySchedule(schedule.id);
         const presMap = await resolvePresentations(items.map((i: any) => i.presentation_id));
@@ -384,7 +432,6 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
                         ? {
                             id: pi.media.id,
                             name: pi.media.name,
-                            original_filename: (pi.media as any).original_filename ?? pi.media.name,
                             type: pi.media.type,
                             status: pi.media.status,
                             source_bucket: pi.media.source_bucket,
@@ -402,11 +449,11 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
                       duration_seconds: si.duration_seconds,
                       fit_mode: si.fit_mode,
                       audio_enabled: si.audio_enabled,
+                      loop_enabled: si.loop_enabled ?? false,
                       media: si.media
                         ? {
                             id: si.media.id,
                             name: si.media.name,
-                            original_filename: (si.media as any).original_filename ?? si.media.name,
                             type: si.media.type,
                             status: si.media.status,
                             source_bucket: si.media.source_bucket,
@@ -446,8 +493,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Schedule')) throw AppError.forbidden('Forbidden');
 
-        const schedule = await scheduleRepo.findById((request.params as any).id);
-        if (!schedule) throw AppError.notFound('Schedule not found');
+        const schedule = await assertScheduleAccess(payload, (request.params as any).id);
 
         const data = scheduleItemSchema.parse(request.body);
         const pres = await presentationRepo.findById(data.presentation_id);
@@ -531,8 +577,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('update', 'Schedule')) throw AppError.forbidden('Forbidden');
 
-        const schedule = await scheduleRepo.findById((request.params as any).id);
-        if (!schedule) throw AppError.notFound('Schedule not found');
+        const schedule = await assertScheduleAccess(payload, (request.params as any).id);
 
         const [item] = await db
           .select()
@@ -576,6 +621,8 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         }
 
         const data = updateScheduleSchema.parse(request.body);
+        const timezone =
+          Object.prototype.hasOwnProperty.call(data, 'timezone') ? validateTimeZone(data.timezone ?? null) : undefined;
 
         let startAt: Date | undefined;
         let endAt: Date | undefined;
@@ -592,20 +639,29 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           if (startAt && endAt && startAt >= endAt) throw AppError.badRequest('start_at must be before end_at');
         }
 
+        const existingSchedule = await assertScheduleAccess(payload, (request.params as any).id);
+        await reservationService.assertScheduleMutable(existingSchedule.id, db);
+
+        const nextStartAt = startAt ?? existingSchedule.start_at;
+        const nextEndAt = endAt ?? existingSchedule.end_at;
+        const existingItems = await scheduleItemRepo.listBySchedule(existingSchedule.id);
+        const outOfBoundsItem = existingItems.find((item: any) => item.start_at < nextStartAt || item.end_at > nextEndAt);
+        if (outOfBoundsItem) {
+          throw AppError.badRequest('Updated schedule window would exclude one or more existing schedule items');
+        }
+
         const schedule = await scheduleRepo.update((request.params as any).id, {
           ...data,
+          timezone,
           start_at: startAt,
           end_at: endAt,
         });
-
-        if (!schedule) {
-          throw AppError.notFound('Schedule not found');
-        }
 
         return reply.send({
           id: schedule.id,
           name: schedule.name,
           description: schedule.description,
+          timezone: schedule.timezone ?? null,
           start_at: schedule.start_at?.toISOString(),
           end_at: schedule.end_at?.toISOString(),
           is_active: schedule.is_active,
@@ -643,6 +699,9 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         if (!ability.can('update', 'Schedule')) {
           throw AppError.forbidden('Forbidden');
         }
+        if (!isAdminLike(payload.role)) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         const data = publishScheduleSchema.parse(request.body);
         const uniqueScreens = Array.from(new Set(data.screen_ids || []));
@@ -677,8 +736,21 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           if (req.schedule_id && req.schedule_id !== (request.params as any).id) {
             throw AppError.badRequest('Schedule request does not match this schedule');
           }
-          if (req.status !== 'APPROVED') {
-            throw AppError.badRequest('Schedule request must be APPROVED before publish');
+          const validation = await reservationService.validateApprovedRequestForPublish(req.id, db);
+          if (validation.alreadyPublished && validation.publishId) {
+            const [existingPublish] = await db
+              .select()
+              .from(schema.publishes)
+              .where(eq(schema.publishes.id, validation.publishId));
+            if (!existingPublish) {
+              throw AppError.conflict('The request is marked as published but the publish record could not be found.');
+            }
+            return reply.send({
+              message: 'Schedule was already published successfully',
+              schedule_id: (request.params as any).id,
+              publish_id: existingPublish.id,
+              snapshot_id: existingPublish.snapshot_id,
+            });
           }
           scheduleRequest = req;
         }
@@ -692,14 +764,39 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
           db,
           scheduleRepo,
           scheduleItemRepo,
+          onPublished: async ({ tx, publish }) => {
+            if (scheduleRequest) {
+              await reservationService.finalizeRequestPublish(
+                {
+                  scheduleRequestId: scheduleRequest.id,
+                  publishId: publish.id,
+                },
+                tx
+              );
+              return;
+            }
+
+            await reservationService.acquireDirectPublishedReservations(
+              {
+                scheduleId: (request.params as any).id,
+                ownerUserId: payload.sub,
+                publishId: publish.id,
+                explicitScreenIds: uniqueScreens,
+                explicitScreenGroupIds: uniqueGroups,
+              },
+              tx
+            );
+          },
         });
 
-        if (scheduleRequest) {
-          await db
-            .update(schema.scheduleRequests)
-            .set({ updated_at: new Date() })
-            .where(eq(schema.scheduleRequests.id, scheduleRequest.id));
-        }
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'PUBLISH',
+          screenIds: publishResult.resolvedScreenIds,
+          groupIds: uniqueGroups,
+          createdBy: payload.sub,
+          publishId: publishResult.publish.id,
+          snapshotId: publishResult.snapshot.id,
+        });
 
         return reply.send({
           message: 'Schedule published successfully',
@@ -717,6 +814,71 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
   );
 
   // Poll single publish
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    apiEndpoints.schedules.takeDownPublish,
+    {
+      schema: {
+        description: 'Take down a publish record and remove it from targeted screens',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        if (!isAdminLike(payload.role)) {
+          throw AppError.forbidden('Forbidden');
+        }
+
+        const [publish] = await db
+          .select()
+          .from(schema.publishes)
+          .where(eq(schema.publishes.id, (request.params as any).id));
+        if (!publish) {
+          throw AppError.notFound('Publish not found');
+        }
+
+        await assertScheduleAccess(payload, publish.schedule_id);
+        const body = takeDownPublishSchema.parse(request.body ?? {});
+        const takedownResult = await db.transaction(async (tx) =>
+          reservationService.takeDownPublish(
+            {
+              publishId: publish.id,
+              takenDownBy: payload.sub,
+              takedownReason: body.reason ?? null,
+            },
+            tx
+          )
+        );
+
+        if (takedownResult.screenIds.length > 0) {
+          await dispatchPlaybackRefresh(fastify, {
+            reason: 'TAKE_DOWN',
+            screenIds: takedownResult.screenIds,
+            createdBy: payload.sub,
+            publishId: publish.id,
+          });
+        }
+
+        const responsePublish = takedownResult.publish ?? publish;
+        return reply.send({
+          ...responsePublish,
+          published_at: responsePublish.published_at.toISOString?.() ?? responsePublish.published_at,
+          taken_down_at: responsePublish.taken_down_at?.toISOString?.() ?? responsePublish.taken_down_at ?? null,
+          resolved_screen_ids: takedownResult.screenIds,
+          message: takedownResult.alreadyTakenDown
+            ? 'Publish was already taken down'
+            : 'Publish removed from targeted screens.',
+        });
+      } catch (error) {
+        logger.error(error, 'Take down publish error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
   fastify.get<{ Params: { id: string } }>(
     apiEndpoints.schedules.publishStatus,
     {
@@ -730,13 +892,14 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
 
         const [publish] = await db
           .select()
           .from(schema.publishes)
           .where(eq(schema.publishes.id, (request.params as any).id));
         if (!publish) throw AppError.notFound('Publish not found');
+        await assertScheduleAccess(payload, publish.schedule_id);
 
         const targets = await db
           .select()

@@ -1,4 +1,4 @@
-import { eq, desc, isNull, and } from 'drizzle-orm';
+import { eq, desc, isNull, and, or, gt } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class EmergencyRepository {
@@ -11,6 +11,8 @@ export class EmergencyRepository {
     screen_ids?: string[] | null;
     screen_group_ids?: string[] | null;
     target_all?: boolean;
+    expires_at?: Date | null;
+    audit_note?: string | null;
   }) {
     const db = getDatabase();
     const result = await db
@@ -24,6 +26,8 @@ export class EmergencyRepository {
         screen_ids: data.screen_ids ?? [],
         screen_group_ids: data.screen_group_ids ?? [],
         target_all: data.target_all ?? false,
+        expires_at: data.expires_at ?? null,
+        audit_note: data.audit_note ?? null,
         is_active: true,
       })
       .returning();
@@ -35,9 +39,30 @@ export class EmergencyRepository {
     const result = await db
       .select()
       .from(schema.emergencies)
-      .where(and(isNull(schema.emergencies.cleared_at), eq(schema.emergencies.is_active, true)))
+      .where(
+        and(
+          isNull(schema.emergencies.cleared_at),
+          eq(schema.emergencies.is_active, true),
+          or(isNull(schema.emergencies.expires_at), gt(schema.emergencies.expires_at, new Date()))
+        )
+      )
       .orderBy(desc(schema.emergencies.created_at));
     return result[0] || null;
+  }
+
+  async listActive() {
+    const db = getDatabase();
+    return db
+      .select()
+      .from(schema.emergencies)
+      .where(
+        and(
+          isNull(schema.emergencies.cleared_at),
+          eq(schema.emergencies.is_active, true),
+          or(isNull(schema.emergencies.expires_at), gt(schema.emergencies.expires_at, new Date()))
+        )
+      )
+      .orderBy(desc(schema.emergencies.created_at));
   }
 
   async list(options: {
@@ -66,14 +91,16 @@ export class EmergencyRepository {
     };
   }
 
-  async clear(id: string, cleared_by: string) {
+  async clear(id: string, cleared_by: string, clear_reason?: string | null) {
     const db = getDatabase();
     const result = await db
       .update(schema.emergencies)
       .set({
         cleared_at: new Date(),
         cleared_by,
+        clear_reason: clear_reason ?? null,
         is_active: false,
+        updated_at: new Date(),
       })
       .where(eq(schema.emergencies.id, id))
       .returning();

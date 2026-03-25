@@ -1,4 +1,4 @@
-import { eq, and, desc, or, sql } from 'drizzle-orm';
+import { eq, and, desc, or, sql, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class LayoutRepository {
@@ -7,6 +7,7 @@ export class LayoutRepository {
     description?: string;
     aspect_ratio: string;
     spec: Record<string, any>;
+    created_by?: string | null;
   }) {
     const db = getDatabase();
     const [layout] = await db.insert(schema.layouts).values(data).returning();
@@ -19,7 +20,13 @@ export class LayoutRepository {
     return layout || null;
   }
 
-  async list(options: { page?: number; limit?: number; aspect_ratio?: string; search?: string }) {
+  async list(options: {
+    page?: number;
+    limit?: number;
+    aspect_ratio?: string;
+    search?: string;
+    created_by_ids?: string[];
+  }) {
     const db = getDatabase();
     const page = options.page || 1;
     const limit = options.limit || 20;
@@ -38,6 +45,12 @@ export class LayoutRepository {
     }
     if (options.aspect_ratio) {
       conditions.push(eq(schema.layouts.aspect_ratio, options.aspect_ratio));
+    }
+    if (options.created_by_ids) {
+      if (options.created_by_ids.length === 0) {
+        return { items: [], total: 0, page, limit };
+      }
+      conditions.push(inArray(schema.layouts.created_by, options.created_by_ids as any));
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;

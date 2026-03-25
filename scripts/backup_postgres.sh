@@ -9,8 +9,13 @@ BACKUP_DIR="${1:-.}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/hexmon_postgres_$TIMESTAMP.sql.gz"
 
-# Get database URL from environment or use default
-DB_URL="${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/hexmon}"
+# Get database URL from environment
+DB_URL="${DATABASE_URL:-}"
+
+if [ -z "$DB_URL" ]; then
+    echo "Error: DATABASE_URL environment variable is required"
+    exit 1
+fi
 
 echo "Starting PostgreSQL backup..."
 echo "Backup file: $BACKUP_FILE"
@@ -39,4 +44,3 @@ PGPASSWORD="$DB_PASSWORD" pg_dump \
 
 echo "Backup completed successfully: $BACKUP_FILE"
 echo "Backup size: $(du -h "$BACKUP_FILE" | cut -f1)"
-

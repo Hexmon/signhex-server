@@ -8,6 +8,7 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { isAdminLike } from '@/rbac/policy';
 
 const logger = createLogger('department-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -83,7 +84,11 @@ export async function departmentRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Department') || !isAdminLike(payload.role)) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         const query = listDepartmentsQuerySchema.parse(request.query);
         const result = await deptRepo.list({
@@ -129,7 +134,11 @@ export async function departmentRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Department') || !isAdminLike(payload.role)) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         const department = await deptRepo.findById((request.params as any).id);
         if (!department) {

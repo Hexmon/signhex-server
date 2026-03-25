@@ -26,14 +26,14 @@ This flow is derived from code (routes + utils) and the existing player guides. 
 ### 1.2 Admin confirms pairing (CMS)
 - `POST /api/v1/device-pairing/confirm` with JWT
 - Body: `{ pairing_code, name, location? }`
-- Side effects: creates `screens` row (screen id == device_id). Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.post(apiEndpoints.devicePairing.confirm)
+- Side effects: marks the pairing as confirmed and stores screen metadata for the upcoming completion step. It does **not** create the `screens` row yet. Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-pairing.ts fastify.post(apiEndpoints.devicePairing.confirm)
 
 ### 1.3 Device completes pairing and stores identity
 - `POST /api/v1/device-pairing/complete` (public)
 - Body: `{ pairing_code, csr }`
 - Server reads `CA_CERT_PATH` and issues a PEM certificate by HMAC (not real CA signing).
 - Response: `{ device_id, certificate, fingerprint, expires_at }`
-- Side effects: inserts `device_certificates` row; marks pairing used.
+- Side effects: inserts `device_certificates` row; creates the `screens` row if it does not already exist; marks pairing used.
 - Device should store:
   - `device_id`
   - Private key + CSR material (generated on device)
@@ -111,6 +111,7 @@ This flow is derived from code (routes + utils) and the existing player guides. 
 - `POST /api/v1/device/screenshot`
 - Payload: `{ device_id, timestamp, image_data }` (base64)
 - Side effects: uploads PNG to MinIO `device-screenshots`.
+- This route intentionally uses a higher request body limit than ordinary telemetry because full-size PNG screenshots exceed the default Fastify 1 MiB parser limit. Current route limit: 4 MiB.
 - Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts fastify.post(apiEndpoints.deviceTelemetry.screenshot)
 
 ## 7) Default media fallback

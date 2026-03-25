@@ -4,6 +4,7 @@ import { config as appConfig } from '../src/config/index.js';
 import { initializeDatabase, getDatabase, schema } from '../src/db/index.js';
 import { hashPassword } from '../src/auth/password.js';
 import { createLogger } from '../src/utils/logger.js';
+import { SYSTEM_ROLE_DEFAULTS, SYSTEM_ROLE_NAMES } from '../src/rbac/system-roles.js';
 
 const logger = createLogger('seed');
 
@@ -15,24 +16,35 @@ async function seed() {
 
     // Create system roles
     logger.info('Creating system roles...');
-    const systemRoles = ['SUPER_ADMIN', 'ADMIN', 'OPERATOR', 'DEPARTMENT'] as const;
+    const systemRoles = SYSTEM_ROLE_NAMES;
     const roleIdByName = new Map<string, string>();
 
     for (const name of systemRoles) {
       const [existingRole] = await db.select().from(schema.roles).where(eq(schema.roles.name, name));
-      const role =
-        existingRole ??
-        (
-          await db
-            .insert(schema.roles)
-            .values({
-              name,
-              description: `${name} role`,
-              is_system: true,
-              permissions: { grants: [] },
-            })
-            .returning()
-        )[0];
+      const role = existingRole
+        ? (
+            await db
+              .update(schema.roles)
+              .set({
+                description: `${name} role`,
+                is_system: true,
+                permissions: SYSTEM_ROLE_DEFAULTS[name],
+                updated_at: new Date(),
+              })
+              .where(eq(schema.roles.id, existingRole.id))
+              .returning()
+          )[0]
+        : (
+            await db
+              .insert(schema.roles)
+              .values({
+                name,
+                description: `${name} role`,
+                is_system: true,
+                permissions: SYSTEM_ROLE_DEFAULTS[name],
+              })
+              .returning()
+          )[0];
       roleIdByName.set(name, role.id);
     }
 

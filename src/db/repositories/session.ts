@@ -40,6 +40,16 @@ export class SessionRepository {
     await db.delete(schema.sessions).where(eq(schema.sessions.user_id, userId));
   }
 
+  async extendByJti(jti: string, expiresAt: Date) {
+    const db = getDatabase();
+    const [session] = await db
+      .update(schema.sessions)
+      .set({ expires_at: expiresAt })
+      .where(eq(schema.sessions.access_jti, jti))
+      .returning();
+    return session || null;
+  }
+
   async cleanupExpired() {
     const db = getDatabase();
     await db
@@ -51,4 +61,3 @@ export class SessionRepository {
 export function createSessionRepository(): SessionRepository {
   return new SessionRepository();
 }
-

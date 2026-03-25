@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import { randomUUID } from 'crypto';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
@@ -7,6 +7,7 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import fastifyCookie from '@fastify/cookie';
 import { config as appConfig } from '@/config';
+import { apiEndpoints } from '@/config/apiEndpoints';
 import { authRoutes } from '@/routes/auth';
 import { userRoutes } from '@/routes/users';
 import { mediaRoutes } from '@/routes/media';
@@ -33,12 +34,31 @@ import { userActivateRoutes } from '@/routes/users-activate';
 import { layoutRoutes } from '@/routes/layouts';
 import { screenGroupRoutes } from '@/routes/screen-groups';
 import { scheduleRequestRoutes } from '@/routes/schedule-requests';
+import { scheduleReservationRoutes } from '@/routes/schedule-reservations';
 import { roleRoutes } from '@/routes/roles';
 import { permissionRoutes } from '@/routes/permissions';
+import { chatRoutes } from '@/routes/chat';
 import csrfProtectionPlugin from '@/middleware/csrf';
 import { formatErrorResponse } from '@/utils/app-error';
 import { toAppError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { syncSystemRolePermissions } from '@/rbac/system-roles';
+import { createSessionRepository } from '@/db/repositories/session';
+import { extractTokenFromHeader, refreshAccessToken, verifyAccessToken } from '@/auth/jwt';
+import { getIdleTimeoutSeconds, getRuntimeLogLevelSetting, preloadSettingsCache } from '@/utils/settings';
+import { setRuntimeLogLevel } from '@/utils/logger';
+
+const REFRESHED_AUTH_KEY = Symbol.for('signhex.refreshedAuth');
+const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+
+type RefreshedAuthState = {
+  token: string;
+  expiresAt: Date;
+};
+
+type RequestWithRefresh = FastifyRequest & {
+  [REFRESHED_AUTH_KEY]?: RefreshedAuthState;
+};
 
 type BodySummary = {
   type: string;
@@ -88,9 +108,13 @@ function sanitizeErrorMessage(message?: string) {
 }
 
 export async function createServer() {
+  await syncSystemRolePermissions();
+  await preloadSettingsCache();
+  setRuntimeLogLevel(getRuntimeLogLevelSetting());
+
   const fastify = Fastify({
     logger: {
-      level: appConfig.LOG_LEVEL,
+      level: getRuntimeLogLevelSetting(),
       transport: {
         target: 'pino-pretty',
         options: {
@@ -111,8 +135,61 @@ export async function createServer() {
     done();
   });
 
+  fastify.addHook('onRequest', async (request) => {
+    const token = extractTokenFromHeader(request.headers.authorization);
+    if (!token) return;
+
+    const payload = await verifyAccessToken(token);
+    const sessionRepo = createSessionRepository();
+    const session = await sessionRepo.findByJti(payload.jti);
+    if (!session || session.user_id !== payload.sub || session.expires_at.getTime() <= Date.now()) {
+      throw AppError.unauthorized('Token has been revoked');
+    }
+
+    const expiresInSeconds = getIdleTimeoutSeconds();
+    const refreshed = await refreshAccessToken(payload, expiresInSeconds);
+    await sessionRepo.extendByJti(payload.jti, refreshed.expiresAt);
+    (request as unknown as RequestWithRefresh)[REFRESHED_AUTH_KEY] = {
+      token: refreshed.token,
+      expiresAt: refreshed.expiresAt,
+    };
+  });
+
+  fastify.addHook('onSend', async (request, reply, payload) => {
+    const refreshed = (request as unknown as RequestWithRefresh)[REFRESHED_AUTH_KEY];
+    if (!refreshed) return payload;
+
+    const secure = appConfig.NODE_ENV !== 'development';
+    const maxAge = Math.max(Math.floor((refreshed.expiresAt.getTime() - Date.now()) / 1000), 0);
+    const accessCookie = [
+      `access_token=${refreshed.token}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      `Max-Age=${maxAge}`,
+      secure ? 'Secure' : '',
+    ]
+      .filter(Boolean)
+      .join('; ');
+
+    reply.header('x-access-token', refreshed.token);
+    reply.header('x-access-token-expires-at', refreshed.expiresAt.toISOString());
+    reply.header('Set-Cookie', accessCookie);
+
+    return payload;
+  });
+
   fastify.setErrorHandler((error, request, reply) => {
-    const appError = toAppError(error);
+    const isBodyTooLarge = typeof error === 'object' && error !== null && (error as any).code === 'FST_ERR_CTP_BODY_TOO_LARGE';
+    const requestPath = request.url.split('?')[0];
+    const appError = isBodyTooLarge
+      ? requestPath === apiEndpoints.deviceTelemetry.screenshot
+        ? AppError.badRequest('Screenshot payload too large for device upload.', {
+            route: apiEndpoints.deviceTelemetry.screenshot,
+            limit_bytes: DEVICE_SCREENSHOT_BODY_LIMIT_BYTES,
+          })
+        : AppError.badRequest('Request payload too large.')
+      : toAppError(error);
     const statusCode = appError.statusCode;
     const logPayload: Record<string, unknown> = {
       err: error,
@@ -247,6 +324,7 @@ export async function createServer() {
   await fastify.register(ssoConfigRoutes);
   await fastify.register(settingsRoutes);
   await fastify.register(conversationRoutes);
+  await fastify.register(chatRoutes);
   await fastify.register(proofOfPlayRoutes);
   await fastify.register(metricsRoutes);
   await fastify.register(reportsRoutes);
@@ -255,6 +333,7 @@ export async function createServer() {
   await fastify.register(layoutRoutes);
   await fastify.register(screenGroupRoutes);
   await fastify.register(scheduleRequestRoutes);
+  await fastify.register(scheduleReservationRoutes);
   await fastify.register(roleRoutes);
   await fastify.register(permissionRoutes);
 

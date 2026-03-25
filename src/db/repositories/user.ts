@@ -2,6 +2,19 @@ import { eq, and, sql, desc, or, getTableColumns } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class UserRepository {
+  private async countRows(
+    tableSql: string,
+    columnSql: string,
+    value: string
+  ): Promise<number> {
+    const db = getDatabase();
+    const result = await db.execute(
+      sql`SELECT count(*)::int AS count FROM ${sql.raw(tableSql)} WHERE ${sql.raw(columnSql)} = ${value}`
+    );
+
+    return Number((result as { rows?: Array<{ count?: number | string }> }).rows?.[0]?.count ?? 0);
+  }
+
   async create(data: {
     email: string;
     password_hash: string;
@@ -133,6 +146,7 @@ export class UserRepository {
   async list(options: {
     page?: number;
     limit?: number;
+    role?: string;
     role_id?: string;
     department_id?: string;
     is_active?: boolean;
@@ -142,9 +156,10 @@ export class UserRepository {
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    let query = db.select().from(schema.users);
-
     const conditions = [];
+    if (options.role?.trim()) {
+      conditions.push(sql`LOWER(${schema.roles.name}) = ${options.role.trim().toLowerCase()}`);
+    }
     if (options.role_id) {
       conditions.push(eq(schema.users.role_id, options.role_id as any));
     }
@@ -155,20 +170,29 @@ export class UserRepository {
       conditions.push(eq(schema.users.is_active, options.is_active));
     }
 
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
-    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const total = await db
-      .select()
+    const items = await db
+      .select({
+        ...getTableColumns(schema.users),
+        role: schema.roles.name,
+      })
       .from(schema.users)
-      .where(conditions.length > 0 ? and(...conditions) : undefined);
+      .leftJoin(schema.roles, eq(schema.users.role_id, schema.roles.id))
+      .where(whereClause)
+      .orderBy(desc(schema.users.created_at))
+      .limit(limit)
+      .offset(offset);
 
-    const items = await query.limit(limit).offset(offset);
+    const totalRows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.users)
+      .leftJoin(schema.roles, eq(schema.users.role_id, schema.roles.id))
+      .where(whereClause);
 
     return {
       items,
-      total: total.length,
+      total: totalRows.length > 0 ? Number((totalRows[0] as any).count) : 0,
       page,
       limit,
     };
@@ -187,6 +211,75 @@ export class UserRepository {
   async delete(id: string) {
     const db = getDatabase();
     await db.delete(schema.users).where(eq(schema.users.id, id));
+  }
+
+  async getDeleteUsageSummary(id: string) {
+    const db = getDatabase();
+    const referencesResult = await db.execute(sql.raw(`
+      SELECT DISTINCT
+        nsp.nspname AS schema_name,
+        rel.relname AS table_name,
+        att.attname AS column_name
+      FROM pg_constraint con
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+      JOIN unnest(con.conkey) AS cols(attnum) ON TRUE
+      JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = cols.attnum
+      WHERE con.contype = 'f'
+        AND con.confrelid = 'users'::regclass
+        AND con.confdeltype <> 'c'
+        AND nsp.nspname = current_schema()
+    `));
+
+    const labels: Record<string, string> = {
+      chat_bookmarks: 'chat bookmarks',
+      chat_conversations: 'chat conversations',
+      chat_members: 'chat memberships',
+      chat_message_revisions: 'chat message revisions',
+      chat_messages: 'chat messages',
+      chat_moderation: 'chat moderation records',
+      chat_pins: 'chat pins',
+      chat_reactions: 'chat reactions',
+      chat_receipts: 'chat read receipts',
+    };
+
+    const references = (referencesResult as {
+      rows?: Array<{ schema_name?: string; table_name?: string; column_name?: string }>;
+    }).rows ?? [];
+
+    const resolved = await Promise.all(
+      references.map(async (reference) => {
+        if (!reference.schema_name || !reference.table_name || !reference.column_name) {
+          return null;
+        }
+
+        const count = await this.countRows(
+          `"${reference.schema_name.replace(/"/g, '""')}"."${reference.table_name.replace(/"/g, '""')}"`,
+          `"${reference.column_name.replace(/"/g, '""')}"`,
+          id
+        );
+
+        if (count <= 0) {
+          return null;
+        }
+
+        return {
+          key: reference.table_name,
+          label: labels[reference.table_name] ?? reference.table_name.replace(/_/g, ' '),
+          count,
+        };
+      })
+    );
+
+    const matchedReferences = resolved.filter(
+      (reference): reference is { key: string; label: string; count: number } => reference !== null
+    );
+
+    return {
+      inUse: matchedReferences.length > 0,
+      primaryReason: matchedReferences[0]?.key ?? null,
+      references: matchedReferences,
+    };
   }
 }
 

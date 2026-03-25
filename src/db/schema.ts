@@ -7,10 +7,12 @@ import {
   timestamp,
   boolean,
   integer,
+  bigint,
   jsonb,
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 // Enums
 export const requestStatusEnum = pgEnum('request_status', [
@@ -21,12 +23,39 @@ export const requestStatusEnum = pgEnum('request_status', [
   'REJECTED',
   'COMPLETED',
 ]);
-export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', ['PENDING', 'APPROVED', 'REJECTED']);
+export const scheduleRequestStatusEnum = pgEnum('schedule_request_status', [
+  'PENDING',
+  'APPROVED',
+  'REJECTED',
+  'CANCELLED',
+  'PUBLISHED',
+  'TAKEN_DOWN',
+  'EXPIRED',
+]);
+export const scheduleReservationStateEnum = pgEnum('schedule_reservation_state', [
+  'HELD',
+  'RESERVED',
+  'PUBLISHED',
+  'RELEASED',
+  'EXPIRED',
+  'CANCELLED',
+]);
+export const publishStatusEnum = pgEnum('publish_status', ['ACTIVE', 'TAKEN_DOWN']);
 export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
 export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
 export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN', 'TAKE_SCREENSHOT', 'SET_SCREENSHOT_INTERVAL']);
 export const commandStatusEnum = pgEnum('command_status', ['PENDING', 'SENT', 'ACKNOWLEDGED', 'COMPLETED', 'FAILED']);
+export const chatConversationTypeEnum = pgEnum('chat_conversation_type', ['DM', 'GROUP_CLOSED', 'FORUM_OPEN']);
+export const chatConversationStateEnum = pgEnum('chat_conversation_state', ['ACTIVE', 'ARCHIVED', 'DELETED']);
+export const chatInvitePolicyEnum = pgEnum('chat_invite_policy', [
+  'ANY_MEMBER_CAN_INVITE',
+  'ADMINS_ONLY_CAN_INVITE',
+  'INVITES_DISABLED',
+]);
+export const chatMemberRoleEnum = pgEnum('chat_member_role', ['OWNER', 'CHAT_ADMIN', 'MOD', 'MEMBER']);
+export const chatRevisionActionEnum = pgEnum('chat_revision_action', ['EDIT', 'DELETE']);
+export const chatBookmarkTypeEnum = pgEnum('chat_bookmark_type', ['LINK', 'FILE', 'MESSAGE']);
 
 // Users table
 export const roles = pgTable(
@@ -114,8 +143,6 @@ export const media = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
-    original_filename: varchar('original_filename', { length: 512 }).notNull(),
-    sanitized_hint: varchar('sanitized_hint', { length: 80 }),
     type: mediaTypeEnum('type').notNull(),
     status: mediaStatusEnum('status').notNull().default('PENDING'),
     source_object_id: uuid('source_object_id'),
@@ -184,6 +211,7 @@ export const presentationSlotItems = pgTable(
     duration_seconds: integer('duration_seconds'),
     fit_mode: varchar('fit_mode', { length: 50 }),
     audio_enabled: boolean('audio_enabled').default(false),
+    loop_enabled: boolean('loop_enabled').default(false),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => ({
@@ -198,8 +226,10 @@ export const schedules = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
     description: text('description'),
+    timezone: varchar('timezone', { length: 100 }),
     start_at: timestamp('start_at').notNull(),
     end_at: timestamp('end_at').notNull(),
+    revision: integer('revision').notNull().default(1),
     is_active: boolean('is_active').notNull().default(true),
     created_by: uuid('created_by').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
@@ -257,10 +287,15 @@ export const publishes = pgTable(
     schedule_id: uuid('schedule_id').notNull(),
     snapshot_id: uuid('snapshot_id').notNull(),
     published_by: uuid('published_by').notNull(),
+    status: publishStatusEnum('status').notNull().default('ACTIVE'),
+    taken_down_at: timestamp('taken_down_at'),
+    taken_down_by: uuid('taken_down_by'),
+    takedown_reason: text('takedown_reason'),
     published_at: timestamp('published_at').notNull().defaultNow(),
   },
   (table) => ({
     scheduleIdIdx: index('publishes_schedule_id_idx').on(table.schedule_id),
+    statusIdx: index('publishes_status_idx').on(table.status),
   })
 );
 
@@ -313,11 +348,13 @@ export const layouts = pgTable(
     description: text('description'),
     aspect_ratio: varchar('aspect_ratio', { length: 50 }).notNull(),
     spec: jsonb('spec').notNull(), // normalized slots: [{id,x,y,w,h,z,fit,audio_enabled}]
+    created_by: uuid('created_by'),
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => ({
     aspectIdx: index('layouts_aspect_ratio_idx').on(table.aspect_ratio),
+    creatorIdx: index('layouts_created_by_idx').on(table.created_by),
   })
 );
 
@@ -331,6 +368,14 @@ export const scheduleRequests = pgTable(
     status: scheduleRequestStatusEnum('status').notNull().default('PENDING'),
     review_notes: text('review_notes'),
     notes: text('notes'),
+    reservation_token: uuid('reservation_token'),
+    reservation_version: integer('reservation_version'),
+    reservation_state: varchar('reservation_state', { length: 50 }),
+    hold_expires_at: timestamp('hold_expires_at'),
+    published_at: timestamp('published_at'),
+    taken_down_at: timestamp('taken_down_at'),
+    taken_down_by: uuid('taken_down_by'),
+    takedown_reason: text('takedown_reason'),
     requested_by: uuid('requested_by').notNull(),
     reviewed_by: uuid('reviewed_by'),
     reviewed_at: timestamp('reviewed_at'),
@@ -341,6 +386,39 @@ export const scheduleRequests = pgTable(
     statusIdx: index('schedule_requests_status_idx').on(table.status),
     scheduleIdx: index('schedule_requests_schedule_id_idx').on(table.schedule_id),
     requesterIdx: index('schedule_requests_requested_by_idx').on(table.requested_by),
+    reservationStateIdx: index('schedule_requests_reservation_state_idx').on(table.reservation_state),
+  })
+);
+
+export const scheduleReservations = pgTable(
+  'schedule_reservations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    screen_id: uuid('screen_id').notNull(),
+    schedule_id: uuid('schedule_id').notNull(),
+    schedule_item_id: uuid('schedule_item_id').notNull(),
+    schedule_request_id: uuid('schedule_request_id'),
+    owner_user_id: uuid('owner_user_id').notNull(),
+    state: scheduleReservationStateEnum('state').notNull(),
+    start_at: timestamp('start_at').notNull(),
+    end_at: timestamp('end_at').notNull(),
+    hold_expires_at: timestamp('hold_expires_at'),
+    reservation_token: uuid('reservation_token').notNull(),
+    reservation_version: integer('reservation_version').notNull().default(1),
+    publish_id: uuid('publish_id'),
+    approved_at: timestamp('approved_at'),
+    published_at: timestamp('published_at'),
+    released_at: timestamp('released_at'),
+    release_reason: text('release_reason'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    screenWindowIdx: index('schedule_reservations_screen_window_idx').on(table.screen_id, table.start_at, table.end_at),
+    requestIdx: index('schedule_reservations_request_idx').on(table.schedule_request_id),
+    scheduleIdx: index('schedule_reservations_schedule_idx').on(table.schedule_id),
+    publishIdx: index('schedule_reservations_publish_idx').on(table.publish_id),
+    stateExpiryIdx: index('schedule_reservations_state_expiry_idx').on(table.state, table.hold_expires_at),
   })
 );
 
@@ -367,12 +445,14 @@ export const deviceCertificates = pgTable(
     serial: varchar('serial', { length: 255 }).notNull().unique(),
     certificate_pem: text('certificate_pem').notNull(),
     is_revoked: boolean('is_revoked').notNull().default(false),
+    expires_at: timestamp('expires_at').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
     revoked_at: timestamp('revoked_at'),
   },
   (table) => ({
     screenIdIdx: index('device_certificates_screen_id_idx').on(table.screen_id),
     serialIdx: uniqueIndex('device_certificates_serial_idx').on(table.serial),
+    expiresAtIdx: index('device_certificates_expires_at_idx').on(table.expires_at),
   })
 );
 
@@ -518,6 +598,8 @@ export const notifications = pgTable(
     user_id: uuid('user_id').notNull(),
     title: varchar('title', { length: 255 }).notNull(),
     message: text('message'),
+    type: varchar('type', { length: 32 }).notNull().default('INFO'),
+    data: jsonb('data'),
     is_read: boolean('is_read').notNull().default(false),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
@@ -525,7 +607,20 @@ export const notifications = pgTable(
     userIdIdx: index('notifications_user_id_idx').on(table.user_id),
     isReadIdx: index('notifications_is_read_idx').on(table.is_read),
     createdAtIdx: index('notifications_created_at_idx').on(table.created_at),
+    userUnreadIdx: index('notifications_user_unread_idx')
+      .on(table.user_id)
+      .where(sql`${table.is_read} = false`),
   })
+);
+
+export const userNotificationCounters = pgTable(
+  'user_notification_counters',
+  {
+    user_id: uuid('user_id').primaryKey().notNull(),
+    unread_total: integer('unread_total').notNull().default(0),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  () => ({})
 );
 
 // Audit logs
@@ -636,6 +731,35 @@ export const settings = pgTable('settings', {
   created_at: timestamp('created_at').notNull().defaultNow(),
   updated_at: timestamp('updated_at').notNull().defaultNow(),
 });
+
+export const backupRuns = pgTable(
+  'backup_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    trigger_type: varchar('trigger_type', { length: 20 }).notNull(),
+    status: varchar('status', { length: 20 }).notNull().default('PENDING'),
+    triggered_by: uuid('triggered_by'),
+    started_at: timestamp('started_at'),
+    completed_at: timestamp('completed_at'),
+    error_message: text('error_message'),
+    files: jsonb('files').$type<
+      Array<{
+        bucket: string;
+        object_key: string;
+        name: string;
+        size: number;
+        content_type: string;
+        storage_object_id: string;
+      }>
+    >(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    statusIdx: index('backup_runs_status_idx').on(table.status),
+    createdAtIdx: index('backup_runs_created_at_idx').on(table.created_at),
+  })
+);
 
 // API Keys
 export const apiKeys = pgTable(
@@ -756,6 +880,210 @@ export const conversationReads = pgTable(
   })
 );
 
+export const chatConversations = pgTable(
+  'chat_conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: chatConversationTypeEnum('type').notNull(),
+    dm_pair_key: varchar('dm_pair_key', { length: 255 }),
+    title: varchar('title', { length: 255 }),
+    topic: text('topic'),
+    purpose: text('purpose'),
+    created_by: uuid('created_by').notNull(),
+    state: chatConversationStateEnum('state').notNull().default('ACTIVE'),
+    invite_policy: chatInvitePolicyEnum('invite_policy').notNull().default('ANY_MEMBER_CAN_INVITE'),
+    last_seq: bigint('last_seq', { mode: 'number' }).notNull().default(0),
+    metadata: jsonb('metadata').notNull().default({}),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    archived_at: timestamp('archived_at'),
+    deleted_at: timestamp('deleted_at'),
+  },
+  (table) => ({
+    // Keep DM pair uniqueness for non-deleted rows; DELETED tombstones may coexist for audit/history.
+    dmPairIdx: uniqueIndex('chat_conversations_dm_pair_key_active_idx')
+      .on(table.dm_pair_key)
+      .where(sql`"type" = 'DM' AND "state" <> 'DELETED'`),
+    stateTypeIdx: index('chat_conversations_state_type_idx').on(table.state, table.type),
+    updatedAtIdx: index('chat_conversations_updated_at_idx').on(table.updated_at),
+  })
+);
+
+export const chatMembers = pgTable(
+  'chat_members',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    role: chatMemberRoleEnum('role').notNull().default('MEMBER'),
+    is_system: boolean('is_system').notNull().default(false),
+    joined_at: timestamp('joined_at').notNull().defaultNow(),
+    left_at: timestamp('left_at'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationUserIdx: uniqueIndex('chat_members_conversation_user_idx').on(table.conversation_id, table.user_id),
+    userIdx: index('chat_members_user_idx').on(table.user_id),
+    conversationIdx: index('chat_members_conversation_idx').on(table.conversation_id),
+  })
+);
+
+export const chatMessages = pgTable(
+  'chat_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    sender_id: uuid('sender_id').notNull(),
+    body_text: text('body_text'),
+    body_rich: jsonb('body_rich'),
+    also_to_channel: boolean('also_to_channel').notNull().default(false),
+    reply_to_message_id: uuid('reply_to_message_id'),
+    thread_root_id: uuid('thread_root_id'),
+    thread_reply_count: integer('thread_reply_count').notNull().default(0),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+    edited_at: timestamp('edited_at'),
+    deleted_at: timestamp('deleted_at'),
+  },
+  (table) => ({
+    conversationSeqUniqueIdx: uniqueIndex('chat_messages_conversation_seq_idx').on(table.conversation_id, table.seq),
+    conversationIdx: index('chat_messages_conversation_idx').on(table.conversation_id),
+    replyToIdx: index('chat_messages_reply_to_idx').on(table.reply_to_message_id),
+    threadRootIdx: index('chat_messages_thread_root_idx').on(table.thread_root_id),
+  })
+);
+
+export const chatPins = pgTable(
+  'chat_pins',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    message_id: uuid('message_id').notNull(),
+    pinned_by: uuid('pinned_by').notNull(),
+    pinned_at: timestamp('pinned_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationMessageIdx: uniqueIndex('chat_pins_conversation_message_idx').on(
+      table.conversation_id,
+      table.message_id
+    ),
+    conversationIdx: index('chat_pins_conversation_idx').on(table.conversation_id),
+    messageIdx: index('chat_pins_message_idx').on(table.message_id),
+  })
+);
+
+export const chatAttachments = pgTable(
+  'chat_attachments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    message_id: uuid('message_id').notNull(),
+    media_asset_id: uuid('media_asset_id').notNull(),
+    kind: varchar('kind', { length: 50 }),
+    ord: integer('ord').notNull().default(0),
+    metadata: jsonb('metadata'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    messageMediaIdx: uniqueIndex('chat_attachments_message_media_idx').on(table.message_id, table.media_asset_id),
+    mediaIdx: index('chat_attachments_media_idx').on(table.media_asset_id),
+    messageIdx: index('chat_attachments_message_idx').on(table.message_id),
+  })
+);
+
+export const chatBookmarks = pgTable(
+  'chat_bookmarks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    type: chatBookmarkTypeEnum('type').notNull(),
+    label: varchar('label', { length: 255 }).notNull(),
+    emoji: varchar('emoji', { length: 32 }),
+    url: text('url'),
+    media_asset_id: uuid('media_asset_id'),
+    message_id: uuid('message_id'),
+    created_by: uuid('created_by').notNull(),
+    metadata: jsonb('metadata'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationIdx: index('chat_bookmarks_conversation_idx').on(table.conversation_id),
+    messageIdx: index('chat_bookmarks_message_idx').on(table.message_id),
+    mediaIdx: index('chat_bookmarks_media_idx').on(table.media_asset_id),
+    creatorIdx: index('chat_bookmarks_created_by_idx').on(table.created_by),
+  })
+);
+
+export const chatReactions = pgTable(
+  'chat_reactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    message_id: uuid('message_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    emoji: varchar('emoji', { length: 64 }).notNull(),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    messageUserEmojiIdx: uniqueIndex('chat_reactions_message_user_emoji_idx').on(
+      table.message_id,
+      table.user_id,
+      table.emoji
+    ),
+    messageIdx: index('chat_reactions_message_idx').on(table.message_id),
+  })
+);
+
+export const chatReceipts = pgTable(
+  'chat_receipts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    last_read_seq: bigint('last_read_seq', { mode: 'number' }).notNull().default(0),
+    last_delivered_seq: bigint('last_delivered_seq', { mode: 'number' }).notNull().default(0),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationUserIdx: uniqueIndex('chat_receipts_conversation_user_idx').on(table.conversation_id, table.user_id),
+    userIdx: index('chat_receipts_user_idx').on(table.user_id),
+  })
+);
+
+export const chatModeration = pgTable(
+  'chat_moderation',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversation_id: uuid('conversation_id').notNull(),
+    user_id: uuid('user_id').notNull(),
+    muted_until: timestamp('muted_until'),
+    banned_until: timestamp('banned_until'),
+    reason: text('reason'),
+    updated_at: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    conversationUserIdx: uniqueIndex('chat_moderation_conversation_user_idx').on(table.conversation_id, table.user_id),
+    userIdx: index('chat_moderation_user_idx').on(table.user_id),
+  })
+);
+
+export const chatMessageRevisions = pgTable(
+  'chat_message_revisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    message_id: uuid('message_id').notNull(),
+    editor_id: uuid('editor_id').notNull(),
+    action: chatRevisionActionEnum('action').notNull(),
+    old_body_text: text('old_body_text'),
+    old_body_rich: jsonb('old_body_rich'),
+    new_body_text: text('new_body_text'),
+    new_body_rich: jsonb('new_body_rich'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    messageIdx: index('chat_message_revisions_message_idx').on(table.message_id, table.created_at),
+    editorIdx: index('chat_message_revisions_editor_idx').on(table.editor_id, table.created_at),
+  })
+);
+
 // Publish targets for schedule publishes
 export const publishTargets = pgTable(
   'publish_targets',
@@ -803,11 +1131,14 @@ export const emergencies = pgTable('emergencies', {
   screen_ids: jsonb('screen_ids').$type<string[]>().notNull().default([] as string[]),
   screen_group_ids: jsonb('screen_group_ids').$type<string[]>().notNull().default([] as string[]),
   target_all: boolean('target_all').notNull().default(false),
+  expires_at: timestamp('expires_at'),
+  audit_note: text('audit_note'),
   is_active: boolean('is_active').notNull().default(true),
   triggered_by: uuid('triggered_by'),
   triggered_at: timestamp('triggered_at').notNull().defaultNow(),
   cleared_by: uuid('cleared_by'),
   cleared_at: timestamp('cleared_at'),
+  clear_reason: text('clear_reason'),
   created_at: timestamp('created_at').notNull().defaultNow(),
   updated_at: timestamp('updated_at').notNull().defaultNow(),
 });

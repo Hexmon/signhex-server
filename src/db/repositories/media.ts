@@ -1,12 +1,30 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
+import {
+  DEFAULT_MEDIA_SETTING_KEY,
+  DEFAULT_MEDIA_TARGETS_SETTING_KEY,
+  DEFAULT_MEDIA_VARIANTS_SETTING_KEY,
+} from '@/utils/default-media';
+
+export type MediaUsageReference =
+  | 'chat_attachments'
+  | 'chat_bookmarks'
+  | 'presentations'
+  | 'screens'
+  | 'emergencies'
+  | 'settings'
+  | 'proof_of_play';
+
+export type MediaUsageSummary = {
+  inUse: boolean;
+  references: MediaUsageReference[];
+  primaryReason: MediaUsageReference | null;
+};
 
 export class MediaRepository {
   async create(data: {
     id?: string;
     name: string;
-    original_filename: string;
-    sanitized_hint?: string;
     type: 'IMAGE' | 'VIDEO' | 'DOCUMENT';
     created_by: string;
     source_object_id?: string;
@@ -32,6 +50,7 @@ export class MediaRepository {
     limit?: number;
     type?: string;
     status?: string;
+    created_by_ids?: string[];
   }) {
     const db = getDatabase();
     const page = options.page || 1;
@@ -44,6 +63,12 @@ export class MediaRepository {
     }
     if (options.status) {
       conditions.push(eq(schema.media.status, options.status as any));
+    }
+    if (options.created_by_ids) {
+      if (options.created_by_ids.length === 0) {
+        return { items: [], total: 0, page, limit };
+      }
+      conditions.push(inArray(schema.media.created_by, options.created_by_ids as any));
     }
 
     let query = db.select().from(schema.media);
@@ -82,6 +107,97 @@ export class MediaRepository {
   async delete(id: string) {
     const db = getDatabase();
     await db.delete(schema.media).where(eq(schema.media.id, id));
+  }
+
+  async getUsageSummary(id: string): Promise<MediaUsageSummary> {
+    const db = getDatabase();
+
+    const [
+      chatAttachment,
+      chatBookmark,
+      presentationItem,
+      presentationSlotItem,
+      screen,
+      emergency,
+      emergencyType,
+      proofOfPlay,
+      defaultMediaSetting,
+      defaultMediaVariantsSetting,
+      defaultMediaTargetsSetting,
+    ] = await Promise.all([
+      db.select({ id: schema.chatAttachments.id }).from(schema.chatAttachments).where(eq(schema.chatAttachments.media_asset_id, id)).limit(1),
+      db.select({ id: schema.chatBookmarks.id }).from(schema.chatBookmarks).where(eq(schema.chatBookmarks.media_asset_id, id)).limit(1),
+      db.select({ id: schema.presentationItems.id }).from(schema.presentationItems).where(eq(schema.presentationItems.media_id, id)).limit(1),
+      db.select({ id: schema.presentationSlotItems.id }).from(schema.presentationSlotItems).where(eq(schema.presentationSlotItems.media_id, id)).limit(1),
+      db.select({ id: schema.screens.id }).from(schema.screens).where(eq(schema.screens.current_media_id, id)).limit(1),
+      db.select({ id: schema.emergencies.id }).from(schema.emergencies).where(eq(schema.emergencies.media_id, id)).limit(1),
+      db.select({ id: schema.emergencyTypes.id }).from(schema.emergencyTypes).where(eq(schema.emergencyTypes.media_id, id)).limit(1),
+      db.select({ id: schema.proofOfPlay.id }).from(schema.proofOfPlay).where(eq(schema.proofOfPlay.media_id, id)).limit(1),
+      db.select({ value: schema.settings.value }).from(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_SETTING_KEY)).limit(1),
+      db.select({ value: schema.settings.value }).from(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_VARIANTS_SETTING_KEY)).limit(1),
+      db.select({ value: schema.settings.value }).from(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_TARGETS_SETTING_KEY)).limit(1),
+    ]);
+
+    const references: MediaUsageReference[] = [];
+
+    if (chatAttachment.length > 0) {
+      references.push('chat_attachments');
+    }
+    if (chatBookmark.length > 0) {
+      references.push('chat_bookmarks');
+    }
+    if (presentationItem.length > 0 || presentationSlotItem.length > 0) {
+      references.push('presentations');
+    }
+    if (screen.length > 0) {
+      references.push('screens');
+    }
+    if (emergency.length > 0 || emergencyType.length > 0) {
+      references.push('emergencies');
+    }
+    const defaultMediaId = defaultMediaSetting[0]?.value;
+    if (
+      (typeof defaultMediaId === 'string' && defaultMediaId === id) ||
+      (defaultMediaId &&
+        typeof defaultMediaId === 'object' &&
+        'media_id' in defaultMediaId &&
+        (defaultMediaId as { media_id?: unknown }).media_id === id)
+    ) {
+      references.push('settings');
+    }
+    const variantMediaMap = defaultMediaVariantsSetting[0]?.value;
+    if (
+      variantMediaMap &&
+      typeof variantMediaMap === 'object' &&
+      !Array.isArray(variantMediaMap) &&
+      Object.values(variantMediaMap as Record<string, unknown>).some((value) => value === id)
+    ) {
+      if (!references.includes('settings')) {
+        references.push('settings');
+      }
+    }
+    const targetAssignments = defaultMediaTargetsSetting[0]?.value;
+    if (
+      Array.isArray(targetAssignments) &&
+      targetAssignments.some((value) => {
+        if (!value || typeof value !== 'object') return false;
+        const candidate = value as { media_id?: unknown };
+        return candidate.media_id === id;
+      })
+    ) {
+      if (!references.includes('settings')) {
+        references.push('settings');
+      }
+    }
+    if (proofOfPlay.length > 0) {
+      references.push('proof_of_play');
+    }
+
+    return {
+      inUse: references.length > 0,
+      references,
+      primaryReason: references[0] ?? null,
+    };
   }
 }
 

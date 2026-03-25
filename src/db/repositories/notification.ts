@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, lt, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class NotificationRepository {
@@ -6,12 +6,30 @@ export class NotificationRepository {
     user_id: string;
     title: string;
     message: string;
-    type: 'INFO' | 'WARNING' | 'ERROR' | 'SUCCESS';
+    type: string;
     data?: Record<string, any>;
   }) {
     const db = getDatabase();
-    const result = await db.insert(schema.notifications).values(data).returning();
-    return result[0];
+    return db.transaction(async (tx) => {
+      const [created] = await tx.insert(schema.notifications).values(data).returning();
+
+      await tx
+        .insert(schema.userNotificationCounters)
+        .values({
+          user_id: data.user_id,
+          unread_total: 1,
+          updated_at: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: schema.userNotificationCounters.user_id,
+          set: {
+            unread_total: sql`GREATEST(${schema.userNotificationCounters.unread_total} + 1, 0)`,
+            updated_at: new Date(),
+          },
+        });
+
+      return created;
+    });
   }
 
   async findById(id: string) {
@@ -38,10 +56,20 @@ export class NotificationRepository {
       conditions.push(eq(schema.notifications.is_read, options.read));
     }
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.notifications)
       .where(and(...conditions));
+
+    const [unreadRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.notifications)
+      .where(
+        and(
+          eq(schema.notifications.user_id, userId),
+          eq(schema.notifications.is_read, false)
+        )
+      );
 
     const items = await db
       .select()
@@ -53,36 +81,64 @@ export class NotificationRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
+      unread_total: Number(unreadRow?.count || 0),
       page,
       limit,
     };
   }
 
   async markAsRead(id: string) {
+    const result = await this.markAsReadIfUnread(id);
+    return result.notification;
+  }
+
+  async markAsReadIfUnread(id: string) {
     const db = getDatabase();
-    const result = await db
-      .update(schema.notifications)
-      .set({ is_read: true })
-      .where(eq(schema.notifications.id, id))
-      .returning();
-    return result[0] || null;
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(schema.notifications)
+        .set({ is_read: true })
+        .where(
+          and(
+            eq(schema.notifications.id, id),
+            eq(schema.notifications.is_read, false)
+          )
+        )
+        .returning();
+
+      if (updated) {
+        return { notification: updated, changed: true };
+      }
+
+      const [existing] = await tx
+        .select()
+        .from(schema.notifications)
+        .where(eq(schema.notifications.id, id));
+      return { notification: existing || null, changed: false };
+    });
   }
 
   async markAllAsRead(userId: string) {
     const db = getDatabase();
-    await db
+    const rows = await db
       .update(schema.notifications)
       .set({ is_read: true })
       .where(and(
         eq(schema.notifications.user_id, userId),
         eq(schema.notifications.is_read, false)
-      ));
+      ))
+      .returning({ id: schema.notifications.id });
+    return rows.length;
   }
 
   async delete(id: string) {
     const db = getDatabase();
-    await db.delete(schema.notifications).where(eq(schema.notifications.id, id));
+    const [deleted] = await db
+      .delete(schema.notifications)
+      .where(eq(schema.notifications.id, id))
+      .returning();
+    return deleted || null;
   }
 
   async deleteOlderThan(days: number) {
@@ -95,8 +151,7 @@ export class NotificationRepository {
       .where(
         and(
           eq(schema.notifications.is_read, true),
-          // @ts-ignore - Drizzle doesn't have a built-in lt operator
-          // This would need to be implemented with raw SQL
+          lt(schema.notifications.created_at, cutoffDate),
         )
       );
   }
@@ -105,4 +160,3 @@ export class NotificationRepository {
 export function createNotificationRepository(): NotificationRepository {
   return new NotificationRepository();
 }
-

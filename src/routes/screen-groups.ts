@@ -8,12 +8,13 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('screen-group-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const screenGroupSchema = z.object({
   name: z.string().min(1).max(255),
@@ -120,6 +121,12 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
 
         const data = screenGroupSchema.parse(request.body);
         const group = await repo.create(data);
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screenIds: Array.from(new Set(data.screen_ids || [])),
+          groupIds: [group.id],
+          createdBy: payload.sub,
+        });
 
         return reply.status(CREATED).send({
           id: group.id,
@@ -175,7 +182,12 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
               .from(schema.publishTargets)
               .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
               .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-              .where(eq(schema.publishTargets.screen_id, screenId))
+              .where(
+                and(
+                  eq(schema.publishTargets.screen_id, screenId),
+                  eq(schema.publishes.status, 'ACTIVE')
+                )
+              )
               .orderBy(desc(schema.publishes.published_at))
               .limit(1);
 
@@ -273,7 +285,12 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
           .from(schema.publishTargets)
           .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
           .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_group_id, group.id))
+          .where(
+            and(
+              eq(schema.publishTargets.screen_group_id, group.id),
+              eq(schema.publishes.status, 'ACTIVE')
+            )
+          )
           .orderBy(desc(schema.publishes.published_at))
           .limit(1);
 
@@ -656,9 +673,18 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         if (!ability.can('update', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const data = screenGroupSchema.partial().parse(request.body);
+        const before = await repo.findById((request.params as any).id);
+        if (!before) throw AppError.notFound('Screen group not found');
+        const beforeMembers = await repo.members(before.id);
         const group = await repo.update((request.params as any).id, data);
         if (!group) throw AppError.notFound('Screen group not found');
         const members = await repo.members(group.id);
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screenIds: Array.from(new Set([...beforeMembers.map((m: any) => m.screen_id), ...members.map((m: any) => m.screen_id)])),
+          groupIds: [group.id],
+          createdBy: payload.sub,
+        });
 
         return reply.send({
           id: group.id,
@@ -711,7 +737,12 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
               .from(schema.publishTargets)
               .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
               .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-              .where(eq(schema.publishTargets.screen_id, screenId))
+              .where(
+                and(
+                  eq(schema.publishTargets.screen_id, screenId),
+                  eq(schema.publishes.status, 'ACTIVE')
+                )
+              )
               .orderBy(desc(schema.publishes.published_at))
               .limit(1);
 
@@ -779,8 +810,15 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
 
         const group = await repo.findById((request.params as any).id);
         if (!group) throw AppError.notFound('Screen group not found');
+        const members = await repo.members(group.id);
 
         await repo.delete(group.id);
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screenIds: Array.from(new Set(members.map((m: any) => m.screen_id))),
+          groupIds: [group.id],
+          createdBy: payload.sub,
+        });
         return reply.status(204).send();
       } catch (error) {
         logger.error(error, 'Delete screen group error');

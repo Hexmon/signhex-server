@@ -1,5 +1,6 @@
 import PgBoss from 'pg-boss';
 import ffmpeg from 'fluent-ffmpeg';
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -8,6 +9,9 @@ import { getDatabase, schema } from '@/db';
 import { config as appConfig } from '@/config';
 import { deleteObject, getObject, putObject } from '@/s3';
 import { createLogger } from '@/utils/logger';
+import { createMediaRepository } from '@/db/repositories/media';
+import { createBackupRun, getLatestBackupRun, runFullBackup } from '@/utils/backup-runs';
+import { getCachedSettings } from '@/utils/settings';
 
 const logger = createLogger('jobs');
 
@@ -81,6 +85,80 @@ async function cleanupTempDir(dir: string | null) {
 
 let boss: PgBoss | null = null;
 
+type PgBossError = Error & {
+  code?: string;
+};
+
+const RECURRING_QUEUE_NAMES = ['cleanup', 'archive', 'chat:media-cleanup', 'backup', 'backup:check'] as const;
+
+function getPgBossSchemaSql() {
+  return `"${appConfig.PG_BOSS_SCHEMA.replace(/"/g, '""')}"`;
+}
+
+function getPgBossPartitionName(queueName: string) {
+  return `j${createHash('sha224').update(queueName).digest('hex')}`;
+}
+
+async function queuePartitionExists(queueName: string) {
+  const db = getDatabase();
+  const partitionName = getPgBossPartitionName(queueName);
+  const result = await db.execute(sql.raw(`
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_tables
+      WHERE schemaname = '${appConfig.PG_BOSS_SCHEMA.replace(/'/g, "''")}'
+        AND tablename = '${partitionName}'
+    ) AS exists
+  `));
+
+  return Boolean((result as { rows?: Array<{ exists?: boolean }> }).rows?.[0]?.exists);
+}
+
+async function repairQueueMetadata(queueName: string) {
+  const db = getDatabase();
+  const schemaSql = getPgBossSchemaSql();
+  const partitionName = getPgBossPartitionName(queueName);
+
+  await db.execute(sql.raw(`
+    INSERT INTO ${schemaSql}.queue (
+      name,
+      policy,
+      partition_name
+    )
+    VALUES (
+      '${queueName.replace(/'/g, "''")}',
+      'standard',
+      '${partitionName}'
+    )
+    ON CONFLICT (name) DO NOTHING
+  `));
+}
+
+async function ensureQueueExists(jobs: PgBoss, queueName: string) {
+  try {
+    await jobs.createQueue(queueName);
+    return;
+  } catch (error) {
+    const pgBossError = error as PgBossError;
+    const partitionAlreadyExists = pgBossError.code === '42P07' && await queuePartitionExists(queueName);
+
+    if (!partitionAlreadyExists) {
+      logger.error({ err: error, queueName }, 'Failed to create pg-boss queue');
+      throw error;
+    }
+
+    logger.warn({ queueName }, 'Detected orphaned pg-boss queue metadata. Repairing queue row.');
+    await repairQueueMetadata(queueName);
+
+    const queue = await jobs.getQueue(queueName);
+    if (!queue) {
+      throw new Error(`Failed to repair pg-boss queue metadata for ${queueName}`);
+    }
+
+    logger.info({ queueName }, 'Repaired orphaned pg-boss queue metadata');
+  }
+}
+
 export async function initializeJobs(): Promise<PgBoss> {
   if (boss) {
     return boss;
@@ -139,7 +217,25 @@ export interface ArchiveJob {
 }
 
 export interface CleanupJob {
-  type: 'expired_sessions' | 'old_logs' | 'orphaned_objects';
+  type: 'expired_sessions' | 'old_logs' | 'orphaned_objects' | 'chat_orphaned_media';
+  mediaAssetIds?: string[];
+  conversationId?: string;
+  messageId?: string;
+}
+
+export interface ChatMediaCleanupJob {
+  conversationId: string;
+  mediaAssetIds: string[];
+  source?: 'message-delete' | 'conversation-delete' | 'fallback-reconcile';
+  messageId?: string;
+}
+
+export interface BackupJob {
+  runId: string;
+}
+
+export interface BackupCheckJob {
+  trigger: 'scheduled-check';
 }
 
 // Job queue functions
@@ -176,6 +272,122 @@ export async function queueCleanup(job: CleanupJob, options?: any) {
     retryLimit: 1,
     ...options,
   });
+}
+
+export async function queueBackup(job: BackupJob, options?: any) {
+  const jobs = getJobs();
+  return jobs.send('backup', job, {
+    retryLimit: 1,
+    retryDelay: 60,
+    ...options,
+  });
+}
+
+export async function queueChatMediaCleanup(job: ChatMediaCleanupJob, options?: any) {
+  const jobs = getJobs();
+  return jobs.send('chat:media-cleanup', job, {
+    retryLimit: 3,
+    retryDelay: 60,
+    ...options,
+  });
+}
+
+export async function cleanupChatMediaAssets(input: {
+  mediaAssetIds: string[];
+  conversationId?: string;
+  source?: 'message-delete' | 'conversation-delete' | 'fallback-reconcile';
+  messageId?: string;
+}) {
+  const db = getDatabase();
+  const mediaRepo = createMediaRepository();
+  const mediaIds = Array.from(new Set(input.mediaAssetIds || []));
+  if (!mediaIds.length) return;
+
+  logger.info(
+    {
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      source: input.source,
+      mediaCount: mediaIds.length,
+    },
+    'Processing chat media cleanup'
+  );
+
+  for (const mediaId of mediaIds) {
+    try {
+      const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+      if (!media) continue;
+
+      const usageSummary = await mediaRepo.getUsageSummary(mediaId);
+      if (usageSummary.inUse) {
+        logger.info(
+          { mediaId, references: usageSummary.references },
+          'Skipping chat media cleanup because references still exist'
+        );
+        continue;
+      }
+
+      const storageTargets = new Map<string, { id?: string; bucket: string; object_key: string }>();
+      if (media.source_object_id) {
+        const [row] = await db
+          .select()
+          .from(schema.storageObjects)
+          .where(eq(schema.storageObjects.id, media.source_object_id));
+        if (row) storageTargets.set(`${row.bucket}/${row.object_key}`, row);
+      }
+      if (media.ready_object_id) {
+        const [row] = await db
+          .select()
+          .from(schema.storageObjects)
+          .where(eq(schema.storageObjects.id, media.ready_object_id));
+        if (row) storageTargets.set(`${row.bucket}/${row.object_key}`, row);
+      }
+      if (media.thumbnail_object_id) {
+        const [row] = await db
+          .select()
+          .from(schema.storageObjects)
+          .where(eq(schema.storageObjects.id, media.thumbnail_object_id));
+        if (row) storageTargets.set(`${row.bucket}/${row.object_key}`, row);
+      }
+      if (media.source_bucket && media.source_object_key) {
+        storageTargets.set(`${media.source_bucket}/${media.source_object_key}`, {
+          bucket: media.source_bucket,
+          object_key: media.source_object_key,
+        });
+      }
+
+      let deletionFailed = false;
+      for (const storage of storageTargets.values()) {
+        try {
+          await deleteObject(storage.bucket, storage.object_key);
+        } catch (error) {
+          deletionFailed = true;
+          logger.warn(
+            error,
+            `Failed to delete chat media object ${storage.bucket}/${storage.object_key}`
+          );
+        }
+      }
+
+      if (deletionFailed) {
+        logger.warn({ mediaId }, 'Skipping media row deletion because object cleanup was incomplete');
+        continue;
+      }
+
+      const storageObjectIds = Array.from(storageTargets.values())
+        .map((row) => row.id)
+        .filter((id): id is string => Boolean(id));
+      if (storageObjectIds.length > 0) {
+        await db
+          .delete(schema.storageObjects)
+          .where(inArray(schema.storageObjects.id, storageObjectIds));
+      }
+
+      await db.delete(schema.media).where(eq(schema.media.id, mediaId));
+    } catch (error) {
+      logger.error(error, `Failed chat media cleanup for media ${mediaId}`);
+    }
+  }
 }
 
 // Job handlers registration
@@ -584,6 +796,21 @@ export async function registerJobHandlers() {
             }
             break;
           }
+          case 'chat_orphaned_media': {
+            const mediaAssetIds = Array.from(new Set(job.data.mediaAssetIds || []));
+            if (!mediaAssetIds.length) {
+              logger.info('No chat media ids provided for fallback cleanup');
+              break;
+            }
+
+            await cleanupChatMediaAssets({
+              mediaAssetIds,
+              conversationId: job.data.conversationId,
+              messageId: job.data.messageId,
+              source: 'fallback-reconcile',
+            });
+            break;
+          }
           default:
             logger.warn(`Unknown cleanup type: ${type}`);
         }
@@ -591,6 +818,51 @@ export async function registerJobHandlers() {
         logger.error(error, `Cleanup failed for type ${type}`);
       }
     }
+  });
+
+  await jobs.work<ChatMediaCleanupJob>('chat:media-cleanup', async (jobBatch) => {
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      await cleanupChatMediaAssets({
+        mediaAssetIds: job.data.mediaAssetIds,
+        conversationId: job.data.conversationId,
+        source: job.data.source,
+        messageId: job.data.messageId,
+      });
+    }
+  });
+
+  await jobs.work<BackupJob>('backup', async (jobBatch) => {
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      logger.info({ runId: job.data.runId }, 'Processing backup job');
+      await runFullBackup(job.data.runId);
+    }
+  });
+
+  await jobs.work<BackupCheckJob>('backup:check', async () => {
+    const backupsSettings = getCachedSettings('org.backups');
+    if (!backupsSettings.automatic_enabled) {
+      return;
+    }
+
+    const latestRun = await getLatestBackupRun();
+    const now = Date.now();
+    const latestTimestamp = latestRun?.created_at ? new Date(latestRun.created_at).getTime() : 0;
+    const intervalMs = backupsSettings.interval_hours * 60 * 60 * 1000;
+
+    if (latestRun && ['PENDING', 'RUNNING'].includes(latestRun.status)) {
+      return;
+    }
+
+    if (latestTimestamp && now - latestTimestamp < intervalMs) {
+      return;
+    }
+
+    const run = await createBackupRun('AUTOMATIC');
+    await queueBackup({ runId: run.id });
   });
 
   logger.info('Job handlers registered');
@@ -636,21 +908,19 @@ export async function scheduleRecurringJobs() {
   const jobs = getJobs();
 
   try {
-    // Ensure queues exist BEFORE scheduling
-    await jobs.createQueue('cleanup').catch(() => { }); // ignore "already exists"
-    await jobs.createQueue('archive').catch(() => { });
-
-    // (Optional) also ensure worker queues exist if you schedule them too later on:
-    // await jobs.createQueue('ffmpeg:transcode').catch(() => {});
-    // await jobs.createQueue('ffmpeg:thumbnail').catch(() => {});
+    for (const queueName of RECURRING_QUEUE_NAMES) {
+      await ensureQueueExists(jobs, queueName);
+    }
 
     // Clean any prior schedules
     await jobs.unschedule('cleanup').catch(() => { });
     await jobs.unschedule('archive').catch(() => { });
+    await jobs.unschedule('backup:check').catch(() => { });
 
     // Now schedule safely (queues exist)
     await jobs.schedule('cleanup', '0 2 * * *', { type: 'expired_sessions' });      // daily 2 AM
     await jobs.schedule('archive', '0 3 * * 0', { type: 'logs', startDate: '', endDate: '' }); // Sun 3 AM
+    await jobs.schedule('backup:check', '0 * * * *', { trigger: 'scheduled-check' }); // hourly
 
     logger.info('Recurring jobs scheduled successfully');
   } catch (error) {

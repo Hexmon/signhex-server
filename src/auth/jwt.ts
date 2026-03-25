@@ -22,10 +22,12 @@ export async function generateAccessToken(
   email: string,
   roleId: string,
   roleName: string,
-  departmentId?: string | null
+  departmentId?: string | null,
+  options?: { jti?: string; expiresInSeconds?: number }
 ): Promise<{ token: string; jti: string; expiresAt: Date }> {
-  const jti = randomUUID();
-  const expiresAt = new Date(Date.now() + appConfig.JWT_EXPIRY * 1000);
+  const jti = options?.jti ?? randomUUID();
+  const expiresInSeconds = options?.expiresInSeconds ?? appConfig.JWT_EXPIRY;
+  const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
 
   const token = await new SignJWT({
     sub: userId,
@@ -52,6 +54,17 @@ export async function verifyAccessToken(token: string): Promise<JWTPayload> {
   } catch (error) {
     throw new AuthError('Invalid or expired token');
   }
+}
+
+export async function refreshAccessToken(payload: Pick<JWTPayload, 'sub' | 'email' | 'role_id' | 'role' | 'department_id' | 'jti'>, expiresInSeconds: number) {
+  return generateAccessToken(
+    payload.sub,
+    payload.email,
+    payload.role_id,
+    payload.role,
+    payload.department_id,
+    { jti: payload.jti, expiresInSeconds }
+  );
 }
 
 export function extractTokenFromHeader(authHeader: string | undefined): string | null {

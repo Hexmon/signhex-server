@@ -1,4 +1,4 @@
-export const PERMISSION_ACTIONS = ['create', 'read', 'update', 'delete', 'manage'] as const;
+export const PERMISSION_ACTIONS = ['create', 'read', 'update', 'delete', 'manage', 'approve', 'publish'] as const;
 
 export const PERMISSION_SUBJECTS = [
   'User',
@@ -21,6 +21,7 @@ export const PERMISSION_SUBJECTS = [
   'Webhook',
   'SsoConfig',
   'OrgSettings',
+  'BrandingSettings',
   'Conversation',
   'ProofOfPlay',
   'Dashboard',

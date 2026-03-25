@@ -11,6 +11,7 @@
     "start": "node dist/index.js",
     "test": "npx tsx scripts/api-test-report.ts",
     "lint": "eslint src --ext .ts",
+    "lint:chat": "eslint src/chat src/realtime/chat-namespace.ts src/realtime/socket-server.ts src/auth/request-auth.ts src/routes/chat.ts src/routes/conversations.ts src/db/repositories/chat.ts src/db/repositories/conversation.ts src/db/repositories/notification.ts --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
     "db:push": "drizzle-kit push:pg",
     "db:generate": "drizzle-kit generate:pg",
@@ -18,7 +19,15 @@
     "seed": "tsx scripts/seed.ts",
     "admin-cli": "tsx scripts/admin-cli.ts",
     "check": "tsx scripts/check-services.ts",
-    "verify": "tsx scripts/verify-build.ts"
+    "verify": "tsx scripts/verify-build.ts",
+    "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts",
+    "chat:dry-run": "tsx scripts/chat-dry-run.ts",
+    "schedule:dry-run": "tsx scripts/schedule-dry-run.ts",
+    "emergency:dry-run": "tsx scripts/emergency-dry-run.ts",
+    "screens:dry-run": "tsx scripts/screens-realtime-dry-run.ts",
+    "test:default-media": "vitest run src/routes/settings.test.ts && vitest run src/routes/screens.test.ts && vitest run src/routes/device-telemetry-auth.test.ts",
+    "notifications:reconcile": "tsx scripts/notifications-reconcile.ts",
+    "jobs:repair-pgboss-queues": "tsx scripts/repair-pgboss-queues.ts"
   },
   "keywords": [
     "signage",
@@ -66,6 +75,7 @@
     "nodemon": "^3.1.10",
     "pino-pretty": "^10.3.1",
     "prettier": "^3.1.1",
+    "socket.io-client": "^4.8.1",
     "supertest": "^6.3.3",
     "tsc-alias": "^1.8.8",
     "tsx": "^4.7.0",
