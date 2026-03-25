@@ -1,4 +1,4 @@
-import { and, eq, desc, inArray } from 'drizzle-orm';
+import { and, eq, desc, inArray, isNull } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { getDatabase, schema } from '@/db';
@@ -9,9 +9,17 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
-import { getDefaultMedia } from '@/utils/default-media';
+import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
+import { buildContentDisposition } from '@/utils/object-key';
+import { serializeMediaRecord } from '@/utils/media';
+import {
+  buildScreenPlaybackStateById,
+  getActiveEmergencyForScreen as getActiveEmergencyForRuntime,
+  getLatestPublishForScreen,
+} from '@/screens/playback';
+import { emitScreenPreviewUpdate, emitScreenStateUpdate } from '@/realtime/screens-namespace';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
@@ -276,48 +284,29 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           throw AppError.notFound('Device not registered');
         }
 
-        const emergency = await getActiveEmergencyForScreen(deviceId, { db, includeUrls });
+        const emergency = await getActiveEmergencyForRuntime(deviceId, { db, includeUrls });
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
         const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
 
         const latest = await getLatestPublishForScreen(deviceId, db);
 
-        if (!latest) {
-          const defaultMedia = await getDefaultMedia(db);
-          const defaultMediaPayload = defaultMedia?.media
-            ? {
-                id: defaultMedia.media.id,
-                name: defaultMedia.media.name,
-                type: defaultMedia.media.type,
-                status: defaultMedia.media.status,
-                duration_seconds: defaultMedia.media.duration_seconds,
-                width: defaultMedia.media.width,
-                height: defaultMedia.media.height,
-                media_url: includeUrls ? defaultMedia.media_url : null,
-              }
-            : null;
+        if (!emergency && latest?.snapshot_id) {
+          const etag = `"${latest.snapshot_id}"`;
+          reply.header('ETag', etag);
+          if (ifNoneMatchValues.includes(latest.snapshot_id)) {
+            return reply.status(304).send();
+          }
+        }
 
-          if (emergency) {
-            return reply.send({
-              device_id: deviceId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency,
-              default_media: defaultMediaPayload,
-            });
-          }
-          if (defaultMediaPayload) {
-            return reply.send({
-              device_id: deviceId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency: null,
-              default_media: defaultMediaPayload,
-            });
-          }
-          throw AppError.notFound('No publish found for this device');
+        if (!latest) {
+          return reply.send({
+            device_id: deviceId,
+            publish: null,
+            snapshot: null,
+            media_urls: undefined,
+            emergency,
+            ...defaultMediaPayload,
+          });
         }
 
         const rawPayload = (latest.payload as any) || {};

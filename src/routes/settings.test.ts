@@ -155,6 +155,10 @@ describe('Settings routes - dimension-wise default media', () => {
     const otherScreenId = randomUUID();
     const groupId = randomUUID();
 
+    await db.delete(schema.settings).where(
+      inArray(schema.settings.key, ['default_media_id', 'default_media_variants', 'default_media_targets'])
+    );
+
     await db.insert(schema.media).values([
       {
         id: screenMediaId,

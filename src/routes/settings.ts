@@ -117,6 +117,104 @@ async function serializeBranding(settings: BrandingSettings) {
   };
 }
 
+async function validateDefaultMediaTargets(
+  assignments: Array<z.infer<typeof defaultMediaTargetAssignmentSchema>>
+) {
+  if (assignments.length === 0) return;
+
+  const db = getDatabase();
+  await ensureMediaIdsExist(assignments.map((assignment) => assignment.media_id));
+
+  const screenAssignments = assignments.filter((assignment) => assignment.target_type === 'SCREEN');
+  const groupAssignments = assignments.filter((assignment) => assignment.target_type === 'GROUP');
+
+  if (screenAssignments.length > 0) {
+    const screenIds = screenAssignments.map((assignment) => assignment.target_id);
+    const screens = await db
+      .select({
+        id: schema.screens.id,
+        aspect_ratio: schema.screens.aspect_ratio,
+        width: schema.screens.width,
+        height: schema.screens.height,
+      })
+      .from(schema.screens)
+      .where(inArray(schema.screens.id, screenIds as string[]));
+
+    if (screens.length !== screenIds.length) {
+      throw AppError.notFound('Screen not found');
+    }
+
+    const screensById = new Map(screens.map((screen) => [screen.id, screen]));
+    for (const assignment of screenAssignments) {
+      const screen = screensById.get(assignment.target_id);
+      const aspectRatio = screen ? resolveAspectRatio(screen) : null;
+      if (!aspectRatio || aspectRatio !== assignment.aspect_ratio) {
+        throw AppError.badRequest('Screen default media assignment aspect ratio does not match the target screen.');
+      }
+    }
+  }
+
+  if (groupAssignments.length > 0) {
+    const groupIds = groupAssignments.map((assignment) => assignment.target_id);
+    const groups = await db
+      .select({ id: schema.screenGroups.id })
+      .from(schema.screenGroups)
+      .where(inArray(schema.screenGroups.id, groupIds as string[]));
+
+    if (groups.length !== groupIds.length) {
+      throw AppError.notFound('Screen group not found');
+    }
+
+    const members = await db
+      .select({
+        group_id: schema.screenGroupMembers.group_id,
+        screen_id: schema.screenGroupMembers.screen_id,
+        aspect_ratio: schema.screens.aspect_ratio,
+        width: schema.screens.width,
+        height: schema.screens.height,
+      })
+      .from(schema.screenGroupMembers)
+      .innerJoin(schema.screens, eq(schema.screenGroupMembers.screen_id, schema.screens.id))
+      .where(inArray(schema.screenGroupMembers.group_id, groupIds as string[]));
+
+    const membersByGroup = new Map<string, typeof members>();
+    for (const member of members) {
+      const existing = membersByGroup.get(member.group_id) ?? [];
+      existing.push(member);
+      membersByGroup.set(member.group_id, existing);
+    }
+
+    for (const assignment of groupAssignments) {
+      const groupMembers = membersByGroup.get(assignment.target_id) ?? [];
+      if (groupMembers.length === 0) {
+        throw AppError.badRequest('Screen group must contain at least one screen.');
+      }
+
+      const aspectRatios = Array.from(
+        new Set(
+          groupMembers
+            .map((member) =>
+              resolveAspectRatio({
+                aspect_ratio: member.aspect_ratio,
+                width: member.width,
+                height: member.height,
+              })
+            )
+            .filter((value): value is string => Boolean(value))
+        )
+      );
+
+      if (aspectRatios.length !== 1) {
+        throw AppError.badRequest('Screen group must contain screens with the same aspect ratio.');
+      }
+
+      if (aspectRatios[0] !== assignment.aspect_ratio) {
+        throw AppError.badRequest('Group default media assignment aspect ratio does not match the target screens.');
+      }
+    }
+  }
+}
+
 export async function settingsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
@@ -139,6 +237,32 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     updated_at: media.updated_at.toISOString?.() ?? media.updated_at,
     media_url,
   });
+
+  const serializeDefaultMediaVariants = async () => {
+    const data = await getDefaultMediaVariants(db);
+    return {
+      global_media_id: data.global_media_id,
+      global_media: data.global_media ? serializeMedia(data.global_media, data.global_media_url) : null,
+      variants: data.variants.map((variant) => ({
+        aspect_ratio: variant.aspect_ratio,
+        media_id: variant.media_id,
+        media: variant.media ? serializeMedia(variant.media, variant.media_url) : null,
+      })),
+    };
+  };
+
+  const serializeDefaultMediaTargets = async () => {
+    const data = await getDefaultMediaTargetAssignments(db);
+    return {
+      assignments: data.map((assignment) => ({
+        target_type: assignment.target_type,
+        target_id: assignment.target_id,
+        aspect_ratio: assignment.aspect_ratio,
+        media_id: assignment.media_id,
+        media: assignment.media ? serializeMedia(assignment.media, assignment.media_url) : null,
+      })),
+    };
+  };
 
   fastify.get(
     apiEndpoints.settings.list,
@@ -207,6 +331,282 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         return reply.status(OK).send(record);
       } catch (error) {
         logger.error(error, 'Upsert setting error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.general,
+    {
+      schema: {
+        description: 'Get general organization settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(GENERAL_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get general settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: GeneralSettings }>(
+    apiEndpoints.settings.general,
+    {
+      schema: {
+        description: 'Update general organization settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = generalSettingsSchema.parse(request.body);
+        return reply.status(OK).send(await saveSettingsSection(GENERAL_SETTINGS_KEY, data));
+      } catch (error) {
+        logger.error(error, 'Update general settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.branding,
+    {
+      schema: {
+        description: 'Get branding settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'BrandingSettings');
+        return reply.send(await serializeBranding(await getSettingsSection(BRANDING_SETTINGS_KEY)));
+      } catch (error) {
+        logger.error(error, 'Get branding settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: BrandingSettings }>(
+    apiEndpoints.settings.branding,
+    {
+      schema: {
+        description: 'Update branding settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'BrandingSettings');
+        const data = brandingSettingsSchema.parse(request.body);
+        await ensureMediaIdsExist([data.logo_media_id, data.icon_media_id, data.favicon_media_id]);
+        const saved = await saveSettingsSection(BRANDING_SETTINGS_KEY, data);
+        return reply.status(OK).send(await serializeBranding(saved));
+      } catch (error) {
+        logger.error(error, 'Update branding settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.security,
+    {
+      schema: {
+        description: 'Get security settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(SECURITY_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get security settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: SecuritySettings }>(
+    apiEndpoints.settings.security,
+    {
+      schema: {
+        description: 'Update security settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = securitySettingsSchema.parse(request.body);
+        return reply.status(OK).send(await saveSettingsSection(SECURITY_SETTINGS_KEY, data));
+      } catch (error) {
+        logger.error(error, 'Update security settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.appearance,
+    {
+      schema: {
+        description: 'Get appearance settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(APPEARANCE_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get appearance settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: AppearanceSettings }>(
+    apiEndpoints.settings.appearance,
+    {
+      schema: {
+        description: 'Update appearance settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = appearanceSettingsSchema.parse(request.body);
+        return reply.status(OK).send(await saveSettingsSection(APPEARANCE_SETTINGS_KEY, data));
+      } catch (error) {
+        logger.error(error, 'Update appearance settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.backups,
+    {
+      schema: {
+        description: 'Get backups settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(BACKUPS_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get backups settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: BackupsSettings }>(
+    apiEndpoints.settings.backups,
+    {
+      schema: {
+        description: 'Update backups settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = backupsSettingsSchema.parse(request.body);
+        const saved = await saveSettingsSection(BACKUPS_SETTINGS_KEY, data);
+        setRuntimeLogLevel(saved.log_level);
+        return reply.status(OK).send(saved);
+      } catch (error) {
+        logger.error(error, 'Update backups settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post(
+    apiEndpoints.settings.backupRun,
+    {
+      schema: {
+        description: 'Queue a manual backup run',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const payload = await requireAccess(request, 'update', 'OrgSettings');
+        const run = await createBackupRun('MANUAL', payload.sub);
+        await queueBackup({ runId: run.id });
+        return reply.status(CREATED).send({
+          id: run.id,
+          status: run.status,
+          trigger_type: run.trigger_type,
+        });
+      } catch (error) {
+        logger.error(error, 'Run backup error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.backupHistory,
+    {
+      schema: {
+        description: 'List recent backup runs',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send({ items: await listBackupRuns() });
+      } catch (error) {
+        logger.error(error, 'List backup history error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Querystring: typeof logsQuerySchema._type }>(
+    apiEndpoints.settings.logs,
+    {
+      schema: {
+        description: 'List recent application logs',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        const query = logsQuerySchema.parse(request.query);
+        return reply.send({ items: getRecentLogs(query) });
+      } catch (error) {
+        logger.error(error, 'List recent logs error');
         return respondWithError(reply, error);
       }
     }

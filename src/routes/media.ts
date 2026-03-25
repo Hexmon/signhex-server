@@ -1,10 +1,18 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import path from 'path';
 import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/schemas/media';
 import { createMediaRepository } from '@/db/repositories/media';
 import type { MediaUsageReference } from '@/db/repositories/media';
 import { createUserRepository } from '@/db/repositories/user';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
+import {
+  canAccessOwnedResource,
+  canReadAdminSharedResource,
+  getAdminUserIds,
+  getDepartmentUserIds,
+  isDepartmentScopedRole,
+} from '@/rbac/policy';
 import { getPresignedPutUrl, createBucketIfNotExists, headObject, getPresignedUrl } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
@@ -16,6 +24,14 @@ import { deleteObject } from '@/s3';
 import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
+import {
+  buildContentDisposition,
+  buildObjectKey,
+  normalizeDisplayName,
+  normalizeOriginalFilename,
+  sanitizeFilenameHint,
+} from '@/utils/object-key';
+import { serializeMediaRecord } from '@/utils/media';
 
 const logger = createLogger('media-routes');
 const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
@@ -132,8 +148,13 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
         const data = presignUploadSchema.parse(request.body);
         const mediaId = randomUUID();
-        const safeFilename = path.basename(data.filename);
-        const objectKey = `${mediaId}/${safeFilename}`;
+        const originalFilename = normalizeOriginalFilename(data.filename);
+        const displayName = normalizeDisplayName(originalFilename);
+        const { objectKey, hint } = buildObjectKey({
+          originalFilename,
+          mimeType: data.content_type,
+          id: mediaId,
+        });
         const bucket = 'media-source';
 
         const inferredType = data.content_type?.startsWith('video')
@@ -151,7 +172,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         // Create media record
         const media = await mediaRepo.create({
           id: mediaId,
-          name: data.filename,
+          name: displayName,
           type: inferredType as any,
           status: PENDINGSTATUS,
           source_bucket: bucket,

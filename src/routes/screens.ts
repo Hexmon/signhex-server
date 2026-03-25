@@ -9,9 +9,20 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
-import { getPresignedUrl, getObject } from '@/s3';
-import { getDefaultMedia } from '@/utils/default-media';
+import { deleteObject, getPresignedUrl, getObject } from '@/s3';
+import { pruneDefaultMediaTargetsForScreen, resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
+import { buildContentDisposition } from '@/utils/object-key';
+import { serializeMediaRecord } from '@/utils/media';
+import { KNOWN_ASPECT_RATIOS, getAspectRatioName, resolveAspectRatio } from '@/utils/aspect-ratio';
+import {
+  buildScreenPlaybackStateById,
+  buildScreenScheduleTimelinePayload,
+  buildScreensOverviewPayload,
+  filterItemsForScreen as filterPublishedItemsForScreen,
+  getLatestPublishForScreen,
+} from '@/screens/playback';
+import { emitScreensRefreshRequired, setupScreensNamespace } from '@/realtime/screens-namespace';
 
 const logger = createLogger('screen-routes');
 const { CREATED, OK } = HTTP_STATUS;
@@ -188,6 +199,25 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
     return { activeItems, upcomingItems, bookedUntil };
   };
+
+  const serializeResolvedDefaultMedia = (
+    resolvedDefaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>,
+    includeUrls: boolean
+  ) => ({
+    default_media: resolvedDefaultMedia.media
+      ? {
+          media_id: resolvedDefaultMedia.media.id,
+          ...serializeMediaRecord(
+            resolvedDefaultMedia.media,
+            includeUrls ? resolvedDefaultMedia.media_url : null
+          ),
+        }
+      : null,
+    default_media_resolution: {
+      source: resolvedDefaultMedia.source,
+      aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+    },
+  });
 
   // Create screen
   fastify.post<{ Body: typeof createScreenSchema._type }>(
@@ -914,65 +944,33 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const screenId = (request.params as any).id;
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
-        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Screen not found');
+        }
 
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, screenId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
+        const serverTime = new Date().toISOString();
+        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
+        const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
+        const latest = await getLatestPublishForScreen(screenId, db);
 
         if (!latest) {
-          const defaultMedia = await getDefaultMedia(db);
-          const defaultMediaPayload = defaultMedia?.media
-            ? {
-                id: defaultMedia.media.id,
-                name: defaultMedia.media.name,
-                type: defaultMedia.media.type,
-                status: defaultMedia.media.status,
-                duration_seconds: defaultMedia.media.duration_seconds,
-                width: defaultMedia.media.width,
-                height: defaultMedia.media.height,
-                media_url: includeUrls ? defaultMedia.media_url : null,
-              }
-            : null;
-
-          if (emergency) {
-            return reply.send({
-              screen_id: screenId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency,
-              default_media: defaultMediaPayload,
-            });
-          }
-          if (defaultMediaPayload) {
-            return reply.send({
-              screen_id: screenId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency: null,
-              default_media: defaultMediaPayload,
-            });
-          }
-          throw AppError.notFound('No publish found for this screen');
+          return reply.send({
+            server_time: serverTime,
+            screen_id: screenId,
+            publish: null,
+            snapshot: null,
+            media_urls: undefined,
+            emergency,
+            ...defaultMediaPayload,
+          });
         }
 
         const rawPayload = (latest.payload as any) || {};
         const schedule = rawPayload.schedule || {};
         const groupIds = await getGroupIdsForScreen(screenId);
-        const filteredItems = filterItemsForScreen(schedule.items || [], screenId, groupIds);
+        const filteredItems = filterPublishedItemsForScreen(schedule.items || [], screenId, groupIds);
         const filteredSnapshot = {
           ...rawPayload,
           schedule: { ...schedule, items: filteredItems },

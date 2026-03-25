@@ -150,18 +150,47 @@ export async function getLatestPublishForScreen(
   }
 
   const upcoming = await reservationRepo.findUpcomingPublishedForScreen(screenId, new Date(), db);
-  if (!upcoming) return null;
+  if (upcoming) {
+    return {
+      publish_id: upcoming.publish_id,
+      schedule_id: upcoming.schedule_id,
+      snapshot_id: upcoming.snapshot_id,
+      published_at: upcoming.published_at,
+      payload: upcoming.payload,
+      reservation_version: upcoming.reservation_version,
+      selection_reason: 'upcoming_reservation' as const,
+      reservation_start_at: upcoming.start_at,
+      reservation_end_at: upcoming.end_at,
+    };
+  }
+
+  const [latestPublish] = await db
+    .select({
+      publish_id: schema.publishes.id,
+      schedule_id: schema.publishes.schedule_id,
+      snapshot_id: schema.publishes.snapshot_id,
+      published_at: schema.publishes.published_at,
+      payload: schema.scheduleSnapshots.payload,
+    })
+    .from(schema.publishTargets)
+    .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
+    .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
+    .where(eq(schema.publishTargets.screen_id, screenId))
+    .orderBy(desc(schema.publishes.published_at), desc(schema.publishes.id))
+    .limit(1);
+
+  if (!latestPublish) return null;
 
   return {
-    publish_id: upcoming.publish_id,
-    schedule_id: upcoming.schedule_id,
-    snapshot_id: upcoming.snapshot_id,
-    published_at: upcoming.published_at,
-    payload: upcoming.payload,
-    reservation_version: upcoming.reservation_version,
-    selection_reason: 'upcoming_reservation' as const,
-    reservation_start_at: upcoming.start_at,
-    reservation_end_at: upcoming.end_at,
+    publish_id: latestPublish.publish_id,
+    schedule_id: latestPublish.schedule_id,
+    snapshot_id: latestPublish.snapshot_id,
+    published_at: latestPublish.published_at,
+    payload: latestPublish.payload,
+    reservation_version: null,
+    selection_reason: 'latest_publish' as const,
+    reservation_start_at: null,
+    reservation_end_at: null,
   };
 }
 
