@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
+import { buildContentDisposition } from '@/utils/object-key';
 
 export const DEFAULT_MEDIA_SETTING_KEY = 'default_media_id';
 
@@ -14,6 +15,8 @@ const extractDefaultMediaId = (value: unknown): string | null => {
 };
 
 export async function resolveMediaUrl(media: any, db = getDatabase()): Promise<string | null> {
+  const filename = media?.original_filename ?? media?.name ?? 'file';
+  const contentDisposition = buildContentDisposition(filename, 'inline');
   try {
     if (media.ready_object_id) {
       const [obj] = await db
@@ -21,12 +24,18 @@ export async function resolveMediaUrl(media: any, db = getDatabase()): Promise<s
         .from(schema.storageObjects)
         .where(eq(schema.storageObjects.id, media.ready_object_id));
       if (obj) {
-        return await getPresignedUrl(obj.bucket, obj.object_key, 3600);
+        return await getPresignedUrl(obj.bucket, obj.object_key, {
+          expiresIn: 3600,
+          responseContentDisposition: contentDisposition,
+        });
       }
     }
 
     if (media.source_bucket && media.source_object_key) {
-      return await getPresignedUrl(media.source_bucket, media.source_object_key, 3600);
+      return await getPresignedUrl(media.source_bucket, media.source_object_key, {
+        expiresIn: 3600,
+        responseContentDisposition: contentDisposition,
+      });
     }
   } catch {
     return null;

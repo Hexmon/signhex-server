@@ -114,6 +114,8 @@ export const media = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     name: varchar('name', { length: 255 }).notNull(),
+    original_filename: varchar('original_filename', { length: 512 }).notNull(),
+    sanitized_hint: varchar('sanitized_hint', { length: 80 }),
     type: mediaTypeEnum('type').notNull(),
     status: mediaStatusEnum('status').notNull().default('PENDING'),
     source_object_id: uuid('source_object_id'),

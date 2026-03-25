@@ -12,7 +12,6 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
-import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('emergency-routes');
 const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -79,16 +78,26 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     if (!mediaId) return null;
     const media = await mediaRepo.findById(mediaId);
     if (!media) return null;
+    const filename = (media as any).original_filename ?? media.name ?? 'file';
+    const contentDisposition = buildContentDisposition(filename, 'inline');
     try {
       if (media.ready_object_id) {
         const [stor] = await db
           .select()
           .from(schema.storageObjects)
           .where(inArray(schema.storageObjects.id, [media.ready_object_id] as any));
-        if (stor) return await getPresignedUrl(stor.bucket, stor.object_key, 3600);
+        if (stor) {
+          return await getPresignedUrl(stor.bucket, stor.object_key, {
+            expiresIn: 3600,
+            responseContentDisposition: contentDisposition,
+          });
+        }
       }
       if (media.source_bucket && media.source_object_key) {
-        return await getPresignedUrl(media.source_bucket, media.source_object_key, 3600);
+        return await getPresignedUrl(media.source_bucket, media.source_object_key, {
+          expiresIn: 3600,
+          responseContentDisposition: contentDisposition,
+        });
       }
     } catch {
       return null;

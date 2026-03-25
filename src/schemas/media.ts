@@ -23,10 +23,7 @@ const allowedContentTypes = [
 ] as const;
 
 export const presignUploadSchema = z.object({
-  filename: z
-    .string()
-    .min(1)
-    .transform((val) => val.replace(/[^\\w.\\-]+/g, '_')),
+  filename: z.string().min(1).max(512),
   content_type: z.enum(allowedContentTypes),
   size: z
     .number()
@@ -40,6 +37,9 @@ export const presignUploadResponseSchema = z.object({
   upload_url: z.string().url(),
   media_id: z.string().uuid(),
   expires_in: z.number(),
+  bucket: z.string().optional(),
+  object_key: z.string().optional(),
+  original_filename: z.string().optional(),
 });
 
 export type PresignUploadResponse = z.infer<typeof presignUploadResponseSchema>;
@@ -53,6 +53,7 @@ export type ProcessMediaRequest = z.infer<typeof processMediaSchema>;
 export const mediaResponseSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
+  original_filename: z.string(),
   type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']),
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']),
   duration_seconds: z.number().optional(),

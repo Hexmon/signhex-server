@@ -199,6 +199,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
                     ? {
                         id: pi.media.id,
                         name: pi.media.name,
+                        original_filename: (pi.media as any).original_filename ?? pi.media.name,
                         type: pi.media.type,
                         status: pi.media.status,
                         source_bucket: pi.media.source_bucket,
@@ -220,6 +221,7 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
                     ? {
                         id: si.media.id,
                         name: si.media.name,
+                        original_filename: (si.media as any).original_filename ?? si.media.name,
                         type: si.media.type,
                         status: si.media.status,
                         source_bucket: si.media.source_bucket,

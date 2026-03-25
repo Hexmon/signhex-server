@@ -259,6 +259,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
                 ? {
                     id: media.id,
                     name: media.name,
+                    original_filename: (media as any).original_filename ?? media.name,
                     type: media.type,
                     status: media.status,
                     source_bucket: media.source_bucket,
@@ -328,6 +329,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           media: {
             id: media.id,
             name: media.name,
+            original_filename: (media as any).original_filename ?? media.name,
             type: media.type,
             status: media.status,
             source_bucket: media.source_bucket,
@@ -486,6 +488,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           media: {
             id: media.id,
             name: media.name,
+            original_filename: (media as any).original_filename ?? media.name,
             type: media.type,
             status: media.status,
             source_bucket: media.source_bucket,
