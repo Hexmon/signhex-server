@@ -192,7 +192,7 @@ export function emitScreenPreviewUpdate(
 export function emitScreensRefreshRequired(
   fastify: FastifyInstance,
   payload: {
-    reason: 'PUBLISH' | 'EMERGENCY' | 'GROUP_MEMBERSHIP' | 'TAKE_DOWN';
+    reason: 'PUBLISH' | 'EMERGENCY' | 'GROUP_MEMBERSHIP' | 'TAKE_DOWN' | 'DEFAULT_MEDIA';
     screen_ids?: string[];
     group_ids?: string[];
   }

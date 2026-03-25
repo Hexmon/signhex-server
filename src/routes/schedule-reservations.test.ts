@@ -431,6 +431,23 @@ describe('Hybrid schedule reservations', () => {
       source: 'ASPECT_RATIO',
       aspect_ratio: '16:9',
     });
+
+    const adminSnapshot = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/snapshot?include_urls=true`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+    });
+
+    expect(adminSnapshot.statusCode).toBe(HTTP_STATUS.OK);
+    const adminSnapshotBody = JSON.parse(adminSnapshot.body);
+    expect(adminSnapshotBody.publish).toBeNull();
+    expect(adminSnapshotBody.snapshot).toBeNull();
+    expect(adminSnapshotBody.default_media).toEqual(
+      expect.objectContaining({
+        media_id: fallbackMediaId,
+        id: fallbackMediaId,
+      })
+    );
   });
 
   it('allows an admin to take down a direct publish and fall back to default media', async () => {
@@ -563,5 +580,22 @@ describe('Hybrid schedule reservations', () => {
       source: 'ASPECT_RATIO',
       aspect_ratio: '16:9',
     });
+
+    const adminSnapshot = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/snapshot?include_urls=true`,
+      headers: { authorization: `Bearer ${tokenOne}` },
+    });
+
+    expect(adminSnapshot.statusCode).toBe(HTTP_STATUS.OK);
+    const adminSnapshotBody = JSON.parse(adminSnapshot.body);
+    expect(adminSnapshotBody.publish).toBeNull();
+    expect(adminSnapshotBody.snapshot).toBeNull();
+    expect(adminSnapshotBody.default_media).toEqual(
+      expect.objectContaining({
+        media_id: fallbackMediaId,
+        id: fallbackMediaId,
+      })
+    );
   });
 });

@@ -3,7 +3,7 @@ import { and, eq, gte, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { emitScreensRefreshRequired } from '@/realtime/screens-namespace';
 
-type PlaybackRefreshReason = 'PUBLISH' | 'EMERGENCY' | 'GROUP_MEMBERSHIP' | 'TAKE_DOWN';
+type PlaybackRefreshReason = 'PUBLISH' | 'EMERGENCY' | 'GROUP_MEMBERSHIP' | 'TAKE_DOWN' | 'DEFAULT_MEDIA';
 
 type DispatchPlaybackRefreshParams = {
   reason: PlaybackRefreshReason;
@@ -67,7 +67,7 @@ export async function dispatchPlaybackRefresh(
   }
 
   const screenIdsToQueue =
-    params.reason === 'TAKE_DOWN'
+    params.reason === 'TAKE_DOWN' || params.reason === 'DEFAULT_MEDIA'
       ? resolvedScreenIds
       : await (async () => {
           const dedupeCutoff = new Date(Date.now() - REFRESH_COMMAND_DEDUPE_MS);

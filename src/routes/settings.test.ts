@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { closeTestServer, createTestServer, testUser } from '@/test/helpers';
 import { getDatabase, schema } from '@/db';
@@ -363,5 +363,122 @@ describe('Settings routes - dimension-wise default media', () => {
     expect(response.statusCode).toBe(HTTP_STATUS.BAD_REQUEST);
     const body = JSON.parse(response.body);
     expect(body.error.message).toContain('must contain screens with the same aspect ratio');
+  });
+
+  it('queues immediate refresh commands for all screens when default media settings change', async () => {
+    const db = getDatabase();
+    const globalMediaId = randomUUID();
+    const variantMediaId = randomUUID();
+    const targetMediaId = randomUUID();
+    const screenOneId = randomUUID();
+    const screenTwoId = randomUUID();
+
+    await db.insert(schema.media).values([
+      {
+        id: globalMediaId,
+        name: 'Immediate Global Fallback',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1920,
+        height: 1080,
+      },
+      {
+        id: variantMediaId,
+        name: 'Immediate Variant Fallback',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1920,
+        height: 1080,
+      },
+      {
+        id: targetMediaId,
+        name: 'Immediate Target Fallback',
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: testUser.id,
+        width: 1920,
+        height: 1080,
+      },
+    ]);
+
+    await db.insert(schema.screens).values([
+      {
+        id: screenOneId,
+        name: 'Default Media Refresh Screen One',
+        status: 'ACTIVE',
+        aspect_ratio: '16:9',
+      },
+      {
+        id: screenTwoId,
+        name: 'Default Media Refresh Screen Two',
+        status: 'ACTIVE',
+        aspect_ratio: '16:9',
+      },
+    ]);
+
+    const globalResponse = await server.inject({
+      method: 'PUT',
+      url: '/api/v1/settings/default-media',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        media_id: globalMediaId,
+      },
+    });
+
+    expect(globalResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const variantsResponse = await server.inject({
+      method: 'PUT',
+      url: '/api/v1/settings/default-media/variants',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        variants: {
+          '16:9': variantMediaId,
+        },
+      },
+    });
+
+    expect(variantsResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const targetsResponse = await server.inject({
+      method: 'PUT',
+      url: '/api/v1/settings/default-media/targets',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+      payload: {
+        assignments: [
+          {
+            target_type: 'SCREEN',
+            target_id: screenOneId,
+            media_id: targetMediaId,
+            aspect_ratio: '16:9',
+          },
+        ],
+      },
+    });
+
+    expect(targetsResponse.statusCode).toBe(HTTP_STATUS.OK);
+
+    const commands = await db
+      .select()
+      .from(schema.deviceCommands)
+      .where(inArray(schema.deviceCommands.screen_id, [screenOneId, screenTwoId] as string[]));
+
+    const refreshCommands = commands.filter(
+      (command) =>
+        command.type === 'REFRESH' &&
+        (command.payload as { reason?: string } | null)?.reason === 'DEFAULT_MEDIA'
+    );
+
+    expect(refreshCommands).toHaveLength(6);
+    expect(refreshCommands.filter((command) => command.screen_id === screenOneId)).toHaveLength(3);
+    expect(refreshCommands.filter((command) => command.screen_id === screenTwoId)).toHaveLength(3);
   });
 });

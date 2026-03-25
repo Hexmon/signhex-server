@@ -19,6 +19,7 @@ import {
 } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { serializeMediaRecord } from '@/utils/media';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 import {
   APPEARANCE_SETTINGS_KEY,
   BACKUPS_SETTINGS_KEY,
@@ -517,10 +518,15 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        await requireAccess(request, 'update', 'OrgSettings');
+        const payload = await requireAccess(request, 'update', 'OrgSettings');
         const data = defaultMediaUpdateSchema.parse(request.body);
         if (data.media_id === null) {
           await db.delete(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_SETTING_KEY));
+          await dispatchPlaybackRefresh(fastify, {
+            reason: 'DEFAULT_MEDIA',
+            targetAll: true,
+            createdBy: payload.sub,
+          });
           return reply.status(OK).send({ media_id: null, media: null });
         }
 
@@ -536,6 +542,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
             target: schema.settings.key,
             set: { value: data.media_id, updated_at: new Date() },
           });
+
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'DEFAULT_MEDIA',
+          targetAll: true,
+          createdBy: payload.sub,
+        });
 
         const media_url = await resolveMediaUrl(media, db);
         return reply.status(OK).send({
@@ -578,7 +590,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        await requireAccess(request, 'update', 'OrgSettings');
+        const payload = await requireAccess(request, 'update', 'OrgSettings');
         const data = defaultMediaVariantsUpdateSchema.parse(request.body);
         const requestedIds = Array.from(
           new Set(Object.values(data.variants).filter((value): value is string => typeof value === 'string' && value.length > 0))
@@ -611,6 +623,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
               set: { value: normalized, updated_at: new Date() },
             });
         }
+
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'DEFAULT_MEDIA',
+          targetAll: true,
+          createdBy: payload.sub,
+        });
 
         return reply.status(OK).send(await serializeDefaultMediaVariants());
       } catch (error) {
@@ -649,7 +667,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        await requireAccess(request, 'update', 'OrgSettings');
+        const payload = await requireAccess(request, 'update', 'OrgSettings');
         const data = defaultMediaTargetsUpdateSchema.parse(request.body);
         const dedupedAssignments = Array.from(
           new Map(
@@ -667,6 +685,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 
         if (dedupedAssignments.length === 0) {
           await db.delete(schema.settings).where(eq(schema.settings.key, DEFAULT_MEDIA_TARGETS_SETTING_KEY));
+          await dispatchPlaybackRefresh(fastify, {
+            reason: 'DEFAULT_MEDIA',
+            targetAll: true,
+            createdBy: payload.sub,
+          });
           return reply.status(OK).send({ assignments: [] });
         }
 
@@ -677,6 +700,12 @@ export async function settingsRoutes(fastify: FastifyInstance) {
             target: schema.settings.key,
             set: { value: dedupedAssignments, updated_at: new Date() },
           });
+
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'DEFAULT_MEDIA',
+          targetAll: true,
+          createdBy: payload.sub,
+        });
 
         return reply.status(OK).send(await serializeDefaultMediaTargets());
       } catch (error) {
