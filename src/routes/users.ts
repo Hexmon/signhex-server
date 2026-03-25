@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createUserSchema, updateUserSchema, listUsersQuerySchema } from '@/schemas/user';
-import { createUserRepository } from '@/db/repositories/user';
+import { createUserRepository, type UserRepository } from '@/db/repositories/user';
 import { hashPassword } from '@/auth/password';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
@@ -10,6 +10,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 import { createRoleRepository } from '@/db/repositories/role';
+import { canManageUserRecord, canManageUserRoleTarget, canReadUserRecord } from '@/rbac/policy';
 
 const logger = createLogger('user-routes');
 const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
@@ -17,6 +18,16 @@ const { CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 export async function userRoutes(fastify: FastifyInstance) {
   const userRepo = createUserRepository();
   const roleRepo = createRoleRepository();
+  const resolveUserLabel = (user: {
+    first_name?: string | null;
+    last_name?: string | null;
+    email?: string | null;
+  }) => {
+    const fullName = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim();
+    if (fullName.length > 0) return fullName;
+    if (user.email) return user.email;
+    return 'this user';
+  };
 
   // Create user (admin only)
   fastify.post<{ Body: typeof createUserSchema._type }>(
@@ -29,6 +40,20 @@ export async function userRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      let user:
+        | {
+            id: string;
+            email: string;
+            first_name: string | null;
+            last_name: string | null;
+            role_id: string;
+            department_id: string | null;
+            is_active: boolean;
+            created_at: Date;
+            updated_at: Date;
+          }
+        | null = null;
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
@@ -48,6 +73,12 @@ export async function userRoutes(fastify: FastifyInstance) {
         const role = await roleRepo.findById(data.role_id);
         if (!role) {
           throw AppError.notFound('Role not found');
+        }
+        if (!canManageUserRoleTarget(payload.role, role.name)) {
+          throw AppError.forbidden('Forbidden');
+        }
+        if (payload.role === 'DEPARTMENT' && data.department_id !== payload.department_id) {
+          throw AppError.forbidden('Department users can only manage operators in their own department.');
         }
 
         const user = await userRepo.create({
@@ -89,38 +120,64 @@ export async function userRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      let user:
+        | {
+            id: string;
+            email: string;
+            first_name: string | null;
+            last_name: string | null;
+            role_id: string;
+            department_id: string | null;
+            is_active: boolean;
+            created_at: Date;
+            updated_at: Date;
+          }
+        | null = null;
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'User')) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         const query = listUsersQuerySchema.parse(request.query);
+        const effectiveRole =
+          payload.role === 'OPERATOR'
+            ? 'OPERATOR'
+            : payload.role === 'DEPARTMENT'
+              ? 'OPERATOR'
+              : query.role;
+        const effectiveDepartmentId =
+          payload.role === 'DEPARTMENT' ? payload.department_id : query.department_id;
         const result = await userRepo.list({
           page: query.page,
           limit: query.limit,
+          role: effectiveRole,
           role_id: query.role_id,
-          department_id: query.department_id,
+          department_id: effectiveDepartmentId,
           is_active: query.is_active === 'true' ? true : query.is_active === 'false' ? false : undefined,
         });
 
-        const rolesById = new Map<string, any>();
-        for (const item of result.items) {
-          if (!rolesById.has(item.role_id)) {
-            const role = await roleRepo.findById(item.role_id);
-            rolesById.set(item.role_id, role);
-          }
-        }
+        const items = result.items.filter((user) =>
+          canReadUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            { roleName: (user as any).role ?? '', departmentId: user.department_id }
+          )
+        );
 
         return reply.send({
-          items: result.items.map((user) => ({
+          items: items.map((user) => ({
             id: user.id,
             email: user.email,
             first_name: user.first_name,
             last_name: user.last_name,
-            role: rolesById.get(user.role_id)?.name ?? null,
+            role: (user as any).role ?? null,
             role_id: user.role_id,
             department_id: user.department_id,
             is_active: user.is_active,
@@ -130,7 +187,7 @@ export async function userRoutes(fastify: FastifyInstance) {
           pagination: {
             page: result.page,
             limit: result.limit,
-            total: result.total,
+            total: items.length,
           },
         });
       } catch (error) {
@@ -157,7 +214,11 @@ export async function userRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'User')) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         const user = await userRepo.findById((request.params as any).id);
         if (!user) {
@@ -165,6 +226,14 @@ export async function userRoutes(fastify: FastifyInstance) {
         }
 
         const role = await roleRepo.findById(user.role_id);
+        if (
+          !canReadUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            { roleName: role?.name ?? '', departmentId: user.department_id }
+          )
+        ) {
+          throw AppError.forbidden('Forbidden');
+        }
 
         return reply.send({
           id: user.id,
@@ -215,6 +284,36 @@ export async function userRoutes(fastify: FastifyInstance) {
           if (!role) {
             throw AppError.notFound('Role not found');
           }
+          if (!canManageUserRoleTarget(payload.role, role.name)) {
+            throw AppError.forbidden('Forbidden');
+          }
+          if (payload.role === 'DEPARTMENT' && data.department_id !== payload.department_id) {
+            throw AppError.forbidden('Department users can only manage operators in their own department.');
+          }
+        }
+        const existingUser = await userRepo.findById((request.params as any).id);
+        if (!existingUser) {
+          throw AppError.notFound('User not found');
+        }
+        if (
+          payload.role === 'DEPARTMENT' &&
+          Object.prototype.hasOwnProperty.call(data, 'department_id') &&
+          data.department_id !== payload.department_id
+        ) {
+          throw AppError.forbidden('Department users can only manage operators in their own department.');
+        }
+        const existingRole = await roleRepo.findById(existingUser.role_id);
+        if (
+          !canManageUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            {
+              id: existingUser.id,
+              roleName: existingRole?.name ?? '',
+              departmentId: existingUser.department_id,
+            }
+          )
+        ) {
+          throw AppError.forbidden('Forbidden');
         }
         const user = await userRepo.update((request.params as any).id, data);
 
@@ -254,6 +353,14 @@ export async function userRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      let user: {
+        first_name?: string | null;
+        last_name?: string | null;
+        email?: string | null;
+        role_id?: string;
+        department_id?: string | null;
+      } | null = null;
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
@@ -268,14 +375,48 @@ export async function userRoutes(fastify: FastifyInstance) {
         }
 
         const userId = (request.params as any).id;
-        const user = await userRepo.findById(userId);
+        user = await userRepo.findById(userId);
         if (!user) {
           throw AppError.notFound('User not found');
+        }
+        const targetRole = user.role_id ? await roleRepo.findById(user.role_id) : null;
+        if (
+          !canManageUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            {
+              id: userId,
+              roleName: targetRole?.name ?? '',
+              departmentId: (user as any).department_id,
+            }
+          )
+        ) {
+          throw AppError.forbidden('Forbidden');
         }
 
         await userRepo.delete(userId);
         return reply.status(OK).send({ message: 'User deleted successfully', id: userId });
       } catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error && (error as { code?: string }).code === '23503') {
+          const usageSummary = user
+            ? await userRepo.getDeleteUsageSummary((request.params as any).id)
+            : { inUse: false, primaryReason: null, references: [] as Array<{ key: string; label: string; count: number }> };
+          const primaryLabel = usageSummary.references[0]?.label ?? 'existing records';
+          const hasMore = usageSummary.references.length > 1;
+          const conflictError = new AppError({
+            statusCode: 409,
+            code: 'CONFLICT',
+            message: `${resolveUserLabel(user ?? {})} cannot be deleted because they are still linked to ${primaryLabel}${hasMore ? ' and other records' : ''}. Reassign or remove those records first, or deactivate the user instead.`,
+            details:
+              usageSummary.references.length > 0
+                ? {
+                    references: usageSummary.references,
+                  }
+                : null,
+          });
+          logger.error(conflictError, 'Delete user error');
+          return respondWithError(reply, conflictError);
+        }
+
         logger.error(error, 'Delete user error');
         return respondWithError(reply, error);
       }

@@ -44,9 +44,17 @@ const projectRoot = path.resolve(__dirname, '..');
 const reportDir = path.join(projectRoot, 'reports');
 const reportPath = path.join(reportDir, 'api-test-report.md');
 
+function getRequiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`${name} environment variable is required`);
+  }
+  return value;
+}
+
 const baseUrl = process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
-const adminEmail = process.env.ADMIN_EMAIL || 'admin@hexmon.local';
-const adminPassword = process.env.ADMIN_PASSWORD || 'ChangeMe123!';
+const adminEmail = getRequiredEnv('ADMIN_EMAIL');
+const adminPassword = getRequiredEnv('ADMIN_PASSWORD');
 
 const results: TestResult[] = [];
 const state: Record<string, string> = {};

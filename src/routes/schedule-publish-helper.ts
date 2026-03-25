@@ -3,8 +3,24 @@ import { getDatabase, schema } from '@/db';
 import { createScheduleRepository, ScheduleRepository } from '@/db/repositories/schedule';
 import { createScheduleItemRepository, ScheduleItemRepository } from '@/db/repositories/schedule-item';
 import { AppError } from '@/utils/app-error';
+import { serializeMediaRecord } from '@/utils/media';
 
 type DB = ReturnType<typeof getDatabase>;
+
+function normalizeCodecList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim().toLowerCase() : ''))
+    .filter(Boolean);
+}
+
+function inferRequiredCodecs(media: any): string[] {
+  const contentType = typeof media?.source_content_type === 'string' ? media.source_content_type.toLowerCase() : '';
+  if (!contentType.startsWith('video/')) return [];
+  if (contentType.includes('webm')) return ['vp9', 'vp8'];
+  if (contentType.includes('mp4') || contentType.includes('quicktime')) return ['h264'];
+  return [];
+}
 
 export async function resolvePresentations(presentationIds: string[], db: DB = getDatabase()) {
   const unique = Array.from(new Set(presentationIds));
@@ -82,6 +98,7 @@ export async function resolvePresentations(presentationIds: string[], db: DB = g
       duration_seconds: i.duration_seconds,
       fit_mode: i.fit_mode,
       audio_enabled: i.audio_enabled,
+      loop_enabled: i.loop_enabled ?? false,
       media: mediaMap.get(i.media_id) || null,
       created_at: i.created_at,
     });
@@ -100,6 +117,14 @@ export interface PublishScheduleParams {
   db?: DB;
   scheduleRepo?: ScheduleRepository;
   scheduleItemRepo?: ScheduleItemRepository;
+  onPublished?: (context: {
+    tx: DB;
+    publish: typeof schema.publishes.$inferSelect;
+    snapshot: typeof schema.scheduleSnapshots.$inferSelect;
+    schedule: typeof schema.schedules.$inferSelect;
+    scheduleItems: any[];
+    resolvedScreenIds: string[];
+  }) => Promise<void>;
 }
 
 export async function publishScheduleSnapshot(params: PublishScheduleParams) {
@@ -113,7 +138,73 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
   }
 
   const scheduleItems = await scheduleItemRepo.listBySchedule(schedule.id);
+  if (scheduleItems.length === 0) {
+    throw AppError.badRequest('Cannot publish a schedule without schedule items');
+  }
   const presMap = await resolvePresentations(scheduleItems.map((i: any) => i.presentation_id), db);
+
+  const missingPresentationIds = Array.from(
+    new Set(scheduleItems.map((item: any) => item.presentation_id).filter((presentationId: string) => !presMap.has(presentationId)))
+  );
+  if (missingPresentationIds.length > 0) {
+    throw AppError.badRequest('One or more schedule items reference a missing presentation', {
+      reason: 'MISSING_PRESENTATION',
+      presentation_ids: missingPresentationIds,
+    });
+  }
+
+  const invalidPresentationRefs: Array<{ presentation_id: string; issue: string; media_id?: string | null }> = [];
+  for (const presentation of presMap.values()) {
+    if ((presentation as any)?.layout_id && !presentation.layout) {
+      invalidPresentationRefs.push({
+        presentation_id: presentation.id,
+        issue: 'MISSING_LAYOUT',
+      });
+    }
+
+    for (const item of presentation.items || []) {
+      if (!item.media) {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MISSING_MEDIA',
+          media_id: item.media_id,
+        });
+        continue;
+      }
+      if (item.media.status !== 'READY') {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MEDIA_NOT_READY',
+          media_id: item.media.id,
+        });
+      }
+    }
+
+    for (const slot of presentation.slots || []) {
+      if (!slot.media) {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MISSING_MEDIA',
+          media_id: slot.media_id,
+        });
+        continue;
+      }
+      if (slot.media.status !== 'READY') {
+        invalidPresentationRefs.push({
+          presentation_id: presentation.id,
+          issue: 'MEDIA_NOT_READY',
+          media_id: slot.media.id,
+        });
+      }
+    }
+  }
+
+  if (invalidPresentationRefs.length > 0) {
+    throw AppError.badRequest('Schedule references missing or non-ready presentation assets', {
+      reason: 'INVALID_PRESENTATION_ASSETS',
+      invalid_references: invalidPresentationRefs,
+    });
+  }
 
   const uniqueGroupIds = new Set<string>();
   (params.screenGroupIds || []).forEach((g) => uniqueGroupIds.add(g));
@@ -158,11 +249,88 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
     throw AppError.badRequest('No target screens found for publish');
   }
 
+  const screenRows = await db
+    .select({
+      id: schema.screens.id,
+      name: schema.screens.name,
+      device_info: schema.screens.device_info,
+    })
+    .from(schema.screens)
+    .where(inArray(schema.screens.id, Array.from(resolvedScreenIds) as any));
+
+  const screenMap = new Map(
+    screenRows.map((row) => [
+      row.id,
+      {
+        id: row.id,
+        name: row.name,
+        codecs: normalizeCodecList((row.device_info as Record<string, unknown> | null)?.codecs),
+      },
+    ])
+  );
+
+  const unsupportedTargets: Array<{
+    screen_id: string;
+    screen_name: string;
+    media_id: string;
+    media_name: string;
+    required_codecs: string[];
+  }> = [];
+
+  scheduleItems.forEach((item: any) => {
+    const targetedScreens = new Set<string>();
+    (item.screen_ids || []).forEach((screenId: string) => targetedScreens.add(screenId));
+    resolveGroupScreens(item.screen_group_ids || []).forEach((screenId) => targetedScreens.add(screenId));
+    if (targetedScreens.size === 0) {
+      resolvedScreenIds.forEach((screenId) => targetedScreens.add(screenId));
+    }
+
+    const presentation = presMap.get(item.presentation_id);
+    const presentationMedia = [
+      ...((presentation?.items || []) as any[]),
+      ...((presentation?.slots || []) as any[]),
+    ]
+      .map((entry) => entry?.media)
+      .filter(Boolean);
+
+    presentationMedia.forEach((media: any) => {
+      const requiredCodecs = inferRequiredCodecs(media);
+      if (requiredCodecs.length === 0) return;
+
+      targetedScreens.forEach((screenId) => {
+        const screenInfo = screenMap.get(screenId);
+        if (!screenInfo || screenInfo.codecs.length === 0) return;
+        const supportsCodec = requiredCodecs.some((codec) => screenInfo.codecs.includes(codec));
+        if (supportsCodec) return;
+
+        unsupportedTargets.push({
+          screen_id: screenInfo.id,
+          screen_name: screenInfo.name,
+          media_id: media.id,
+          media_name: media.display_name ?? media.name,
+          required_codecs: requiredCodecs,
+        });
+      });
+    });
+  });
+
+  if (unsupportedTargets.length > 0) {
+    throw AppError.conflict(
+      'One or more target screens do not support the required media codec for this publish.',
+      {
+        reason: 'UNSUPPORTED_SCREEN_CODEC',
+        unsupported_targets: unsupportedTargets,
+      }
+    );
+  }
+
+  const publishedAt = new Date().toISOString();
   const snapshotPayload = {
     schedule: {
       id: schedule.id,
       name: schedule.name,
       description: schedule.description,
+      timezone: (schedule as any).timezone ?? null,
       start_at: schedule.start_at?.toISOString(),
       end_at: schedule.end_at?.toISOString(),
       is_active: schedule.is_active,
@@ -199,7 +367,6 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
                     ? {
                         id: pi.media.id,
                         name: pi.media.name,
-                        original_filename: (pi.media as any).original_filename ?? pi.media.name,
                         type: pi.media.type,
                         status: pi.media.status,
                         source_bucket: pi.media.source_bucket,
@@ -217,11 +384,11 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
                   duration_seconds: si.duration_seconds,
                   fit_mode: si.fit_mode,
                   audio_enabled: si.audio_enabled,
+                  loop_enabled: si.loop_enabled ?? false,
                   media: si.media
                     ? {
                         id: si.media.id,
                         name: si.media.name,
-                        original_filename: (si.media as any).original_filename ?? si.media.name,
                         type: si.media.type,
                         status: si.media.status,
                         source_bucket: si.media.source_bucket,
@@ -241,26 +408,9 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
       screen_group_ids: params.screenGroupIds || [],
       resolved_screen_ids: Array.from(resolvedScreenIds),
     },
-    published_at: new Date().toISOString(),
+    published_at: publishedAt,
     notes: params.notes ?? null,
   };
-
-  const [snapshot] = await db
-    .insert(schema.scheduleSnapshots)
-    .values({
-      schedule_id: schedule.id,
-      payload: snapshotPayload,
-    })
-    .returning();
-
-  const [publish] = await db
-    .insert(schema.publishes)
-    .values({
-      schedule_id: schedule.id,
-      snapshot_id: snapshot.id,
-      published_by: params.publishedBy,
-    })
-    .returning();
 
   const targetRows: { screen_id?: string; screen_group_id?: string }[] = [];
   const seenScreens = new Set<string>();
@@ -281,21 +431,53 @@ export async function publishScheduleSnapshot(params: PublishScheduleParams) {
     }
   });
 
-  if (targetRows.length > 0) {
-    await db
-      .insert(schema.publishTargets)
-      .values(
-        targetRows.map((t) => ({
-          publish_id: publish.id,
-          screen_id: t.screen_id,
-          screen_group_id: t.screen_group_id,
-        }))
-      );
-  }
+  const transactionalResult = await db.transaction(async (tx) => {
+    const [snapshot] = await tx
+      .insert(schema.scheduleSnapshots)
+      .values({
+        schedule_id: schedule.id,
+        payload: snapshotPayload,
+      })
+      .returning();
+
+    const [publish] = await tx
+      .insert(schema.publishes)
+      .values({
+        schedule_id: schedule.id,
+        snapshot_id: snapshot.id,
+        published_by: params.publishedBy,
+      })
+      .returning();
+
+    if (targetRows.length > 0) {
+      await tx
+        .insert(schema.publishTargets)
+        .values(
+          targetRows.map((t) => ({
+            publish_id: publish.id,
+            screen_id: t.screen_id,
+            screen_group_id: t.screen_group_id,
+          }))
+        );
+    }
+
+    if (params.onPublished) {
+      await params.onPublished({
+        tx: tx as DB,
+        publish,
+        snapshot,
+        schedule,
+        scheduleItems,
+        resolvedScreenIds: Array.from(resolvedScreenIds),
+      });
+    }
+
+    return { snapshot, publish };
+  });
 
   return {
-    publish,
-    snapshot,
+    publish: transactionalResult.publish,
+    snapshot: transactionalResult.snapshot,
     targets: targetRows,
     schedule,
     scheduleItems,

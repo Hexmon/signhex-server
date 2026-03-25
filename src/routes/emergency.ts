@@ -12,9 +12,14 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { getPresignedUrl } from '@/s3';
+import { AppError } from '@/utils/app-error';
+import { defineAbilityFor } from '@/rbac';
+import { buildContentDisposition } from '@/utils/object-key';
+import { getOrCreateSocketServer } from '@/realtime/socket-server';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('emergency-routes');
-const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const triggerEmergencySchema = z.object({
   emergency_type_id: z.string().uuid().optional(),
@@ -24,6 +29,12 @@ const triggerEmergencySchema = z.object({
   screen_ids: z.array(z.string().uuid()).optional(),
   screen_group_ids: z.array(z.string().uuid()).optional(),
   target_all: z.boolean().optional(),
+  expires_at: z.string().datetime().optional().nullable(),
+  audit_note: z.string().min(1).max(1000).optional(),
+});
+
+const clearEmergencySchema = z.object({
+  clear_reason: z.string().min(1).max(1000).optional(),
 });
 
 const emergencyTypeSchema = z.object({
@@ -52,26 +63,57 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
   const emergencyTypeRepo = createEmergencyTypeRepository();
   const mediaRepo = createMediaRepository();
   const db = getDatabase();
-  const io: SocketIOServer =
-    (fastify as any).io ??
-    ((fastify as any).io = new SocketIOServer(fastify.server, {
-      cors: {
-        origin: true,
-        credentials: true,
-      },
-    }));
+  const io: SocketIOServer = getOrCreateSocketServer(fastify);
 
   fastify.addHook('onClose', (_, done) => {
     io.close();
     done();
   });
 
-  const requireAdmin = (payload: any, reply: FastifyReply) => {
-    if (payload.role !== 'ADMIN') {
+  const requireEmergencyAdmin = async (payload: any, _reply: FastifyReply) => {
+    const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+    if (payload.role === 'ADMIN' || payload.role === 'SUPER_ADMIN' || ability.can('manage', 'all')) {
+      return true;
+    }
+    if (!ability.can('update', 'Screen')) {
       throw AppError.forbidden('Forbidden');
-      return false;
     }
     return true;
+  };
+
+  const getScopeLabel = (screenIds: string[], groupIds: string[], targetAll: boolean) => {
+    if (targetAll || (!screenIds.length && !groupIds.length)) return 'GLOBAL';
+    if (groupIds.length > 0 && screenIds.length === 0) return 'GROUP';
+    if (screenIds.length > 0 && groupIds.length === 0) return 'SCREEN';
+    return 'MIXED';
+  };
+
+  const getSeverityRank = (severity: string | null | undefined) => {
+    switch ((severity || '').toUpperCase()) {
+      case 'CRITICAL':
+        return 4;
+      case 'HIGH':
+        return 3;
+      case 'MEDIUM':
+        return 2;
+      case 'LOW':
+        return 1;
+      default:
+        return 0;
+    }
+  };
+
+  const getScopeRank = (scope: string) => {
+    switch (scope) {
+      case 'GLOBAL':
+        return 3;
+      case 'GROUP':
+        return 2;
+      case 'SCREEN':
+        return 1;
+      default:
+        return 0;
+    }
   };
 
   const resolveMediaUrl = async (mediaId?: string | null) => {
@@ -123,6 +165,56 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
     }
   };
 
+  const resolveTargetScreenIds = async (screenIds: string[], groupIds: string[], targetAll: boolean) => {
+    if (targetAll) {
+      const rows = await db.select({ id: schema.screens.id }).from(schema.screens);
+      return rows.map((row) => row.id);
+    }
+
+    const resolved = new Set(screenIds);
+    if (groupIds.length > 0) {
+      const memberRows = await db
+        .select({ screen_id: schema.screenGroupMembers.screen_id })
+        .from(schema.screenGroupMembers)
+        .where(inArray(schema.screenGroupMembers.group_id, groupIds as any));
+      memberRows.forEach((row) => resolved.add(row.screen_id));
+    }
+
+    return Array.from(resolved);
+  };
+
+  const serializeEmergency = async (emergency: any) => {
+    const screenIds = ((emergency as any).screen_ids || []) as string[];
+    const groupIds = ((emergency as any).screen_group_ids || []) as string[];
+    const targetAll = (emergency as any).target_all === true || (!screenIds.length && !groupIds.length);
+    const mediaUrl = await resolveMediaUrl((emergency as any).media_id);
+
+    return {
+      id: emergency.id,
+      triggered_by: emergency.triggered_by,
+      message: emergency.message,
+      severity: emergency.priority,
+      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
+      triggered_at: emergency.triggered_at?.toISOString?.() ?? emergency.triggered_at ?? emergency.created_at?.toISOString?.(),
+      cleared_at: emergency.cleared_at?.toISOString?.() || null,
+      cleared_by: emergency.cleared_by || null,
+      expires_at: emergency.expires_at?.toISOString?.() || null,
+      clear_reason: emergency.clear_reason ?? null,
+      audit_note: emergency.audit_note ?? null,
+      emergency_type_id: emergency.emergency_type_id ?? null,
+      media_id: emergency.media_id ?? null,
+      media_url: mediaUrl,
+      screen_ids: screenIds,
+      screen_group_ids: groupIds,
+      target_all: targetAll,
+      scope: getScopeLabel(screenIds, groupIds, targetAll),
+      is_active:
+        emergency.is_active === true &&
+        emergency.cleared_at == null &&
+        (!emergency.expires_at || new Date(emergency.expires_at).getTime() > Date.now()),
+    };
+  };
+
   // Emergency types: create
   fastify.post<{ Body: typeof emergencyTypeSchema._type }>(
     apiEndpoints.emergencyTypes.create,
@@ -138,7 +230,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
         const data = emergencyTypeSchema.parse(request.body);
         if (data.media_id) {
@@ -186,7 +278,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
         const query = listEmergencyTypesQuerySchema.parse(request.query);
         const result = await emergencyTypeRepo.list({ page: query.page, limit: query.limit });
@@ -230,7 +322,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
         const type = await emergencyTypeRepo.findById((request.params as any).id);
         if (!type) throw AppError.notFound('Emergency type not found');
@@ -267,7 +359,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
         const data = emergencyTypeUpdateSchema.parse(request.body);
         if (Object.prototype.hasOwnProperty.call(data, 'media_id') && data.media_id) {
@@ -310,7 +402,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
         const existing = await emergencyTypeRepo.findById((request.params as any).id);
         if (!existing) throw AppError.notFound('Emergency type not found');
@@ -342,17 +434,11 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
         const data = triggerEmergencySchema.parse(request.body);
         if (!data.emergency_type_id && !data.message) {
           throw AppError.badRequest('emergency_type_id or message is required');
-        }
-
-        // Check if there's already an active emergency
-        const active = await emergencyRepo.getActive();
-        if (active) {
-          throw AppError.conflict('Emergency already active');
         }
 
         const type = data.emergency_type_id
@@ -377,8 +463,17 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const uniqueScreenIds = Array.from(new Set(data.screen_ids || []));
         const uniqueGroupIds = Array.from(new Set(data.screen_group_ids || []));
         const targetAll = data.target_all === true || (!uniqueScreenIds.length && !uniqueGroupIds.length);
+        const scopeCount = Number(targetAll) + Number(uniqueScreenIds.length > 0) + Number(uniqueGroupIds.length > 0);
+        if (scopeCount !== 1) {
+          throw AppError.badRequest('Emergency target scope must be exactly one of target_all, screen_ids, or screen_group_ids');
+        }
         if (!targetAll) {
           await validateTargets(uniqueScreenIds, uniqueGroupIds);
+        }
+
+        const expiresAt = data.expires_at ? new Date(data.expires_at) : null;
+        if (expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())) {
+          throw AppError.badRequest('expires_at must be a future datetime');
         }
 
         const emergency = await emergencyRepo.create({
@@ -390,21 +485,19 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           screen_ids: targetAll ? [] : uniqueScreenIds,
           screen_group_ids: targetAll ? [] : uniqueGroupIds,
           target_all: targetAll,
+          expires_at: expiresAt,
+          audit_note: data.audit_note ?? null,
         });
+        const affectedScreenIds = await resolveTargetScreenIds(uniqueScreenIds, uniqueGroupIds, targetAll);
 
-        const mediaUrl = await resolveMediaUrl(mediaId);
-        io.emit('emergency:triggered', {
-          id: emergency.id,
-          triggered_by: emergency.triggered_by,
-          message: emergency.message,
-          severity: emergency.priority,
-          created_at: emergency.created_at.toISOString(),
-          emergency_type_id: emergency.emergency_type_id ?? null,
-          media_id: emergency.media_id ?? null,
-          media_url: mediaUrl,
-          screen_ids: emergency.screen_ids || [],
-          screen_group_ids: emergency.screen_group_ids || [],
-          target_all: emergency.target_all ?? false,
+        const serializedEmergency = await serializeEmergency(emergency);
+        io.emit('emergency:triggered', serializedEmergency);
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'EMERGENCY',
+          screenIds: affectedScreenIds,
+          groupIds: uniqueGroupIds,
+          targetAll,
+          createdBy: payload.sub,
         });
         logger.warn(
           {
@@ -415,21 +508,15 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           'Emergency triggered'
         );
 
-        return reply.status(CREATED).send({
-          id: emergency.id,
-          triggered_by: emergency.triggered_by,
-          message: emergency.message,
-          severity: emergency.priority,
-          created_at: emergency.created_at.toISOString(),
-          cleared_at: emergency.cleared_at?.toISOString() || null,
-          cleared_by: emergency.cleared_by || null,
-          emergency_type_id: emergency.emergency_type_id ?? null,
-          media_id: emergency.media_id ?? null,
-          media_url: mediaUrl,
-          screen_ids: emergency.screen_ids || [],
-          screen_group_ids: emergency.screen_group_ids || [],
-          target_all: emergency.target_all ?? false,
+        await db.insert(schema.auditLogs).values({
+          user_id: payload.sub,
+          action: 'EMERGENCY_TRIGGER',
+          entity_type: 'EMERGENCY',
+          entity_id: emergency.id,
+          ip_address: request.ip,
         });
+
+        return reply.status(CREATED).send(serializedEmergency);
       } catch (error) {
         logger.error(error, 'Trigger emergency error');
         return respondWithError(reply, error);
@@ -455,33 +542,33 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
-        const emergency = await emergencyRepo.getActive();
+        const activeEmergencies = await emergencyRepo.listActive();
 
-        if (!emergency) {
+        if (activeEmergencies.length === 0) {
           return reply.send({
             active: false,
             emergency: null,
+            active_count: 0,
+            active_emergencies: [],
           });
         }
 
-        const mediaUrl = await resolveMediaUrl((emergency as any).media_id);
+        const serialized = await Promise.all(activeEmergencies.map((emergency) => serializeEmergency(emergency)));
+        serialized.sort((left, right) => {
+          const scopeDelta = getScopeRank(right.scope) - getScopeRank(left.scope);
+          if (scopeDelta !== 0) return scopeDelta;
+          const severityDelta = getSeverityRank(right.severity) - getSeverityRank(left.severity);
+          if (severityDelta !== 0) return severityDelta;
+          return Date.parse(right.created_at) - Date.parse(left.created_at);
+        });
+
         return reply.send({
           active: true,
-          emergency: {
-            id: emergency.id,
-            triggered_by: emergency.triggered_by,
-            message: emergency.message,
-            severity: emergency.priority,
-            created_at: emergency.created_at.toISOString(),
-            emergency_type_id: (emergency as any).emergency_type_id ?? null,
-            media_id: (emergency as any).media_id ?? null,
-            media_url: mediaUrl,
-            screen_ids: (emergency as any).screen_ids || [],
-            screen_group_ids: (emergency as any).screen_group_ids || [],
-            target_all: (emergency as any).target_all ?? false,
-          },
+          active_count: serialized.length,
+          emergency: serialized[0],
+          active_emergencies: serialized,
         });
       } catch (error) {
         logger.error(error, 'Get emergency status error');
@@ -491,7 +578,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
   );
 
   // Clear emergency
-  fastify.post<{ Params: { id: string } }>(
+  fastify.post<{ Params: { id: string }; Body: typeof clearEmergencySchema._type }>(
     apiEndpoints.emergency.clear,
     {
       schema: {
@@ -508,27 +595,28 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
-        const emergency = await emergencyRepo.clear((request.params as any).id, payload.sub);
+        const clearPayload = clearEmergencySchema.parse(request.body || {});
+        const emergency = await emergencyRepo.clear((request.params as any).id, payload.sub, clearPayload.clear_reason ?? null);
 
         if (!emergency) {
           throw AppError.notFound('Emergency not found');
         }
+        const affectedScreenIds = await resolveTargetScreenIds(
+          ((emergency as any).screen_ids || []) as string[],
+          ((emergency as any).screen_group_ids || []) as string[],
+          (emergency as any).target_all === true
+        );
 
-        io.emit('emergency:cleared', {
-          id: emergency.id,
-          triggered_by: emergency.triggered_by,
-          message: emergency.message,
-          severity: emergency.priority,
-          created_at: emergency.created_at.toISOString(),
-          cleared_at: emergency.cleared_at?.toISOString(),
-          cleared_by: emergency.cleared_by,
-          emergency_type_id: (emergency as any).emergency_type_id ?? null,
-          media_id: (emergency as any).media_id ?? null,
-          screen_ids: (emergency as any).screen_ids || [],
-          screen_group_ids: (emergency as any).screen_group_ids || [],
-          target_all: (emergency as any).target_all ?? false,
+        const serializedEmergency = await serializeEmergency(emergency);
+        io.emit('emergency:cleared', serializedEmergency);
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'EMERGENCY',
+          screenIds: affectedScreenIds,
+          groupIds: ((emergency as any).screen_group_ids || []) as string[],
+          targetAll: (emergency as any).target_all === true,
+          createdBy: payload.sub,
         });
         logger.info(
           {
@@ -538,20 +626,15 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
           'Emergency cleared'
         );
 
-        return reply.send({
-          id: emergency.id,
-          triggered_by: emergency.triggered_by,
-          message: emergency.message,
-          severity: emergency.priority,
-          created_at: emergency.created_at.toISOString(),
-          cleared_at: emergency.cleared_at?.toISOString(),
-          cleared_by: emergency.cleared_by,
-          emergency_type_id: (emergency as any).emergency_type_id ?? null,
-          media_id: (emergency as any).media_id ?? null,
-          screen_ids: (emergency as any).screen_ids || [],
-          screen_group_ids: (emergency as any).screen_group_ids || [],
-          target_all: (emergency as any).target_all ?? false,
+        await db.insert(schema.auditLogs).values({
+          user_id: payload.sub,
+          action: 'EMERGENCY_CLEAR',
+          entity_type: 'EMERGENCY',
+          entity_id: emergency.id,
+          ip_address: request.ip,
         });
+
+        return reply.send(serializedEmergency);
       } catch (error) {
         logger.error(error, 'Clear emergency error');
         return respondWithError(reply, error);
@@ -577,7 +660,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         }
 
         const payload = await verifyAccessToken(token);
-        if (!requireAdmin(payload, reply)) return;
+        if (!(await requireEmergencyAdmin(payload, reply))) return;
 
         const page = (request.query as any).page ? parseInt((request.query as any).page as string) : 1;
         const limit = (request.query as any).limit ? parseInt((request.query as any).limit as string) : 20;
@@ -585,20 +668,7 @@ export async function emergencyRoutes(fastify: FastifyInstance) {
         const result = await emergencyRepo.list({ page, limit });
 
         return reply.send({
-          items: result.items.map((e) => ({
-            id: e.id,
-            triggered_by: e.triggered_by,
-            message: e.message,
-            severity: e.priority,
-            created_at: e.created_at.toISOString(),
-            cleared_at: e.cleared_at?.toISOString() || null,
-            cleared_by: e.cleared_by || null,
-            emergency_type_id: (e as any).emergency_type_id ?? null,
-            media_id: (e as any).media_id ?? null,
-            screen_ids: (e as any).screen_ids || [],
-            screen_group_ids: (e as any).screen_group_ids || [],
-            target_all: (e as any).target_all ?? false,
-          })),
+          items: await Promise.all(result.items.map((e) => serializeEmergency(e))),
           pagination: {
             page: result.page,
             limit: result.limit,

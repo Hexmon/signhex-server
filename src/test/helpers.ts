@@ -1,10 +1,11 @@
 import { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { createServer } from '@/server';
 import { initializeDatabase, closeDatabase, getDatabase, schema } from '@/db';
 import { generateAccessToken } from '@/auth/jwt';
 import { hashPassword } from '@/auth/password';
-import { eq } from 'drizzle-orm';
 import { createSessionRepository } from '@/db/repositories/session';
+import { SYSTEM_ROLE_DEFAULTS } from '@/rbac/system-roles';
 
 export async function createTestServer(): Promise<FastifyInstance> {
   await initializeDatabase();
@@ -43,39 +44,60 @@ export async function seedTestData() {
       {
         id: testRoles.ADMIN.id,
         name: testRoles.ADMIN.name,
-        permissions: {},
+        permissions: SYSTEM_ROLE_DEFAULTS.ADMIN,
         is_system: true,
       },
       {
         id: testRoles.OPERATOR.id,
         name: testRoles.OPERATOR.name,
-        permissions: {},
+        permissions: SYSTEM_ROLE_DEFAULTS.OPERATOR,
         is_system: true,
       },
       {
         id: testRoles.DEPARTMENT.id,
         name: testRoles.DEPARTMENT.name,
-        permissions: {},
+        permissions: SYSTEM_ROLE_DEFAULTS.DEPARTMENT,
         is_system: true,
       },
     ])
     .onConflictDoNothing();
 
-  await db.delete(schema.users).where(eq(schema.users.email, testUser.email));
-
   const passwordHash = await hashPassword(testUser.password);
-  await db.insert(schema.users).values({
-    id: testUser.id,
-    email: testUser.email,
-    password_hash: passwordHash,
-    first_name: testUser.first_name,
-    last_name: testUser.last_name,
-    role_id: testUser.role_id,
-    is_active: true,
-  });
+  await db
+    .insert(schema.users)
+    .values({
+      id: testUser.id,
+      email: testUser.email,
+      password_hash: passwordHash,
+      first_name: testUser.first_name,
+      last_name: testUser.last_name,
+      role_id: testUser.role_id,
+      is_active: true,
+    })
+    .onConflictDoUpdate({
+      target: schema.users.id,
+      set: {
+        email: testUser.email,
+        password_hash: passwordHash,
+        first_name: testUser.first_name,
+        last_name: testUser.last_name,
+        role_id: testUser.role_id,
+        is_active: true,
+      },
+    });
 }
 
 export async function closeTestServer(server: FastifyInstance) {
+  const db = getDatabase();
+  await db
+    .update(schema.emergencies)
+    .set({
+      is_active: false,
+      cleared_at: new Date(),
+      clear_reason: 'test-server-cleanup',
+      updated_at: new Date(),
+    })
+    .where(eq(schema.emergencies.triggered_by, testUser.id));
   await server.close();
   await closeDatabase();
 }

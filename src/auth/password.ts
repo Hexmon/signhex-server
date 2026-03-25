@@ -1,8 +1,6 @@
 import { hash, verify } from 'argon2';
-import { config as appConfig } from '@/config';
 import { AppError } from '@/utils/app-error';
-
-const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).+$/;
+import { getPasswordPolicy } from '@/utils/settings';
 
 export async function hashPassword(password: string): Promise<string> {
   return hash(password, {
@@ -22,19 +20,28 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 }
 
 export function validatePasswordStrength(password: string): void {
-  if (password.length < appConfig.PASSWORD_MIN_LENGTH) {
+  const policy = getPasswordPolicy();
+
+  if (password.length < policy.min_length) {
     throw AppError.validation([
       {
         field: 'password',
-        message: `Password must be at least ${appConfig.PASSWORD_MIN_LENGTH} characters long`,
+        message: `Password must be at least ${policy.min_length} characters long`,
       },
     ]);
   }
-  if (!PASSWORD_COMPLEXITY_REGEX.test(password)) {
+
+  const failures: string[] = [];
+  if (policy.require_uppercase && !/[A-Z]/.test(password)) failures.push('uppercase');
+  if (policy.require_lowercase && !/[a-z]/.test(password)) failures.push('lowercase');
+  if (policy.require_number && !/\d/.test(password)) failures.push('number');
+  if (policy.require_special && !/[^\w\s]/.test(password)) failures.push('special character');
+
+  if (failures.length > 0) {
     throw AppError.validation([
       {
         field: 'password',
-        message: 'Password must include upper, lower, number, and special character',
+        message: `Password must include ${failures.join(', ')}`,
       },
     ]);
   }

@@ -14,6 +14,7 @@ import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
+import { serializeMediaRecord } from '@/utils/media';
 
 const logger = createLogger('presentation-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, NO_CONTENT, UNAUTHORIZED } = HTTP_STATUS;
@@ -42,6 +43,7 @@ const presentationSlotItemSchema = z.object({
   duration_seconds: z.number().int().positive().optional(),
   fit_mode: z.string().optional(),
   audio_enabled: z.boolean().optional(),
+  loop_enabled: z.boolean().optional(),
 });
 
 export async function presentationRoutes(fastify: FastifyInstance) {
@@ -202,8 +204,9 @@ export async function presentationRoutes(fastify: FastifyInstance) {
             duration_seconds: i.duration_seconds,
             fit_mode: i.fit_mode,
             audio_enabled: i.audio_enabled,
+            loop_enabled: i.loop_enabled ?? false,
             created_at: i.created_at.toISOString?.() ?? i.created_at,
-            media: mediaMap.get(i.media_id) || null,
+            media: mediaMap.get(i.media_id) ? serializeMediaRecord(mediaMap.get(i.media_id) as any) : null,
           })),
           created_by: presentation.created_by,
           created_at: presentation.created_at.toISOString(),
@@ -259,7 +262,6 @@ export async function presentationRoutes(fastify: FastifyInstance) {
                 ? {
                     id: media.id,
                     name: media.name,
-                    original_filename: (media as any).original_filename ?? media.name,
                     type: media.type,
                     status: media.status,
                     source_bucket: media.source_bucket,
@@ -329,7 +331,6 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           media: {
             id: media.id,
             name: media.name,
-            original_filename: (media as any).original_filename ?? media.name,
             type: media.type,
             status: media.status,
             source_bucket: media.source_bucket,
@@ -419,7 +420,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
             fit_mode: i.fit_mode,
             audio_enabled: i.audio_enabled,
             created_at: i.created_at.toISOString?.() ?? i.created_at,
-            media: mediaMap.get(i.media_id) || null,
+            media: mediaMap.get(i.media_id) ? serializeMediaRecord(mediaMap.get(i.media_id) as any) : null,
           })),
         });
       } catch (error) {
@@ -473,6 +474,7 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           duration_seconds: data.duration_seconds,
           fit_mode: data.fit_mode,
           audio_enabled: data.audio_enabled,
+          loop_enabled: data.loop_enabled,
         });
 
         return reply.status(CREATED).send({
@@ -484,11 +486,11 @@ export async function presentationRoutes(fastify: FastifyInstance) {
           duration_seconds: item.duration_seconds,
           fit_mode: item.fit_mode,
           audio_enabled: item.audio_enabled,
+          loop_enabled: item.loop_enabled ?? false,
           created_at: item.created_at.toISOString?.() ?? item.created_at,
           media: {
             id: media.id,
             name: media.name,
-            original_filename: (media as any).original_filename ?? media.name,
             type: media.type,
             status: media.status,
             source_bucket: media.source_bucket,

@@ -13,9 +13,12 @@ import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { publishScheduleSnapshot } from '@/routes/schedule-publish-helper';
 import { AppError } from '@/utils/app-error';
+import { canAccessOwnedResource, getDepartmentUserIds, isAdminLike, isDepartmentScopedRole } from '@/rbac/policy';
+import { createScheduleReservationService } from '@/services/scheduling/reservation-service';
+import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 
 const logger = createLogger('schedule-request-routes');
-const { CREATED, FORBIDDEN, NOT_FOUND, UNAUTHORIZED, BAD_REQUEST } = HTTP_STATUS;
+const { CREATED } = HTTP_STATUS;
 
 const createRequestSchema = z.object({
   schedule_id: z.string().uuid(),
@@ -34,7 +37,7 @@ const updateRequestSchema = z.object({
 const listRequestQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
-  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'PUBLISHED']).optional(),
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'PUBLISHED', 'TAKEN_DOWN', 'EXPIRED']).optional(),
   include: z.string().optional(),
 });
 
@@ -53,6 +56,7 @@ const INCLUDE_KEYS = [
   'screen_groups',
   'departments',
   'layouts',
+  'reservation_summary',
 ] as const;
 
 function parseInclude(raw?: string) {
@@ -105,6 +109,7 @@ function mapSchedule(s: any | null) {
     id: s.id,
     name: s.name,
     description: s.description ?? null,
+    timezone: s.timezone ?? null,
     start_at: toIso(s.start_at),
     end_at: toIso(s.end_at),
     is_active: s.is_active,
@@ -188,6 +193,7 @@ function mapPresentationSlot(s: any) {
     duration_seconds: s.duration_seconds ?? null,
     fit_mode: s.fit_mode ?? null,
     audio_enabled: s.audio_enabled ?? false,
+    loop_enabled: s.loop_enabled ?? false,
     created_at: toIso(s.created_at),
   };
 }
@@ -220,6 +226,24 @@ function mapScreenGroup(g: any) {
   return {
     id: g.id,
     name: g.name,
+  };
+}
+
+function mapReservationSummary(r: any) {
+  return {
+    state: r.reservation_state ?? null,
+    token: r.reservation_token ?? null,
+    version: r.reservation_version ?? null,
+    hold_expires_at: toIso(r.hold_expires_at),
+    published_at: toIso(r.published_at),
+  };
+}
+
+function mapTakedownSummary(r: any) {
+  return {
+    taken_down_at: toIso(r.taken_down_at),
+    taken_down_by: r.taken_down_by ?? null,
+    takedown_reason: r.takedown_reason ?? null,
   };
 }
 
@@ -320,7 +344,6 @@ async function expandScheduleRequests(
     include.has('media') && mediaIds.length
       ? await db.select().from(schema.media).where(inArray(schema.media.id, mediaIds as any))
       : [];
-  const mediaMap = new Map(media.map((m) => [m.id, m]));
 
   const screenIds = include.has('screens')
     ? Array.from(new Set(scheduleItems.flatMap((i) => i.screen_ids || [])))
@@ -426,6 +449,8 @@ async function expandScheduleRequests(
       reviewed_at: toIso(r.reviewed_at),
       created_at: toIso(r.created_at),
       updated_at: toIso(r.updated_at),
+      reservation_summary: mapReservationSummary(r),
+      ...mapTakedownSummary(r),
       ...(include.has('users')
         ? {
             requested_by_user: userMap.get(r.requested_by)
@@ -478,7 +503,17 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
   const repo = createScheduleRequestRepository();
   const scheduleRepo = createScheduleRepository();
   const scheduleItemRepo = createScheduleItemRepository();
+  const reservationService = createScheduleReservationService();
   const db = getDatabase();
+
+  const assertScheduleRequestAccess = async (payload: { sub: string; role: string; department_id?: string }, req: any) => {
+    if (isAdminLike(payload.role)) return;
+    const canAccess = await canAccessOwnedResource(
+      { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+      req.requested_by
+    );
+    if (!canAccess) throw AppError.forbidden('Forbidden');
+  };
 
   // Create schedule request (draft)
   fastify.post<{ Body: typeof createRequestSchema._type; Querystring: typeof createRequestQuerySchema._type }>(
@@ -501,10 +536,40 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const data = createRequestSchema.parse(request.body);
         const query = createRequestQuerySchema.parse(request.query);
         const include = parseInclude(query.include);
-        const created = await repo.create({
-          schedule_id: data.schedule_id,
-          notes: data.notes,
-          requested_by: payload.sub,
+        const schedule = await scheduleRepo.findById(data.schedule_id);
+        if (!schedule) throw AppError.notFound('Schedule not found');
+        const canAccessSchedule = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          schedule.created_by
+        );
+        if (!canAccessSchedule) throw AppError.forbidden('Forbidden');
+        const created = await db.transaction(async (tx) => {
+          const [createdRequest] = await tx
+            .insert(schema.scheduleRequests)
+            .values({
+              schedule_id: data.schedule_id,
+              schedule_payload: {},
+              notes: data.notes,
+              requested_by: payload.sub,
+            })
+            .returning();
+
+          await reservationService.acquireHoldsForRequest(
+            {
+              scheduleRequestId: createdRequest.id,
+              scheduleId: data.schedule_id,
+              ownerUserId: payload.sub,
+              allowPrivateRefs: isAdminLike(payload.role),
+            },
+            tx
+          );
+
+          const [updatedRequest] = await tx
+            .select()
+            .from(schema.scheduleRequests)
+            .where(eq(schema.scheduleRequests.id, createdRequest.id));
+
+          return updatedRequest ?? createdRequest;
         });
 
         if (include.size === 0) {
@@ -516,6 +581,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
             notes: created.notes,
             requested_by: created.requested_by,
             review_notes: (created as any).review_notes ?? null,
+            reservation_summary: mapReservationSummary(created),
             created_at: created.created_at.toISOString?.() ?? created.created_at,
           });
         }
@@ -547,7 +613,15 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
-        const filter = ability.can('manage', 'all') ? {} : { requested_by: payload.sub };
+        const requestedByIds =
+          isDepartmentScopedRole(payload.role) && !isAdminLike(payload.role)
+            ? await getDepartmentUserIds(payload.department_id)
+            : undefined;
+        const filter = ability.can('manage', 'all')
+          ? {}
+          : requestedByIds
+            ? { requested_by_ids: requestedByIds }
+            : { requested_by: payload.sub };
         const counts = await repo.countSummary(filter);
         return reply.send({ counts });
       } catch (error) {
@@ -577,11 +651,16 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
 
         const query = listRequestQuerySchema.parse(request.query);
         const include = parseInclude(query.include);
+        const requestedByIds =
+          isDepartmentScopedRole(payload.role) && !isAdminLike(payload.role)
+            ? await getDepartmentUserIds(payload.department_id)
+            : undefined;
         const filter = {
           page: query.page,
           limit: query.limit,
           status: query.status,
-          requested_by: ability.can('manage', 'all') ? undefined : payload.sub,
+          requested_by: ability.can('manage', 'all') || requestedByIds ? undefined : payload.sub,
+          requested_by_ids: ability.can('manage', 'all') ? undefined : requestedByIds,
         };
         const result = await repo.list(filter);
 
@@ -597,6 +676,8 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
               reviewed_by: r.reviewed_by,
               reviewed_at: r.reviewed_at?.toISOString?.() ?? r.reviewed_at,
               review_notes: r.review_notes ?? null,
+              reservation_summary: mapReservationSummary(r),
+              ...mapTakedownSummary(r),
               created_at: r.created_at.toISOString?.() ?? r.created_at,
               updated_at: r.updated_at.toISOString?.() ?? r.updated_at,
             })),
@@ -640,14 +721,21 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!ability.can('update', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
         const data = updateRequestSchema.parse(request.body);
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
+        await assertScheduleRequestAccess(payload, req);
 
         if (req.status === 'APPROVED') {
           throw AppError.badRequest('Cannot edit an approved request; reject or create new');
+        }
+        if (req.status === 'PUBLISHED' || req.status === 'CANCELLED' || req.status === 'EXPIRED') {
+          throw AppError.badRequest('This request can no longer be edited');
+        }
+        if (data.schedule_id && data.schedule_id !== req.schedule_id) {
+          throw AppError.badRequest('Cannot change the schedule for a submitted request. Cancel and resubmit instead.');
         }
 
         const [updated] = await db
@@ -667,12 +755,14 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           status: updated.status,
           notes: updated.notes,
           requested_by: updated.requested_by,
-          review_notes: updated.review_notes ?? null,
-          reviewed_by: updated.reviewed_by,
-          reviewed_at: updated.reviewed_at?.toISOString?.() ?? updated.reviewed_at,
-          created_at: updated.created_at.toISOString?.() ?? updated.created_at,
-          updated_at: updated.updated_at.toISOString?.() ?? updated.updated_at,
-        });
+            review_notes: updated.review_notes ?? null,
+            reviewed_by: updated.reviewed_by,
+            reviewed_at: updated.reviewed_at?.toISOString?.() ?? updated.reviewed_at,
+            reservation_summary: mapReservationSummary(updated),
+            ...mapTakedownSummary(updated),
+            created_at: updated.created_at.toISOString?.() ?? updated.created_at,
+            updated_at: updated.updated_at.toISOString?.() ?? updated.updated_at,
+          });
       } catch (error) {
         logger.error(error, 'Update schedule request error');
         return respondWithError(reply, error);
@@ -703,9 +793,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
-        if (!ability.can('manage', 'all') && req.requested_by !== payload.sub) {
-          throw AppError.forbidden('Forbidden');
-        }
+        await assertScheduleRequestAccess(payload, req);
 
         if (include.size === 0) {
           return reply.send({
@@ -718,6 +806,8 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
             reviewed_by: req.reviewed_by,
             reviewed_at: req.reviewed_at?.toISOString?.() ?? req.reviewed_at,
             review_notes: req.review_notes ?? null,
+            reservation_summary: mapReservationSummary(req),
+            ...mapTakedownSummary(req),
             created_at: req.created_at.toISOString?.() ?? req.created_at,
             updated_at: req.updated_at.toISOString?.() ?? req.updated_at,
           });
@@ -748,18 +838,35 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
 
-        const updated = await repo.updateStatus(req.id, 'APPROVED', payload.sub, (request.body as any)?.comment);
+        const updated = await db.transaction(async (tx) => {
+          await reservationService.promoteRequestHold(
+            {
+              scheduleRequestId: req.id,
+              reviewerId: payload.sub,
+              reviewNotes: (request.body as any)?.comment ?? null,
+            },
+            tx
+          );
+
+          const [row] = await tx
+            .select()
+            .from(schema.scheduleRequests)
+            .where(eq(schema.scheduleRequests.id, req.id));
+          return row;
+        });
         return reply.send({
           id: updated!.id,
           status: updated!.status,
           reviewed_by: updated!.reviewed_by,
           reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
-          review_notes: (updated as any).review_notes ?? (request.body as any)?.comment ?? null,
+          review_notes: (request.body as any)?.comment ?? updated!.review_notes ?? null,
+          reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
         });
       } catch (error) {
         logger.error(error, 'Approve schedule request error');
@@ -784,12 +891,26 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
-        if (req.status !== 'APPROVED') {
-          throw AppError.badRequest('Schedule request must be APPROVED to publish');
+        const validation = await reservationService.validateApprovedRequestForPublish(req.id, db);
+        if (validation.alreadyPublished && validation.publishId) {
+          const [existingPublish] = await db
+            .select()
+            .from(schema.publishes)
+            .where(eq(schema.publishes.id, validation.publishId));
+          if (!existingPublish) {
+            throw AppError.conflict('The request is marked as published but the publish record could not be found.');
+          }
+          return reply.send({
+            message: 'Schedule was already published from this request',
+            schedule_request_id: req.id,
+            schedule_id: req.schedule_id,
+            publish_id: existingPublish.id,
+            snapshot_id: existingPublish.snapshot_id,
+          });
         }
 
         const publishResult = await publishScheduleSnapshot({
@@ -801,12 +922,24 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           db,
           scheduleRepo,
           scheduleItemRepo,
+          onPublished: async ({ tx, publish }) => {
+            await reservationService.finalizeRequestPublish(
+              {
+                scheduleRequestId: req.id,
+                publishId: publish.id,
+              },
+              tx
+            );
+          },
         });
 
-        await db
-          .update(schema.scheduleRequests)
-          .set({ updated_at: new Date() })
-          .where(eq(schema.scheduleRequests.id, req.id));
+        await dispatchPlaybackRefresh(fastify, {
+          reason: 'PUBLISH',
+          screenIds: publishResult.resolvedScreenIds,
+          createdBy: payload.sub,
+          publishId: publishResult.publish.id,
+          snapshotId: publishResult.snapshot.id,
+        });
 
         return reply.send({
           message: 'Schedule published from request',
@@ -840,21 +973,150 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         if (!token) throw AppError.unauthorized('Missing authorization header');
         const payload = await verifyAccessToken(token);
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
-        if (!ability.can('manage', 'all')) throw AppError.forbidden('Forbidden');
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
 
         const req = await repo.findById((request.params as any).id);
         if (!req) throw AppError.notFound('Schedule request not found');
 
-        const updated = await repo.updateStatus(req.id, 'REJECTED', payload.sub, (request.body as any)?.comment);
+        await db.transaction(async (tx) => {
+          await reservationService.releaseRequestReservations(
+            {
+              scheduleRequestId: req.id,
+              nextStatus: 'REJECTED',
+              releaseState: 'RELEASED',
+              releaseReason: 'request-rejected',
+              reviewedBy: payload.sub,
+              reviewNotes: (request.body as any)?.comment ?? null,
+            },
+            tx
+          );
+        });
+        const updated = await repo.findById(req.id);
         return reply.send({
           id: updated!.id,
           status: updated!.status,
           reviewed_by: updated!.reviewed_by,
           reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
           review_notes: (updated as any).review_notes ?? (request.body as any)?.comment ?? null,
+          reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
         });
       } catch (error) {
         logger.error(error, 'Reject schedule request error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    apiEndpoints.scheduleRequests.cancel,
+    {
+      schema: {
+        description: 'Cancel a pending or approved schedule request',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        const req = await repo.findById((request.params as any).id);
+        if (!req) throw AppError.notFound('Schedule request not found');
+
+        const isOwner = req.requested_by === payload.sub;
+        if (!isOwner && !isAdminLike(payload.role)) {
+          throw AppError.forbidden('Forbidden');
+        }
+        if (!['PENDING', 'APPROVED'].includes(req.status)) {
+          throw AppError.badRequest('Only pending or approved requests can be cancelled');
+        }
+
+        await db.transaction(async (tx) => {
+          await reservationService.releaseRequestReservations(
+            {
+              scheduleRequestId: req.id,
+              nextStatus: 'CANCELLED',
+              releaseState: 'CANCELLED',
+              releaseReason: isOwner ? 'request-cancelled-by-owner' : 'request-cancelled-by-admin',
+              reviewedBy: isAdminLike(payload.role) ? payload.sub : null,
+            },
+            tx
+          );
+        });
+
+        const updated = await repo.findById(req.id);
+        return reply.send({
+          id: updated!.id,
+          status: updated!.status,
+          reviewed_by: updated!.reviewed_by,
+          reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
+          review_notes: updated!.review_notes ?? null,
+          reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
+        });
+      } catch (error) {
+        logger.error(error, 'Cancel schedule request error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    apiEndpoints.scheduleRequests.takeDown,
+    {
+      schema: {
+        description: 'Take down a published schedule request (admin only)',
+        tags: ['Schedules'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        if (!isAdminLike(payload.role)) throw AppError.forbidden('Forbidden');
+
+        const req = await repo.findById((request.params as any).id);
+        if (!req) throw AppError.notFound('Schedule request not found');
+
+        const takedownResult = await db.transaction(async (tx) =>
+          reservationService.takeDownPublishedRequest(
+            {
+              scheduleRequestId: req.id,
+              takenDownBy: payload.sub,
+              takedownReason: (request.body as any)?.reason ?? null,
+            },
+            tx
+          )
+        );
+
+        if (takedownResult.screenIds.length > 0) {
+          await dispatchPlaybackRefresh(fastify, {
+            reason: 'TAKE_DOWN',
+            screenIds: takedownResult.screenIds as string[],
+            createdBy: payload.sub,
+          });
+        }
+
+        const updated = await repo.findById(req.id);
+        return reply.send({
+          id: updated!.id,
+          status: updated!.status,
+          reviewed_by: updated!.reviewed_by,
+          reviewed_at: updated!.reviewed_at?.toISOString?.() ?? updated!.reviewed_at,
+          review_notes: updated!.review_notes ?? null,
+          reservation_summary: mapReservationSummary(updated),
+          ...mapTakedownSummary(updated),
+          resolved_screen_ids: takedownResult.screenIds,
+          message: takedownResult.alreadyTakenDown
+            ? 'Schedule request was already taken down'
+            : 'Published schedule request taken down',
+        });
+      } catch (error) {
+        logger.error(error, 'Take down schedule request error');
         return respondWithError(reply, error);
       }
     }

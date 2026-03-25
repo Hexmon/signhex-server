@@ -13,6 +13,7 @@ import { respondWithError } from '@/utils/errors';
 import { isLockedOut, recordFailedAttempt, resetAttempts } from '@/auth/login-throttle';
 import { AppError } from '@/utils/app-error';
 import { createRoleRepository } from '@/db/repositories/role';
+import { getIdleTimeoutSeconds } from '@/utils/settings';
 
 const logger = createLogger('auth-routes');
 const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, TOO_MANY_REQUESTS, UNAUTHORIZED } = HTTP_STATUS;
@@ -89,7 +90,8 @@ export async function authRoutes(fastify: FastifyInstance) {
           email,
           role.id,
           role.name,
-          department_id
+          department_id,
+          { expiresInSeconds: getIdleTimeoutSeconds() }
         );
         const csrfToken = randomUUID();
 
@@ -132,6 +134,7 @@ export async function authRoutes(fastify: FastifyInstance) {
             last_name: last_name,
             role: role.name,
             role_id: role.id,
+            department_id: department_id ?? null,
           },
           expiresAt: expiresAt.toISOString(),
         };
@@ -159,25 +162,26 @@ export async function authRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const secure = appConfig.NODE_ENV !== 'development';
+      const expired = 'Max-Age=0; Path=/; SameSite=Lax' + (secure ? '; Secure' : '');
+
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
-        if (!token) {
-          throw AppError.unauthorized('Missing authorization header');
+        if (token) {
+          try {
+            const payload = await verifyAccessToken(token);
+            await sessionRepo.revokeByJti(payload.jti);
+          } catch (tokenError) {
+            logger.warn(tokenError, 'Ignoring invalid token during logout');
+          }
         }
-
-        const payload = await verifyAccessToken(token);
-        await sessionRepo.revokeByJti(payload.jti);
-
-        // Clear cookies
-        const secure = appConfig.NODE_ENV !== 'development';
-        const expired = 'Max-Age=0; Path=/; SameSite=Lax' + (secure ? '; Secure' : '');
-        reply.header('Set-Cookie', [`access_token=; ${expired}; HttpOnly`, `csrf_token=; ${expired}`]);
-
-        return reply.send({ message: 'Logged out successfully' });
       } catch (error) {
-        logger.error(error, 'Logout error');
-        throw AppError.unauthorized('Invalid token');
+        logger.warn(error, 'Ignoring logout revoke error');
+      } finally {
+        reply.header('Set-Cookie', [`access_token=; ${expired}; HttpOnly`, `csrf_token=; ${expired}`]);
       }
+
+      return reply.send({ message: 'Logged out successfully' });
     }
   );
 

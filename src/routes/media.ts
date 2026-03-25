@@ -1,8 +1,18 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import path from 'path';
 import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/schemas/media';
 import { createMediaRepository } from '@/db/repositories/media';
+import type { MediaUsageReference } from '@/db/repositories/media';
+import { createUserRepository } from '@/db/repositories/user';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
+import {
+  canAccessOwnedResource,
+  canReadAdminSharedResource,
+  getAdminUserIds,
+  getDepartmentUserIds,
+  isDepartmentScopedRole,
+} from '@/rbac/policy';
 import { getPresignedPutUrl, createBucketIfNotExists, headObject, getPresignedUrl } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
@@ -13,9 +23,18 @@ import { respondWithError } from '@/utils/errors';
 import { deleteObject } from '@/s3';
 import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
+import { AppError } from '@/utils/app-error';
+import {
+  buildContentDisposition,
+  buildObjectKey,
+  normalizeDisplayName,
+  normalizeOriginalFilename,
+  sanitizeFilenameHint,
+} from '@/utils/object-key';
+import { serializeMediaRecord } from '@/utils/media';
 
 const logger = createLogger('media-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
 
 const completeUploadSchema = z.object({
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']).optional().default('READY'),
@@ -28,7 +47,50 @@ const completeUploadSchema = z.object({
 
 export async function mediaRoutes(fastify: FastifyInstance) {
   const mediaRepo = createMediaRepository();
+  const userRepo = createUserRepository();
   const db = getDatabase();
+
+  const isDeleteBypassRole = (roleName?: string) =>
+    roleName === 'ADMIN' || roleName === 'SUPER_ADMIN';
+
+  const resolveOwnerDisplayName = (user: {
+    first_name?: string | null;
+    last_name?: string | null;
+    email?: string | null;
+  } | null) => {
+    if (!user) return 'another user';
+    const fullName = `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim();
+    if (fullName.length > 0) return fullName;
+    if (user.email) return user.email;
+    return 'another user';
+  };
+
+  const mediaUsageMessageByReference: Record<MediaUsageReference, string> = {
+    chat_attachments: 'Media cannot be deleted because it is still used by chat messages.',
+    chat_bookmarks: 'Media cannot be deleted because it is still bookmarked in chat.',
+    presentations: 'Media cannot be deleted because it is still used in presentations.',
+    screens: 'Media cannot be deleted because it is currently assigned to a screen.',
+    emergencies: 'Media cannot be deleted because it is used by emergency content.',
+    settings: 'Media cannot be deleted because it is configured as the default media.',
+    proof_of_play: 'Media cannot be deleted because it is referenced by playback history.',
+  };
+
+  const resolveApiStatus = (
+    media: { status: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' },
+    mediaUrl: string | null
+  ) => {
+    if (media.status === 'READY' && !mediaUrl) {
+      return {
+        status: 'FAILED' as const,
+        status_reason: 'MEDIA_OBJECT_MISSING' as const,
+      };
+    }
+
+    return {
+      status: media.status,
+      status_reason: null,
+    };
+  };
 
   const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
     const filename = (media as any).original_filename ?? media.name ?? 'file';
@@ -111,8 +173,6 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         const media = await mediaRepo.create({
           id: mediaId,
           name: displayName,
-          original_filename: originalFilename,
-          sanitized_hint: hint,
           type: inferredType as any,
           status: PENDINGSTATUS,
           source_bucket: bucket,
@@ -166,9 +226,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         const displayName = normalizeDisplayName(originalFilename);
         const { hint } = sanitizeFilenameHint(originalFilename);
         const media = await mediaRepo.create({
-          name: displayName,
-          original_filename: originalFilename,
-          sanitized_hint: hint,
+          name: data.name,
           type: data.type,
           status: 'PENDING',
           created_by: payload.sub,
@@ -177,7 +235,6 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           id: media.id,
           name: media.name,
-          original_filename: (media as any).original_filename ?? media.name,
           type: media.type,
           status: media.status,
           created_by: media.created_by,
@@ -208,14 +265,18 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
 
         const query = listMediaQuerySchema.parse(request.query);
+        const createdByIds = isDepartmentScopedRole(payload.role)
+          ? Array.from(new Set([...(await getDepartmentUserIds(payload.department_id)), ...(await getAdminUserIds())]))
+          : undefined;
         const result = await mediaRepo.list({
           page: query.page,
           limit: query.limit,
           type: query.type,
           status: query.status,
+          created_by_ids: createdByIds,
         });
 
         const readyIds = result.items.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
@@ -224,13 +285,13 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           : [];
         const readyMap = new Map(readyObjects.map((o: any) => [o.id, o]));
 
-        const items = await Promise.all(
+        const rawItems = await Promise.all(
           result.items.map(async (m) => {
             const media_url = await resolveMediaUrl(m, readyMap);
+            const statusState = resolveApiStatus(m, media_url);
             return {
               id: m.id,
               name: m.name,
-              original_filename: (m as any).original_filename ?? m.name,
               type: m.type,
               status: m.status,
               source_bucket: m.source_bucket,
@@ -250,12 +311,17 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           })
         );
 
+        const items =
+          query.status === 'READY'
+            ? rawItems.filter((item) => item.status === 'READY')
+            : rawItems;
+
         return reply.send({
           items,
           pagination: {
             page: result.page,
             limit: result.limit,
-            total: result.total,
+            total: query.status === 'READY' ? items.length : result.total,
           },
         });
       } catch (error) {
@@ -282,20 +348,25 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
-        await verifyAccessToken(token);
+        const payload = await verifyAccessToken(token);
 
         const mediaId = (request.params as any).id;
         const media = await mediaRepo.findById(mediaId);
         if (!media) {
           throw AppError.notFound('Media not found');
         }
+        const canReadMedia = await canReadAdminSharedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          media.created_by
+        );
+        if (!canReadMedia) throw AppError.forbidden('Forbidden');
 
         const media_url = await resolveMediaUrl(media);
+        const statusState = resolveApiStatus(media, media_url);
 
         return reply.send({
           id: media.id,
           name: media.name,
-          original_filename: (media as any).original_filename ?? media.name,
           type: media.type,
           status: media.status,
           source_bucket: media.source_bucket,
@@ -347,6 +418,11 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         if (!media) {
           throw AppError.notFound('Media not found');
         }
+        const canUpdateMedia = await canAccessOwnedResource(
+          { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+          media.created_by
+        );
+        if (!canUpdateMedia) throw AppError.forbidden('Forbidden');
 
         if (!media.source_bucket || !media.source_object_key) {
           throw AppError.badRequest('Media missing source object info');
@@ -370,18 +446,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           updated_at: new Date(),
         });
 
-        return reply.send({
-          id: updated!.id,
-          status: updated!.status,
-          source_bucket: updated!.source_bucket,
-          source_object_key: updated!.source_object_key,
-          source_content_type: updated!.source_content_type,
-          source_size: updated!.source_size,
-          width: updated!.width,
-          height: updated!.height,
-          duration_seconds: updated!.duration_seconds,
-          updated_at: updated!.updated_at.toISOString?.() ?? updated!.updated_at,
-        });
+        return reply.send(serializeMediaRecord(updated!));
       } catch (error) {
         logger.error(error, 'Complete upload error');
         return respondWithError(reply, error);
@@ -417,9 +482,37 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           throw AppError.notFound('Media not found');
         }
 
+        const owner = media.created_by ? await userRepo.findById(media.created_by) : null;
+        const canDeleteThisMedia =
+          media.created_by === payload.sub || isDeleteBypassRole(payload.role);
+        if (!canDeleteThisMedia) {
+          throw new AppError({
+            statusCode: FORBIDDEN,
+            code: 'MEDIA_DELETE_FORBIDDEN_OWNER',
+            message: `You can only delete media you uploaded. This media was uploaded by ${resolveOwnerDisplayName(owner)}.`,
+            details: {
+              owner_user_id: media.created_by,
+              owner_display_name: resolveOwnerDisplayName(owner),
+            },
+          });
+        }
+
         const hardDelete =
           typeof (request.query as any).hard === 'string' &&
           ((request.query as any).hard as string).toLowerCase() === 'true';
+
+        const usageSummary = await mediaRepo.getUsageSummary(media.id);
+        if (usageSummary.inUse) {
+          throw new AppError({
+            statusCode: 409,
+            code: 'MEDIA_IN_USE',
+            message:
+              mediaUsageMessageByReference[usageSummary.primaryReason ?? 'chat_attachments'],
+            details: {
+              references: usageSummary.references,
+            },
+          });
+        }
 
         const db = getDatabase();
         const storageObjects: { bucket: string; key: string; id?: string }[] = [];

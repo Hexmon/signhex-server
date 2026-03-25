@@ -34,12 +34,39 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
+  async findAnyByCode(code: string) {
+    const db = getDatabase();
+    const result = await db
+      .select()
+      .from(schema.devicePairings)
+      .where(eq(schema.devicePairings.pairing_code, code))
+      .orderBy(desc(schema.devicePairings.created_at))
+      .limit(1);
+    return result[0] || null;
+  }
+
   async findByDeviceId(deviceId: string) {
     const db = getDatabase();
     const result = await db
       .select()
       .from(schema.devicePairings)
       .where(eq(schema.devicePairings.device_id, deviceId))
+      .orderBy(desc(schema.devicePairings.created_at));
+    return result[0] || null;
+  }
+
+  async findActiveByDeviceId(deviceId: string) {
+    const db = getDatabase();
+    const result = await db
+      .select()
+      .from(schema.devicePairings)
+      .where(
+        and(
+          eq(schema.devicePairings.device_id, deviceId),
+          eq(schema.devicePairings.used, false),
+          gt(schema.devicePairings.expires_at, new Date())
+        )
+      )
       .orderBy(desc(schema.devicePairings.created_at));
     return result[0] || null;
   }
@@ -52,6 +79,42 @@ export class DevicePairingRepository {
       .where(eq(schema.devicePairings.id, id))
       .returning();
     return result[0] || null;
+  }
+
+  async retireActiveByDeviceId(deviceId: string, exceptId?: string | null) {
+    const db = getDatabase();
+    const activePairings = await db
+      .select({ id: schema.devicePairings.id })
+      .from(schema.devicePairings)
+      .where(
+        and(
+          eq(schema.devicePairings.device_id, deviceId),
+          eq(schema.devicePairings.used, false),
+          gt(schema.devicePairings.expires_at, new Date())
+        )
+      );
+
+    const retireIds = activePairings
+      .map((row) => row.id)
+      .filter((id) => !exceptId || id !== exceptId);
+
+    if (retireIds.length === 0) {
+      return [];
+    }
+
+    const retired: typeof schema.devicePairings.$inferSelect[] = [];
+    for (const id of retireIds) {
+      const [row] = await db
+        .update(schema.devicePairings)
+        .set({ used: true, used_at: new Date() })
+        .where(eq(schema.devicePairings.id, id))
+        .returning();
+      if (row) {
+        retired.push(row);
+      }
+    }
+
+    return retired;
   }
 
   async updateDeviceInfo(id: string, device_info: Record<string, any> | null) {

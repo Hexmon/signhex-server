@@ -9,11 +9,23 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
-import { getPresignedUrl, getObject } from '@/s3';
-import { getDefaultMedia } from '@/utils/default-media';
+import { deleteObject, getPresignedUrl, getObject } from '@/s3';
+import { pruneDefaultMediaTargetsForScreen, resolveDefaultMediaForScreen } from '@/utils/default-media';
+import { AppError } from '@/utils/app-error';
+import { buildContentDisposition } from '@/utils/object-key';
+import { serializeMediaRecord } from '@/utils/media';
+import { KNOWN_ASPECT_RATIOS, getAspectRatioName, resolveAspectRatio } from '@/utils/aspect-ratio';
+import {
+  buildScreenPlaybackStateById,
+  buildScreenScheduleTimelinePayload,
+  buildScreensOverviewPayload,
+  filterItemsForScreen as filterPublishedItemsForScreen,
+  getLatestPublishForScreen,
+} from '@/screens/playback';
+import { emitScreensRefreshRequired, setupScreensNamespace } from '@/realtime/screens-namespace';
 
 const logger = createLogger('screen-routes');
-const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED, OK } = HTTP_STATUS;
 
 const createScreenSchema = z.object({
   name: z.string().min(1).max(255),
@@ -28,6 +40,7 @@ const listScreensQuerySchema = z.object({
 
 const aspectRatiosQuerySchema = z.object({
   search: z.string().min(1).optional(),
+  configured_only: z.enum(['true', 'false']).optional(),
 });
 
 const listHeartbeatsQuerySchema = z.object({
@@ -48,6 +61,24 @@ const screenshotTriggerSchema = z.object({
   reason: z.string().optional(),
 });
 
+const overviewQuerySchema = z.object({
+  include_media: z.string().optional(),
+  include_preview: z.string().optional(),
+  online_only: z.string().optional(),
+});
+
+const scheduleTimelineQuerySchema = z.object({
+  window_start: z.string().datetime(),
+  window_hours: z.coerce.number().int().positive().max(48).default(24),
+  only_active_now: z.string().optional(),
+});
+
+const nowPlayingQuerySchema = z.object({
+  include_urls: z.string().optional(),
+  include_media: z.string().optional(),
+  include_preview: z.string().optional(),
+});
+
 const snapshotQuerySchema = z.object({
   include_urls: z.string().optional(),
 });
@@ -55,6 +86,7 @@ const snapshotQuerySchema = z.object({
 export async function screenRoutes(fastify: FastifyInstance) {
   const screenRepo = createScreenRepository();
   const db = getDatabase();
+  await setupScreensNamespace(fastify);
 
   const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
     const members = await db
@@ -78,26 +110,16 @@ export async function screenRoutes(fastify: FastifyInstance) {
     if (!mediaId) return null;
     const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
     if (!media) return null;
-    const filename = (media as any).original_filename ?? media.name ?? 'file';
-    const contentDisposition = buildContentDisposition(filename, 'inline');
     try {
       if ((media as any).ready_object_id) {
         const [stor] = await db
           .select()
           .from(schema.storageObjects)
           .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
-        if (stor) {
-          return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, {
-            expiresIn: 3600,
-            responseContentDisposition: contentDisposition,
-          });
-        }
+        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
       }
       if ((media as any).source_bucket && (media as any).source_object_key) {
-        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, {
-          expiresIn: 3600,
-          responseContentDisposition: contentDisposition,
-        });
+        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
       }
     } catch {
       return null;
@@ -178,24 +200,24 @@ export async function screenRoutes(fastify: FastifyInstance) {
     return { activeItems, upcomingItems, bookedUntil };
   };
 
-  const getLatestPublishForScreen = async (screenId: string) => {
-    const [latest] = await db
-      .select({
-        publish_id: schema.publishes.id,
-        schedule_id: schema.publishes.schedule_id,
-        snapshot_id: schema.publishes.snapshot_id,
-        published_at: schema.publishes.published_at,
-        payload: schema.scheduleSnapshots.payload,
-      })
-      .from(schema.publishTargets)
-      .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-      .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-      .where(eq(schema.publishTargets.screen_id, screenId))
-      .orderBy(desc(schema.publishes.published_at))
-      .limit(1);
-
-    return latest || null;
-  };
+  const serializeResolvedDefaultMedia = (
+    resolvedDefaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>,
+    includeUrls: boolean
+  ) => ({
+    default_media: resolvedDefaultMedia.media
+      ? {
+          media_id: resolvedDefaultMedia.media.id,
+          ...serializeMediaRecord(
+            resolvedDefaultMedia.media,
+            includeUrls ? resolvedDefaultMedia.media_url : null
+          ),
+        }
+      : null,
+    default_media_resolution: {
+      source: resolvedDefaultMedia.source,
+      aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+    },
+  });
 
   // Create screen
   fastify.post<{ Body: typeof createScreenSchema._type }>(
@@ -221,25 +243,9 @@ export async function screenRoutes(fastify: FastifyInstance) {
           throw AppError.forbidden('Forbidden');
         }
 
-        const data = createScreenSchema.parse(request.body);
-        const screen = await screenRepo.create(data);
-
-        return reply.status(CREATED).send({
-          id: screen.id,
-          name: screen.name,
-          location: screen.location,
-          aspect_ratio: (screen as any).aspect_ratio ?? null,
-          width: (screen as any).width ?? null,
-          height: (screen as any).height ?? null,
-          orientation: (screen as any).orientation ?? null,
-          device_info: (screen as any).device_info ?? null,
-          status: screen.status,
-          last_heartbeat_at: screen.last_heartbeat_at?.toISOString(),
-          current_schedule_id: (screen as any).current_schedule_id ?? null,
-          current_media_id: (screen as any).current_media_id ?? null,
-          created_at: screen.created_at.toISOString(),
-          updated_at: screen.updated_at.toISOString(),
-        });
+        throw AppError.conflict(
+          'Screens can only be created after a device completes pairing. Use the device pairing flow instead of creating screens manually.'
+        );
       } catch (error) {
         logger.error(error, 'Create screen error');
         return respondWithError(reply, error);
@@ -324,11 +330,28 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         const query = aspectRatiosQuerySchema.parse(request.query);
         const screens = await screenRepo.listAspectRatios({ search: query.search });
+        const configuredOnly = query.configured_only === 'true';
+        const resolvedItems = screens
+          .map((s) => {
+            const aspectRatio = resolveAspectRatio(s);
+            return {
+              id: s.id,
+              name: s.name,
+              aspect_ratio: aspectRatio,
+              aspect_ratio_name: getAspectRatioName(aspectRatio),
+              is_fallback: false,
+            };
+          })
+          .filter((item) => (configuredOnly ? item.aspect_ratio !== null : true));
+
         return reply.send({
-          items: screens.map((s) => ({
-            id: s.id,
-            name: s.name,
-            aspect_ratio: s.aspect_ratio ?? null,
+          items: resolvedItems,
+          defaults: KNOWN_ASPECT_RATIOS.map((entry) => ({
+            id: null,
+            name: entry.name,
+            aspect_ratio: entry.aspect_ratio,
+            aspect_ratio_name: entry.name,
+            is_fallback: true,
           })),
         });
       } catch (error) {
@@ -339,7 +362,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
   );
 
   // Combined overview of screens and groups with now-playing/availability/status
-  fastify.get(
+  fastify.get<{ Querystring: typeof overviewQuerySchema._type }>(
     apiEndpoints.screens.overview,
     {
       schema: {
@@ -348,106 +371,63 @@ export async function screenRoutes(fastify: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (_request: FastifyRequest, reply: FastifyReply) => {
+    async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const token = extractTokenFromHeader(_request.headers.authorization);
+        const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) {
           throw AppError.unauthorized('Missing authorization header');
         }
 
         await verifyAccessToken(token);
+        const query = overviewQuerySchema.parse(request.query);
+        const includeMedia = query.include_media?.toLowerCase() === 'true';
+        const includePreview = query.include_preview?.toLowerCase() === 'true';
+        const onlineOnly = query.online_only?.toLowerCase() === 'true';
 
-        const screens = await db.select().from(schema.screens);
-        const groups = await db.select().from(schema.screenGroups);
-
-        const screenSummaries = await Promise.all(
-          screens.map(async (s: any) => {
-            const latest = await getLatestPublishForScreen(s.id);
-            if (!latest) {
-              return {
-                id: s.id,
-                name: s.name,
-                status: s.status,
-                last_heartbeat_at: s.last_heartbeat_at?.toISOString?.() ?? s.last_heartbeat_at,
-                current_schedule_id: (s as any).current_schedule_id ?? null,
-                current_media_id: (s as any).current_media_id ?? null,
-                active_items: [],
-                upcoming_items: [],
-                booked_until: null,
-                publish: null,
-              };
-            }
-
-            const schedulePayload = (latest.payload as any)?.schedule;
-            const groupIds = await getGroupIdsForScreen(s.id);
-            const items = filterItemsForScreen((schedulePayload?.items || []) as any[], s.id, groupIds);
-            const { activeItems, upcomingItems, bookedUntil } = buildTimeline(items);
-
-            return {
-              id: s.id,
-              name: s.name,
-              status: s.status,
-              last_heartbeat_at: s.last_heartbeat_at?.toISOString?.() ?? s.last_heartbeat_at,
-              current_schedule_id: (s as any).current_schedule_id ?? null,
-              current_media_id: (s as any).current_media_id ?? null,
-              active_items: activeItems,
-              upcoming_items: upcomingItems,
-              booked_until: bookedUntil,
-              publish: {
-                publish_id: latest.publish_id,
-                schedule_id: latest.schedule_id,
-                snapshot_id: latest.snapshot_id,
-                published_at: latest.published_at.toISOString?.() ?? latest.published_at,
-                schedule_start_at: schedulePayload?.start_at ?? null,
-                schedule_end_at: schedulePayload?.end_at ?? null,
-              },
-            };
+        return reply.send(
+          await buildScreensOverviewPayload({
+            db,
+            includeMedia,
+            includePreview,
+            onlineOnly,
           })
         );
-
-        const groupSummaries = await Promise.all(
-          groups.map(async (g: any) => {
-            const members = await db
-              .select({ screen_id: schema.screenGroupMembers.screen_id })
-              .from(schema.screenGroupMembers)
-              .where(eq(schema.screenGroupMembers.group_id, g.id));
-
-            const memberIds = members.map((m) => m.screen_id);
-            const merged: Map<string, any> = new Map();
-
-            await Promise.all(
-              memberIds.map(async (screenId) => {
-                const latest = await getLatestPublishForScreen(screenId);
-                if (!latest) return;
-                const schedulePayload = (latest.payload as any)?.schedule;
-                const groupIds = await getGroupIdsForScreen(screenId);
-                const items = filterItemsForScreen((schedulePayload?.items || []) as any[], screenId, groupIds);
-                items.forEach((it: any) => {
-                  if (!merged.has(it.id)) merged.set(it.id, it);
-                });
-              })
-            );
-
-            const { activeItems, upcomingItems, bookedUntil } = buildTimeline(Array.from(merged.values()));
-
-            return {
-              id: g.id,
-              name: g.name,
-              description: g.description,
-              screen_ids: memberIds,
-              active_items: activeItems,
-              upcoming_items: upcomingItems,
-              booked_until: bookedUntil,
-            };
-          })
-        );
-
-        return reply.send({
-          screens: screenSummaries,
-          groups: groupSummaries,
-        });
       } catch (error) {
         logger.error(error, 'Get screens overview error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Querystring: typeof scheduleTimelineQuerySchema._type }>(
+    apiEndpoints.screens.scheduleTimeline,
+    {
+      schema: {
+        description: 'Get a dashboard-ready 24-hour schedule timeline for currently active scheduled screens',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          throw AppError.unauthorized('Missing authorization header');
+        }
+
+        await verifyAccessToken(token);
+        const query = scheduleTimelineQuerySchema.parse(request.query);
+
+        return reply.send(
+          await buildScreenScheduleTimelinePayload({
+            db,
+            windowStart: new Date(query.window_start),
+            windowHours: query.window_hours,
+            onlyActiveNow: query.only_active_now?.toLowerCase() === 'true',
+          })
+        );
+      } catch (error) {
+        logger.error(error, 'Get screen schedule timeline error');
         return respondWithError(reply, error);
       }
     }
@@ -472,29 +452,72 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
 
-        const screen = await screenRepo.findById((request.params as any).id);
-        if (!screen) {
+        const summary = await buildScreenPlaybackStateById((request.params as any).id, { db });
+        if (!summary) {
           throw AppError.notFound('Screen not found');
         }
 
         return reply.send({
-          id: screen.id,
-          name: screen.name,
-          location: screen.location,
-          aspect_ratio: (screen as any).aspect_ratio ?? null,
-          width: (screen as any).width ?? null,
-          height: (screen as any).height ?? null,
-          orientation: (screen as any).orientation ?? null,
-          device_info: (screen as any).device_info ?? null,
-          status: screen.status,
-          last_heartbeat_at: screen.last_heartbeat_at?.toISOString(),
-          current_schedule_id: (screen as any).current_schedule_id ?? null,
-          current_media_id: (screen as any).current_media_id ?? null,
-          created_at: screen.created_at.toISOString(),
-          updated_at: screen.updated_at.toISOString(),
+          id: summary.id,
+          name: summary.name,
+          location: (summary as any).location ?? null,
+          aspect_ratio: (summary as any).aspect_ratio ?? null,
+          width: (summary as any).width ?? null,
+          height: (summary as any).height ?? null,
+          orientation: (summary as any).orientation ?? null,
+          device_info: (summary as any).device_info ?? null,
+          status: summary.status,
+          health_state: (summary as any).health_state ?? null,
+          health_reason: (summary as any).health_reason ?? null,
+          auth_diagnostics: (summary as any).auth_diagnostics ?? null,
+          active_pairing: (summary as any).active_pairing ?? null,
+          last_heartbeat_at: summary.last_heartbeat_at,
+          current_schedule_id: summary.current_schedule_id,
+          current_media_id: summary.current_media_id,
+          created_at: (summary as any).created_at?.toISOString?.() ?? (summary as any).created_at,
+          updated_at: (summary as any).updated_at?.toISOString?.() ?? (summary as any).updated_at,
         });
       } catch (error) {
         logger.error(error, 'Get screen error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Params: { id: string } }>(
+    apiEndpoints.screens.defaultMedia,
+    {
+      schema: {
+        description: 'Resolve default media for a screen by aspect ratio/global fallback',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          throw AppError.unauthorized('Missing authorization header');
+        }
+
+        await verifyAccessToken(token);
+        const screenId = (request.params as any).id;
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Screen not found');
+        }
+
+        const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        return reply.send({
+          source: resolvedDefaultMedia.source,
+          aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+          media_id: resolvedDefaultMedia.media_id,
+          media: resolvedDefaultMedia.media
+            ? serializeMediaRecord(resolvedDefaultMedia.media, resolvedDefaultMedia.media_url)
+            : null,
+        });
+      } catch (error) {
+        logger.error(error, 'Get resolved screen default media error');
         return respondWithError(reply, error);
       }
     }
@@ -543,10 +566,16 @@ export async function screenRoutes(fastify: FastifyInstance) {
           (latestHeartbeat as any)?.object_key
         );
 
+        const summary = await buildScreenPlaybackStateById(screen.id, { db });
+
         return reply.send({
           id: screen.id,
           name: screen.name,
           status: screen.status,
+          health_state: (summary as any)?.health_state ?? null,
+          health_reason: (summary as any)?.health_reason ?? null,
+          auth_diagnostics: (summary as any)?.auth_diagnostics ?? null,
+          active_pairing: (summary as any)?.active_pairing ?? null,
           last_heartbeat_at: screen.last_heartbeat_at?.toISOString(),
           current_schedule_id: (screen as any).current_schedule_id ?? null,
           current_media_id: (screen as any).current_media_id ?? null,
@@ -791,50 +820,40 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
+        const query = nowPlayingQuerySchema.parse(request.query);
+        const includeUrls = query.include_urls?.toLowerCase() === 'true';
+        const includeMedia = query.include_media?.toLowerCase() === 'true';
+        const includePreview = query.include_preview?.toLowerCase() === 'true';
 
-        const includeUrls =
-          typeof (request.query as any).include_urls === 'string' &&
-          ((request.query as any).include_urls as string).toLowerCase() === 'true';
+        const summary = await buildScreenPlaybackStateById(screenId, {
+          db,
+          includeMedia,
+          includePreview,
+          includeUrls,
+        });
 
-        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
-
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, screenId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
-
-        if (!latest) {
-          return reply.send({ screen_id: screenId, active_items: [], upcoming_items: [], booked_until: null, publish: null });
+        if (!summary) {
+          throw AppError.notFound('Screen not found');
         }
 
-        const schedulePayload = (latest.payload as any)?.schedule;
-        const groupIds = await getGroupIdsForScreen(screenId);
-        const items = filterItemsForScreen((schedulePayload?.items || []) as any[], screenId, groupIds);
-        const { activeItems, upcomingItems, bookedUntil } = buildTimeline(items);
-
         return reply.send({
+          server_time: new Date().toISOString(),
           screen_id: screenId,
-          publish: {
-            publish_id: latest.publish_id,
-            schedule_id: latest.schedule_id,
-            snapshot_id: latest.snapshot_id,
-            published_at: latest.published_at.toISOString?.() ?? latest.published_at,
-            schedule_start_at: schedulePayload?.start_at ?? null,
-            schedule_end_at: schedulePayload?.end_at ?? null,
-          },
-          active_items: activeItems,
-          upcoming_items: upcomingItems,
-          booked_until: bookedUntil,
+          status: summary.status,
+          health_state: (summary as any).health_state ?? null,
+          health_reason: (summary as any).health_reason ?? null,
+          auth_diagnostics: (summary as any).auth_diagnostics ?? null,
+          active_pairing: (summary as any).active_pairing ?? null,
+          last_heartbeat_at: summary.last_heartbeat_at,
+          current_schedule_id: summary.current_schedule_id,
+          current_media_id: summary.current_media_id,
+          publish: summary.publish,
+          active_items: summary.active_items,
+          upcoming_items: summary.upcoming_items,
+          booked_until: summary.booked_until,
+          playback: summary.playback,
+          emergency: summary.emergency,
+          preview: (summary as any).preview ?? null,
         });
       } catch (error) {
         logger.error(error, 'Get screen now-playing error');
@@ -862,24 +881,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         await verifyAccessToken(token);
         const screenId = (request.params as any).id;
-        const query = snapshotQuerySchema.parse(request.query);
-        const includeUrls = query.include_urls?.toLowerCase() === 'true';
-        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
-
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, screenId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
+        const latest = await getLatestPublishForScreen(screenId, db);
 
         if (!latest) {
           return reply.send({
@@ -904,6 +906,8 @@ export async function screenRoutes(fastify: FastifyInstance) {
             schedule_id: latest.schedule_id,
             snapshot_id: latest.snapshot_id,
             published_at: latest.published_at.toISOString?.() ?? latest.published_at,
+            reservation_version: (latest as any).reservation_version ?? null,
+            selection_reason: (latest as any).selection_reason ?? null,
             schedule_start_at: schedulePayload?.start_at ?? null,
             schedule_end_at: schedulePayload?.end_at ?? null,
           },
@@ -940,66 +944,33 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const screenId = (request.params as any).id;
         const query = snapshotQuerySchema.parse(request.query);
         const includeUrls = query.include_urls?.toLowerCase() === 'true';
-        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, screenId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Screen not found');
+        }
 
-        const [latest] = await db
-          .select({
-            publish_id: schema.publishes.id,
-            schedule_id: schema.publishes.schedule_id,
-            snapshot_id: schema.publishes.snapshot_id,
-            published_at: schema.publishes.published_at,
-            payload: schema.scheduleSnapshots.payload,
-          })
-          .from(schema.publishTargets)
-          .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
-          .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-          .where(eq(schema.publishTargets.screen_id, screenId))
-          .orderBy(desc(schema.publishes.published_at))
-          .limit(1);
+        const serverTime = new Date().toISOString();
+        const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
+        const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
+        const latest = await getLatestPublishForScreen(screenId, db);
 
         if (!latest) {
-          const defaultMedia = await getDefaultMedia(db);
-          const defaultMediaPayload = defaultMedia?.media
-            ? {
-                id: defaultMedia.media.id,
-                name: defaultMedia.media.name,
-                original_filename: (defaultMedia.media as any).original_filename ?? defaultMedia.media.name,
-                type: defaultMedia.media.type,
-                status: defaultMedia.media.status,
-                duration_seconds: defaultMedia.media.duration_seconds,
-                width: defaultMedia.media.width,
-                height: defaultMedia.media.height,
-                media_url: includeUrls ? defaultMedia.media_url : null,
-              }
-            : null;
-
-          if (emergency) {
-            return reply.send({
-              screen_id: screenId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency,
-              default_media: defaultMediaPayload,
-            });
-          }
-          if (defaultMediaPayload) {
-            return reply.send({
-              screen_id: screenId,
-              publish: null,
-              snapshot: null,
-              media_urls: undefined,
-              emergency: null,
-              default_media: defaultMediaPayload,
-            });
-          }
-          throw AppError.notFound('No publish found for this screen');
+          return reply.send({
+            server_time: serverTime,
+            screen_id: screenId,
+            publish: null,
+            snapshot: null,
+            media_urls: undefined,
+            emergency,
+            ...defaultMediaPayload,
+          });
         }
 
         const rawPayload = (latest.payload as any) || {};
         const schedule = rawPayload.schedule || {};
         const groupIds = await getGroupIdsForScreen(screenId);
-        const filteredItems = filterItemsForScreen(schedule.items || [], screenId, groupIds);
+        const filteredItems = filterPublishedItemsForScreen(schedule.items || [], screenId, groupIds);
         const filteredSnapshot = {
           ...rawPayload,
           schedule: { ...schedule, items: filteredItems },
@@ -1067,16 +1038,20 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         return reply.send({
+          server_time: serverTime,
           screen_id: screenId,
           publish: {
             publish_id: latest.publish_id,
             schedule_id: latest.schedule_id,
             snapshot_id: latest.snapshot_id,
             published_at: latest.published_at.toISOString?.() ?? latest.published_at,
+            reservation_version: (latest as any).reservation_version ?? null,
+            selection_reason: (latest as any).selection_reason ?? null,
           },
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
           emergency,
+          ...defaultMediaPayload,
         });
       } catch (error) {
         logger.error(error, 'Get screen snapshot error');
@@ -1165,33 +1140,130 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
         const screenId = (request.params as any).id;
 
-        const commandsDeleted = await db.delete(schema.deviceCommands).where(eq(schema.deviceCommands.screen_id, screenId));
-        const heartbeatsDeleted = await db.delete(schema.heartbeats).where(eq(schema.heartbeats.screen_id, screenId));
-        const popDeleted = await db.delete(schema.proofOfPlay).where(eq(schema.proofOfPlay.screen_id, screenId));
-        const screenshotsDeleted = await db.delete(schema.screenshots).where(eq(schema.screenshots.screen_id, screenId));
-        const publishTargetsDeleted = await db
-          .delete(schema.publishTargets)
-          .where(eq(schema.publishTargets.screen_id, screenId));
-        const pairingsDeleted = await db.delete(schema.devicePairings).where(eq(schema.devicePairings.device_id, screenId));
-        const certsDeleted = await db.delete(schema.deviceCertificates).where(eq(schema.deviceCertificates.screen_id, screenId));
-        const groupMembersDeleted = await db
-          .delete(schema.screenGroupMembers)
-          .where(eq(schema.screenGroupMembers.screen_id, screenId));
+        const screen = await screenRepo.findById(screenId);
+        if (!screen) {
+          throw AppError.notFound('Screen not found');
+        }
 
-        await screenRepo.delete(screenId);
+        const [heartbeatStorageRefs, proofOfPlayStorageRefs, screenshotStorageRefs] = await Promise.all([
+          db
+            .select({ storage_object_id: schema.heartbeats.storage_object_id })
+            .from(schema.heartbeats)
+            .where(eq(schema.heartbeats.screen_id, screenId)),
+          db
+            .select({ storage_object_id: schema.proofOfPlay.storage_object_id })
+            .from(schema.proofOfPlay)
+            .where(eq(schema.proofOfPlay.screen_id, screenId)),
+          db
+            .select({ storage_object_id: schema.screenshots.storage_object_id })
+            .from(schema.screenshots)
+            .where(eq(schema.screenshots.screen_id, screenId)),
+        ]);
 
-        return reply.status(OK).send({
-          message: 'Screen deleted with related data cleaned up',
-          id: screenId,
-          cleanup: {
+        const storageObjectIds = Array.from(
+          new Set(
+            [...heartbeatStorageRefs, ...proofOfPlayStorageRefs, ...screenshotStorageRefs]
+              .map((row) => row.storage_object_id)
+              .filter((value): value is string => Boolean(value))
+          )
+        );
+
+        const storageRows = storageObjectIds.length
+          ? await db
+              .select({
+                id: schema.storageObjects.id,
+                bucket: schema.storageObjects.bucket,
+                object_key: schema.storageObjects.object_key,
+              })
+              .from(schema.storageObjects)
+              .where(inArray(schema.storageObjects.id, storageObjectIds))
+          : [];
+
+        const cleanup = await db.transaction(async (tx) => {
+          const commandsDeleted = await tx.delete(schema.deviceCommands).where(eq(schema.deviceCommands.screen_id, screenId));
+          const heartbeatsDeleted = await tx.delete(schema.heartbeats).where(eq(schema.heartbeats.screen_id, screenId));
+          const popDeleted = await tx.delete(schema.proofOfPlay).where(eq(schema.proofOfPlay.screen_id, screenId));
+          const screenshotsDeleted = await tx.delete(schema.screenshots).where(eq(schema.screenshots.screen_id, screenId));
+          const reservationsDeleted = await tx
+            .delete(schema.scheduleReservations)
+            .where(eq(schema.scheduleReservations.screen_id, screenId));
+          const publishTargetsDeleted = await tx
+            .delete(schema.publishTargets)
+            .where(eq(schema.publishTargets.screen_id, screenId));
+          const pairingsDeleted = await tx.delete(schema.devicePairings).where(eq(schema.devicePairings.device_id, screenId));
+          const certsDeleted = await tx.delete(schema.deviceCertificates).where(eq(schema.deviceCertificates.screen_id, screenId));
+          const groupMembersDeleted = await tx
+            .delete(schema.screenGroupMembers)
+            .where(eq(schema.screenGroupMembers.screen_id, screenId));
+          const defaultMediaTargetsRemoved = await pruneDefaultMediaTargetsForScreen(screenId, tx);
+
+          await tx.delete(schema.screens).where(eq(schema.screens.id, screenId));
+
+          return {
             device_commands: (commandsDeleted as any)?.length ?? 0,
             heartbeats: (heartbeatsDeleted as any)?.length ?? 0,
             proof_of_play: (popDeleted as any)?.length ?? 0,
             screenshots: (screenshotsDeleted as any)?.length ?? 0,
+            schedule_reservations: (reservationsDeleted as any)?.length ?? 0,
             publish_targets: (publishTargetsDeleted as any)?.length ?? 0,
             device_pairings: (pairingsDeleted as any)?.length ?? 0,
             device_certificates: (certsDeleted as any)?.length ?? 0,
             screen_group_members: (groupMembersDeleted as any)?.length ?? 0,
+            default_media_targets: defaultMediaTargetsRemoved,
+          };
+        });
+
+        const uniqueStorageRows = Array.from(
+          new Map(storageRows.map((row) => [row.id, row])).values()
+        );
+        const storageDeleted: Array<{ id: string; bucket: string; object_key: string }> = [];
+        const storageFailed: Array<{ id: string; bucket: string; object_key: string; message: string }> = [];
+
+        for (const storageRow of uniqueStorageRows) {
+          try {
+            await deleteObject(storageRow.bucket, storageRow.object_key);
+            storageDeleted.push(storageRow);
+          } catch (error) {
+            request.log.warn(
+              {
+                storageObjectId: storageRow.id,
+                bucket: storageRow.bucket,
+                objectKey: storageRow.object_key,
+                err: error,
+              },
+              'Failed to delete screen-linked storage object'
+            );
+            storageFailed.push({
+              ...storageRow,
+              message: error instanceof Error ? error.message : 'Storage deletion failed',
+            });
+          }
+        }
+
+        if (storageDeleted.length > 0) {
+          await db
+            .delete(schema.storageObjects)
+            .where(
+              inArray(
+                schema.storageObjects.id,
+                storageDeleted.map((row) => row.id) as string[]
+              )
+            );
+        }
+
+        emitScreensRefreshRequired(fastify, {
+          reason: 'GROUP_MEMBERSHIP',
+          screen_ids: [screenId],
+          group_ids: [],
+        });
+
+        return reply.status(OK).send({
+          message: 'Screen deleted with related data cleaned up',
+          id: screenId,
+          cleanup,
+          storage_cleanup: {
+            deleted: storageDeleted,
+            failed: storageFailed,
           },
         });
       } catch (error) {

@@ -14,6 +14,7 @@ export class DeviceCertificateRepository {
       screen_id: data.device_id,
       serial: data.fingerprint,
       certificate_pem: data.certificate,
+      expires_at: data.expires_at,
     }).returning();
     return result[0];
   }
@@ -24,6 +25,26 @@ export class DeviceCertificateRepository {
       .select()
       .from(schema.deviceCertificates)
       .where(eq(schema.deviceCertificates.screen_id, deviceId));
+    return result[0] || null;
+  }
+
+  async listByDeviceId(deviceId: string) {
+    const db = getDatabase();
+    return await db
+      .select()
+      .from(schema.deviceCertificates)
+      .where(eq(schema.deviceCertificates.screen_id, deviceId))
+      .orderBy(desc(schema.deviceCertificates.created_at));
+  }
+
+  async findLatestByDeviceId(deviceId: string) {
+    const db = getDatabase();
+    const result = await db
+      .select()
+      .from(schema.deviceCertificates)
+      .where(eq(schema.deviceCertificates.screen_id, deviceId))
+      .orderBy(desc(schema.deviceCertificates.created_at))
+      .limit(1);
     return result[0] || null;
   }
 
@@ -66,10 +87,19 @@ export class DeviceCertificateRepository {
     const db = getDatabase();
     const result = await db
       .update(schema.deviceCertificates)
-      .set({ revoked_at: new Date() })
+      .set({ is_revoked: true, revoked_at: new Date() })
       .where(eq(schema.deviceCertificates.id, id))
       .returning();
     return result[0] || null;
+  }
+
+  async revokeByDeviceId(deviceId: string) {
+    const db = getDatabase();
+    return await db
+      .update(schema.deviceCertificates)
+      .set({ is_revoked: true, revoked_at: new Date() })
+      .where(eq(schema.deviceCertificates.screen_id, deviceId))
+      .returning();
   }
 
   async findById(id: string) {
@@ -85,4 +115,3 @@ export class DeviceCertificateRepository {
 export function createDeviceCertificateRepository(): DeviceCertificateRepository {
   return new DeviceCertificateRepository();
 }
-

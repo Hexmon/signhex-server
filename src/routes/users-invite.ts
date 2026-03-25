@@ -12,13 +12,15 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { canManageUserRecord, canManageUserRoleTarget, canReadUserRecord } from '@/rbac/policy';
 
 const logger = createLogger('users-invite-routes');
 const { BAD_REQUEST, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
 
 const inviteSchema = z.object({
   email: z.string().email(),
-  role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']).default('OPERATOR'),
+  role: z.enum(['ADMIN', 'OPERATOR', 'DEPARTMENT']).optional(),
+  role_id: z.string().uuid().optional(),
   department_id: z.string().uuid().optional(),
 });
 
@@ -33,10 +35,12 @@ const listInvitesQuerySchema = z.object({
   invited_after: z.coerce.date().optional(),
 });
 
-const resetPasswordSchema = z.object({
-  current_password: z.string().min(1),
-  new_password: z.string().min(8),
-});
+const resetPasswordSchema = z
+  .object({
+    current_password: z.string().min(1).optional(),
+    new_password: z.string().min(8).optional(),
+  })
+  .optional();
 
 const createInviteSerializer =
   (referenceDate: Date) =>
@@ -88,13 +92,18 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
 
         const data = inviteSchema.parse(request.body);
 
-        const [targetRole] = await db
-          .select()
-          .from(schema.roles)
-          .where(eq(schema.roles.name, data.role));
+        const [targetRole] = data.role_id
+          ? await db.select().from(schema.roles).where(eq(schema.roles.id, data.role_id))
+          : await db.select().from(schema.roles).where(eq(schema.roles.name, data.role ?? 'OPERATOR'));
 
         if (!targetRole) {
-          throw AppError.badRequest(`Role '${data.role}' not found`);
+          throw AppError.badRequest('Role not found');
+        }
+        if (!canManageUserRoleTarget(payload.role, targetRole.name)) {
+          throw AppError.forbidden('Forbidden');
+        }
+        if (payload.role === 'DEPARTMENT' && data.department_id !== payload.department_id) {
+          throw AppError.forbidden('Department users can only manage operators in their own department.');
         }
 
         const tempPassword = randomBytes(6).toString('hex');
@@ -126,7 +135,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           id: user.id,
           email: user.email,
-          role: data.role,
+          role: targetRole.name,
           department_id: user.department_id,
           invite_token: inviteToken,
           invite_expires_at: expires.toISOString(),
@@ -206,13 +215,19 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         });
 
         const serializeInvite = createInviteSerializer(new Date());
+        const visibleItems = result.items.filter((invite) =>
+          canReadUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            { roleName: invite.role ?? '', departmentId: invite.department_id }
+          )
+        );
 
         return reply.status(OK).send({
-          items: result.items.map(serializeInvite),
+          items: visibleItems.map(serializeInvite),
           pagination: {
             page: result.page,
             limit: result.limit,
-            total: result.total,
+            total: visibleItems.length,
           },
         });
       } catch (error) {
@@ -246,13 +261,19 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
           statuses: ['pending'],
         });
         const serializeInvite = createInviteSerializer(new Date());
+        const visibleItems = result.items.filter((invite) =>
+          canReadUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            { roleName: invite.role ?? '', departmentId: invite.department_id }
+          )
+        );
 
         return reply.status(OK).send({
-          items: result.items.map(serializeInvite),
+          items: visibleItems.map(serializeInvite),
           pagination: {
             page: result.page,
             limit: result.limit,
-            total: result.total,
+            total: visibleItems.length,
           },
         });
       } catch (error) {
@@ -283,13 +304,28 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
         const current = await userRepo.findById((request.params as any).id);
         if (!current) throw AppError.notFound('User not found');
 
-        const currentMatches = await verifyPassword(data.current_password, current.password_hash);
-        if (!currentMatches) {
-          throw AppError.badRequest('Current password is incorrect');
+        const [targetRole] = await db.select().from(schema.roles).where(eq(schema.roles.id, current.role_id));
+        if (
+          !canManageUserRecord(
+            { userId: payload.sub, roleName: payload.role, departmentId: payload.department_id },
+            { id: current.id, roleName: targetRole?.name ?? '', departmentId: current.department_id }
+          )
+        ) {
+          throw AppError.forbidden('Forbidden');
         }
 
-        validatePasswordStrength(data.new_password);
-        const passwordHash = await hashPassword(data.new_password);
+        const nextPassword = data?.new_password
+          ? data.new_password
+          : `${randomBytes(6).toString('hex')}A!`;
+        if (data?.current_password) {
+          const currentMatches = await verifyPassword(data.current_password, current.password_hash);
+          if (!currentMatches) {
+            throw AppError.badRequest('Current password is incorrect');
+          }
+        }
+
+        validatePasswordStrength(nextPassword);
+        const passwordHash = await hashPassword(nextPassword);
 
         const user = await userRepo.update((request.params as any).id, {
           password_hash: passwordHash,
@@ -301,6 +337,7 @@ export async function userInviteRoutes(fastify: FastifyInstance) {
           id: user.id,
           email: user.email,
           message: 'Password updated successfully',
+          temp_password: data?.new_password ? undefined : nextPassword,
         });
       } catch (error) {
         logger.error(error, 'Reset password error');

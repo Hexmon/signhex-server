@@ -79,6 +79,9 @@ export function toAppError(error: unknown, defaultMessage = 'Invalid request') {
       }
       return AppError.conflict(friendlyMessage);
     }
+    if (pgError.code === '23503') {
+      return AppError.conflict('Resource is still referenced and cannot be deleted.');
+    }
     if ((pgError as any).code === 'FST_ERR_RATE_LIMIT') {
       return AppError.rateLimited();
     }

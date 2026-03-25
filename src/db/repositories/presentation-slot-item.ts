@@ -19,6 +19,7 @@ export class PresentationSlotItemRepository {
     duration_seconds?: number;
     fit_mode?: string;
     audio_enabled?: boolean;
+    loop_enabled?: boolean;
   }) {
     const db = getDatabase();
     const [item] = await db.insert(schema.presentationSlotItems).values(data).returning();
