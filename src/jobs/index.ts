@@ -1,6 +1,7 @@
 import PgBoss from 'pg-boss';
 import ffmpeg from 'fluent-ffmpeg';
 import { createHash } from 'crypto';
+import { execFile as execFileCallback } from 'child_process';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -12,6 +13,10 @@ import { createLogger } from '@/utils/logger';
 import { createMediaRepository } from '@/db/repositories/media';
 import { createBackupRun, getLatestBackupRun, runFullBackup } from '@/utils/backup-runs';
 import { getCachedSettings } from '@/utils/settings';
+import {
+  buildSourceFilename,
+  buildWebpageFallbackSvg,
+} from '@/utils/media-processing';
 
 const logger = createLogger('jobs');
 
@@ -23,6 +28,8 @@ const ARCHIVE_BUCKET = 'archives';
 const HLS_SEGMENT_CONTENT_TYPE = 'video/mp2t';
 const THUMBNAIL_CONTENT_TYPE = 'image/jpeg';
 const NDJSON_CONTENT_TYPE = 'application/x-ndjson';
+const DOCUMENT_READY_CONTENT_TYPE = 'application/pdf';
+const WEBPAGE_FALLBACK_CONTENT_TYPE = 'image/svg+xml';
 
 const QUALITY_OPTIONS: Record<FFmpegTranscodeJob['quality'], string[]> = {
   low: ['-preset', 'veryfast', '-crf', '30', '-b:a', '96k'],
@@ -83,6 +90,180 @@ async function cleanupTempDir(dir: string | null) {
   }
 }
 
+async function runCommand(command: string, args: string[]) {
+  return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFileCallback(command, args, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(
+          Object.assign(error, {
+            stdout,
+            stderr,
+          })
+        );
+        return;
+      }
+
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function upsertStorageObject(params: {
+  bucket: string;
+  objectKey: string;
+  contentType?: string | null;
+  size?: number | null;
+  sha256?: string | null;
+}) {
+  const db = getDatabase();
+  const [storageObject] = await db
+    .insert(schema.storageObjects)
+    .values({
+      bucket: params.bucket,
+      object_key: params.objectKey,
+      content_type: params.contentType ?? null,
+      size: params.size ?? null,
+      sha256: params.sha256 ?? null,
+    })
+    .onConflictDoUpdate({
+      target: [schema.storageObjects.bucket, schema.storageObjects.object_key],
+      set: {
+        content_type: params.contentType ?? null,
+        size: params.size ?? null,
+        sha256: params.sha256 ?? null,
+      },
+    })
+    .returning();
+
+  return storageObject;
+}
+
+function extractTitleFromHtml(html: string) {
+  const match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  return match?.[1]?.trim() || null;
+}
+
+function isHtmlContentType(contentType?: string | null) {
+  if (!contentType) return true;
+  const normalized = contentType.toLowerCase();
+  return normalized.includes('text/html') || normalized.includes('application/xhtml+xml');
+}
+
+function getWebpageFailureReason(error: unknown) {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'WEBPAGE_REQUEST_TIMEOUT';
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const statusMatch = message.match(/status\s+(\d{3})/i);
+  if (statusMatch) {
+    return `WEBPAGE_HTTP_${statusMatch[1]}`;
+  }
+
+  if (message.toLowerCase().includes('did not return html')) {
+    return 'WEBPAGE_NON_HTML_CONTENT';
+  }
+
+  if (message.toLowerCase().includes('fetch failed')) {
+    return 'WEBPAGE_UNREACHABLE';
+  }
+
+  return 'WEBPAGE_CAPTURE_FAILED';
+}
+
+async function verifyWebpageSource(sourceUrl: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+
+  try {
+    const response = await fetch(sourceUrl, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'HexmonSignage/1.0 (+webpage-verify)',
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Webpage request failed with status ${response.status}`);
+    }
+
+    const contentType = response.headers.get('content-type') || undefined;
+    if (!isHtmlContentType(contentType)) {
+      throw new Error(`Webpage URL did not return HTML content (${contentType})`);
+    }
+
+    let title: string | null = null;
+
+    if (isHtmlContentType(contentType)) {
+      const body = await response.text();
+      title = extractTitleFromHtml(body.slice(0, 200_000));
+    }
+
+    return {
+      finalUrl: response.url || sourceUrl,
+      contentType,
+      title,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function convertDocumentWithLibreOffice(inputPath: string, outputDir: string) {
+  await runCommand('soffice', [
+    '--headless',
+    '--nologo',
+    '--nofirststartwizard',
+    '--convert-to',
+    'pdf',
+    '--outdir',
+    outputDir,
+    inputPath,
+  ]);
+
+  const entries = await fs.readdir(outputDir);
+  const pdfFile = entries.find((entry) => entry.toLowerCase().endsWith('.pdf'));
+  if (!pdfFile) {
+    throw new Error('LibreOffice did not produce a PDF output');
+  }
+
+  return join(outputDir, pdfFile);
+}
+
+async function convertDocumentWithMacPreview(inputPath: string, outputDir: string) {
+  const previewDir = join(outputDir, 'quicklook');
+  await fs.mkdir(previewDir, { recursive: true });
+
+  await runCommand('/usr/bin/qlmanage', ['-t', '-s', '1800', '-o', previewDir, inputPath]);
+
+  const entries = await fs.readdir(previewDir);
+  const previewImage = entries.find((entry) => entry.toLowerCase().endsWith('.png'));
+  if (!previewImage) {
+    throw new Error('QuickLook did not produce a preview image');
+  }
+
+  const inputPreviewPath = join(previewDir, previewImage);
+  const outputPdfPath = join(outputDir, 'converted.pdf');
+  await runCommand('/usr/bin/sips', ['-s', 'format', 'pdf', inputPreviewPath, '--out', outputPdfPath]);
+  return outputPdfPath;
+}
+
+async function convertDocumentToPdf(inputPath: string, outputDir: string) {
+  try {
+    return await convertDocumentWithLibreOffice(inputPath, outputDir);
+  } catch (error) {
+    logger.warn({ error }, 'LibreOffice conversion unavailable, falling back to QuickLook preview conversion');
+  }
+
+  if (process.platform === 'darwin') {
+    return await convertDocumentWithMacPreview(inputPath, outputDir);
+  }
+
+  throw new Error('No supported document conversion backend is available');
+}
+
 let boss: PgBoss | null = null;
 
 type PgBossError = Error & {
@@ -90,6 +271,17 @@ type PgBossError = Error & {
 };
 
 const RECURRING_QUEUE_NAMES = ['cleanup', 'archive', 'chat:media-cleanup', 'backup', 'backup:check'] as const;
+const WORK_QUEUE_NAMES = [
+  'ffmpeg:transcode',
+  'ffmpeg:thumbnail',
+  'document:convert',
+  'webpage:verify-capture',
+  'archive',
+  'cleanup',
+  'chat:media-cleanup',
+  'backup',
+  'backup:check',
+] as const;
 
 function getPgBossSchemaSql() {
   return `"${appConfig.PG_BOSS_SCHEMA.replace(/"/g, '""')}"`;
@@ -210,6 +402,16 @@ export interface FFmpegThumbnailJob {
   timestamp?: number; // seconds
 }
 
+export interface DocumentConvertJob {
+  mediaId: string;
+  sourceObjectId: string;
+}
+
+export interface WebpageVerifyCaptureJob {
+  mediaId: string;
+  sourceUrl: string;
+}
+
 export interface ArchiveJob {
   type: 'logs' | 'media' | 'full';
   startDate: string;
@@ -239,9 +441,26 @@ export interface BackupCheckJob {
 }
 
 // Job queue functions
-export async function queueFFmpegTranscode(job: FFmpegTranscodeJob, options?: any) {
+async function sendJob<TPayload extends object>(
+  queueName: string,
+  payload: TPayload,
+  options?: Record<string, unknown>
+) {
   const jobs = getJobs();
-  return jobs.send('ffmpeg:transcode', job, {
+  await ensureQueueExists(jobs, queueName);
+  const jobId = options
+    ? await jobs.send(queueName, payload, options as any)
+    : await jobs.send(queueName, payload);
+
+  if (!jobId) {
+    throw new Error(`pg-boss did not return a job id for ${queueName}`);
+  }
+
+  return jobId;
+}
+
+export async function queueFFmpegTranscode(job: FFmpegTranscodeJob, options?: any) {
+  return sendJob('ffmpeg:transcode', job, {
     retryLimit: 3,
     retryDelay: 60,
     ...options,
@@ -249,17 +468,31 @@ export async function queueFFmpegTranscode(job: FFmpegTranscodeJob, options?: an
 }
 
 export async function queueFFmpegThumbnail(job: FFmpegThumbnailJob, options?: any) {
-  const jobs = getJobs();
-  return jobs.send('ffmpeg:thumbnail', job, {
+  return sendJob('ffmpeg:thumbnail', job, {
     retryLimit: 3,
     retryDelay: 60,
     ...options,
   });
 }
 
+export async function queueDocumentConvert(job: DocumentConvertJob, options?: any) {
+  return sendJob('document:convert', job, {
+    retryLimit: 2,
+    retryDelay: 30,
+    ...options,
+  });
+}
+
+export async function queueWebpageVerifyCapture(job: WebpageVerifyCaptureJob, options?: any) {
+  return sendJob('webpage:verify-capture', job, {
+    retryLimit: 2,
+    retryDelay: 30,
+    ...options,
+  });
+}
+
 export async function queueArchive(job: ArchiveJob, options?: any) {
-  const jobs = getJobs();
-  return jobs.send('archive', job, {
+  return sendJob('archive', job, {
     retryLimit: 2,
     retryDelay: 300,
     ...options,
@@ -267,16 +500,14 @@ export async function queueArchive(job: ArchiveJob, options?: any) {
 }
 
 export async function queueCleanup(job: CleanupJob, options?: any) {
-  const jobs = getJobs();
-  return jobs.send('cleanup', job, {
+  return sendJob('cleanup', job, {
     retryLimit: 1,
     ...options,
   });
 }
 
 export async function queueBackup(job: BackupJob, options?: any) {
-  const jobs = getJobs();
-  return jobs.send('backup', job, {
+  return sendJob('backup', job, {
     retryLimit: 1,
     retryDelay: 60,
     ...options,
@@ -284,8 +515,7 @@ export async function queueBackup(job: BackupJob, options?: any) {
 }
 
 export async function queueChatMediaCleanup(job: ChatMediaCleanupJob, options?: any) {
-  const jobs = getJobs();
-  return jobs.send('chat:media-cleanup', job, {
+  return sendJob('chat:media-cleanup', job, {
     retryLimit: 3,
     retryDelay: 60,
     ...options,
@@ -394,6 +624,10 @@ export async function cleanupChatMediaAssets(input: {
 export async function registerJobHandlers() {
   const jobs = getJobs();
 
+  for (const queueName of WORK_QUEUE_NAMES) {
+    await ensureQueueExists(jobs, queueName);
+  }
+
   // FFmpeg transcode handler
   await jobs.work<FFmpegTranscodeJob>('ffmpeg:transcode', async (jobBatch) => {
     const db = getDatabase();
@@ -434,7 +668,7 @@ export async function registerJobHandlers() {
 
         await db
           .update(schema.media)
-          .set({ status: 'PROCESSING', updated_at: new Date() })
+          .set({ status: 'PROCESSING', status_reason: null, updated_at: new Date() })
           .where(eq(schema.media.id, mediaId));
 
         const sourceBuffer = await getObject(sourceBucket, sourceKey);
@@ -486,6 +720,7 @@ export async function registerJobHandlers() {
             .set({
               ready_object_id: readyObject?.id,
               status: 'READY',
+              status_reason: null,
               updated_at: new Date(),
             })
             .where(eq(schema.media.id, mediaId));
@@ -515,6 +750,7 @@ export async function registerJobHandlers() {
             .set({
               ready_object_id: readyObject?.id,
               status: 'READY',
+              status_reason: null,
               updated_at: new Date(),
             })
             .where(eq(schema.media.id, mediaId));
@@ -524,7 +760,7 @@ export async function registerJobHandlers() {
         try {
           await db
             .update(schema.media)
-            .set({ status: 'FAILED', updated_at: new Date() })
+            .set({ status: 'FAILED', status_reason: 'VIDEO_TRANSCODE_FAILED', updated_at: new Date() })
             .where(eq(schema.media.id, mediaId));
         } catch (updateError) {
           logger.error(updateError, `Failed to mark media ${mediaId} as failed`);
@@ -611,6 +847,147 @@ export async function registerJobHandlers() {
         logger.error(error, `Thumbnail generation failed for media ${mediaId}`);
       } finally {
         await cleanupTempDir(tempDir);
+      }
+    }
+  });
+
+  await jobs.work<DocumentConvertJob>('document:convert', async (jobBatch) => {
+    const db = getDatabase();
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      const { mediaId, sourceObjectId } = job.data;
+      let tempDir: string | null = null;
+
+      try {
+        const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+        if (!media) {
+          logger.warn({ mediaId }, 'Media not found for document conversion');
+          continue;
+        }
+
+        const [sourceObject] =
+          sourceObjectId && !media.source_bucket
+            ? await db
+                .select()
+                .from(schema.storageObjects)
+                .where(eq(schema.storageObjects.id, sourceObjectId))
+            : [];
+
+        const sourceBucket = media.source_bucket ?? sourceObject?.bucket;
+        const sourceKey = media.source_object_key ?? sourceObject?.object_key;
+
+        if (!sourceBucket || !sourceKey) {
+          await db
+            .update(schema.media)
+            .set({ status: 'FAILED', status_reason: 'DOCUMENT_SOURCE_MISSING', updated_at: new Date() })
+            .where(eq(schema.media.id, mediaId));
+          continue;
+        }
+
+        const sourceBuffer = await getObject(sourceBucket, sourceKey);
+        tempDir = await fs.mkdtemp(join(tmpdir(), 'doc-convert-'));
+        const sourceFilename = buildSourceFilename({
+          fallbackName: media.name,
+          sourceObjectKey: sourceKey,
+          sourceContentType: media.source_content_type,
+        });
+        const inputPath = join(tempDir, sourceFilename);
+        await fs.writeFile(inputPath, sourceBuffer);
+
+        const outputPdfPath = await convertDocumentToPdf(inputPath, tempDir);
+        const outputBuffer = await fs.readFile(outputPdfPath);
+        const readyKey = `${mediaId}/ready.pdf`;
+        const upload = await putObject(READY_BUCKET, readyKey, outputBuffer, DOCUMENT_READY_CONTENT_TYPE);
+        const readyObject = await upsertStorageObject({
+          bucket: READY_BUCKET,
+          objectKey: readyKey,
+          contentType: DOCUMENT_READY_CONTENT_TYPE,
+          size: outputBuffer.length,
+          sha256: upload.sha256,
+        });
+
+        await db
+          .update(schema.media)
+          .set({
+            ready_object_id: readyObject.id,
+            status: 'READY',
+            status_reason: null,
+            updated_at: new Date(),
+          })
+          .where(eq(schema.media.id, mediaId));
+      } catch (error) {
+        logger.error({ error, mediaId }, 'Document conversion failed');
+        await db
+          .update(schema.media)
+          .set({
+            status: 'FAILED',
+            status_reason: 'DOCUMENT_CONVERSION_FAILED',
+            updated_at: new Date(),
+          })
+          .where(eq(schema.media.id, mediaId));
+      } finally {
+        await cleanupTempDir(tempDir);
+      }
+    }
+  });
+
+  await jobs.work<WebpageVerifyCaptureJob>('webpage:verify-capture', async (jobBatch) => {
+    const db = getDatabase();
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+
+    for (const job of batch) {
+      const { mediaId, sourceUrl } = job.data;
+
+      try {
+        const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
+        if (!media) {
+          logger.warn({ mediaId }, 'Media not found for webpage verification');
+          continue;
+        }
+
+        const verification = await verifyWebpageSource(sourceUrl);
+        const previewBuffer = buildWebpageFallbackSvg({
+          sourceUrl: verification.finalUrl,
+          title: verification.title,
+          statusLabel: verification.contentType || 'Live webpage',
+        });
+        const fallbackKey = `${mediaId}/webpage-fallback.svg`;
+        const upload = await putObject(
+          READY_BUCKET,
+          fallbackKey,
+          previewBuffer,
+          WEBPAGE_FALLBACK_CONTENT_TYPE
+        );
+        const readyObject = await upsertStorageObject({
+          bucket: READY_BUCKET,
+          objectKey: fallbackKey,
+          contentType: WEBPAGE_FALLBACK_CONTENT_TYPE,
+          size: previewBuffer.length,
+          sha256: upload.sha256,
+        });
+
+        await db
+          .update(schema.media)
+          .set({
+            source_url: verification.finalUrl,
+            ready_object_id: readyObject.id,
+            status: 'READY',
+            status_reason: null,
+            updated_at: new Date(),
+          })
+          .where(eq(schema.media.id, mediaId));
+      } catch (error) {
+        logger.error({ error, mediaId, sourceUrl }, 'Webpage verification/capture failed');
+        const failureReason = getWebpageFailureReason(error);
+        await db
+          .update(schema.media)
+          .set({
+            status: 'FAILED',
+            status_reason: failureReason,
+            updated_at: new Date(),
+          })
+          .where(eq(schema.media.id, mediaId));
       }
     }
   });

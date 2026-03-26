@@ -25,14 +25,16 @@ export class MediaRepository {
   async create(data: {
     id?: string;
     name: string;
-    type: 'IMAGE' | 'VIDEO' | 'DOCUMENT';
+    type: 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'WEBPAGE';
     created_by: string;
     source_object_id?: string;
     source_bucket?: string;
     source_object_key?: string;
     source_content_type?: string;
     source_size?: number;
+    source_url?: string;
     status?: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
+    status_reason?: string | null;
   }) {
     const db = getDatabase();
     const result = await db.insert(schema.media).values(data).returning();

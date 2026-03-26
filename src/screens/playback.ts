@@ -1,8 +1,8 @@
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
-import { resolveDefaultMediaForScreen, resolveMediaUrl } from '@/utils/default-media';
+import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { getPresignedUrl } from '@/s3';
-import { serializeMediaRecord } from '@/utils/media';
+import { buildResolvedMediaRecord } from '@/utils/resolved-media';
 import { createScheduleReservationRepository } from '@/db/repositories/schedule-reservation';
 
 type ScreenRecord = typeof schema.screens.$inferSelect;
@@ -281,11 +281,10 @@ export async function getActiveEmergencyForScreen(
     ? ((emergency as any).screen_group_ids as string[])
     : [];
 
-  let mediaUrl: string | null = null;
-  if (options.includeUrls && (emergency as any).media_id) {
-    const emergencyMedia = await getMediaById((emergency as any).media_id, db);
-    mediaUrl = emergencyMedia ? await resolveMediaUrl(emergencyMedia, db) : null;
-  }
+  const resolvedEmergencyMedia =
+    options.includeUrls && (emergency as any).media_id
+      ? await buildResolvedMediaRecord((emergency as any).media_id, db)
+      : null;
 
   return {
     id: emergency.id,
@@ -294,7 +293,16 @@ export async function getActiveEmergencyForScreen(
     message: emergency.message,
     severity: emergency.priority,
     media_id: (emergency as any).media_id ?? null,
-    media_url: mediaUrl,
+    media_url: resolvedEmergencyMedia?.media_url ?? null,
+    fallback_url: resolvedEmergencyMedia?.fallback_url ?? null,
+    source_url: resolvedEmergencyMedia?.source_url ?? null,
+    url: resolvedEmergencyMedia?.url ?? null,
+    media_type: resolvedEmergencyMedia?.media_type ?? null,
+    type:
+      resolvedEmergencyMedia?.type === 'WEBPAGE'
+        ? 'url'
+        : resolvedEmergencyMedia?.type ?? null,
+    source_content_type: resolvedEmergencyMedia?.source_content_type ?? null,
     screen_ids: emergencyScreenIds,
     screen_group_ids: emergencyGroupIds,
     target_all: (emergency as any).target_all ?? false,
@@ -312,9 +320,7 @@ async function getMediaById(id: string, db = getDatabase()) {
 }
 
 async function getMediaSummary(id: string, db = getDatabase()) {
-  const media = await getMediaById(id, db);
-  if (!media) return null;
-  return serializeMediaRecord(media);
+  return await buildResolvedMediaRecord(id, db);
 }
 
 async function getLatestScreenshotPreview(

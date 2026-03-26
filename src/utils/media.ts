@@ -6,10 +6,12 @@ type MediaRecord = {
   display_name?: string | null;
   type?: string | null;
   status?: string | null;
+  status_reason?: string | null;
   source_bucket?: string | null;
   source_object_key?: string | null;
   source_content_type?: string | null;
   source_size?: number | null;
+  source_url?: string | null;
   ready_object_id?: string | null;
   thumbnail_object_id?: string | null;
   duration_seconds?: number | null;
@@ -64,6 +66,9 @@ export const serializeMediaRecord = (
   const displayName = trimToUndefined(media.display_name) ?? media.name;
   const contentType = options?.content_type ?? media.source_content_type;
   const size = options?.size ?? media.source_size;
+  const isWebpage = (media.type ?? '').toUpperCase() === 'WEBPAGE';
+  const sourceUrl = trimToUndefined(media.source_url) ?? undefined;
+  const fallbackMediaUrl = mediaUrl ?? null;
 
   return {
     id: media.id,
@@ -72,12 +77,13 @@ export const serializeMediaRecord = (
     filename: media.name,
     type: media.type ?? undefined,
     status: options?.status ?? media.status ?? undefined,
-    status_reason: options?.status_reason ?? undefined,
+    status_reason: options?.status_reason ?? media.status_reason ?? undefined,
     content_type: contentType ?? undefined,
     source_bucket: media.source_bucket ?? undefined,
     source_object_key: media.source_object_key ?? undefined,
     source_content_type: contentType ?? undefined,
     source_size: size ?? undefined,
+    source_url: sourceUrl ?? null,
     size: size ?? undefined,
     ready_object_id: media.ready_object_id ?? undefined,
     thumbnail_object_id: media.thumbnail_object_id ?? undefined,
@@ -87,6 +93,7 @@ export const serializeMediaRecord = (
     created_by: media.created_by ?? undefined,
     created_at: toIso(media.created_at),
     updated_at: toIso(media.updated_at),
-    media_url: mediaUrl ?? null,
+    media_url: fallbackMediaUrl,
+    fallback_media_url: isWebpage ? fallbackMediaUrl : null,
   };
 };

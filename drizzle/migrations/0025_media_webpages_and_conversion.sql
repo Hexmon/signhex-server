@@ -1,0 +1,5 @@
+ALTER TYPE media_type ADD VALUE IF NOT EXISTS 'WEBPAGE';
+
+ALTER TABLE media
+  ADD COLUMN IF NOT EXISTS source_url text,
+  ADD COLUMN IF NOT EXISTS status_reason varchar(120);

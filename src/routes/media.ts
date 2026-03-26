@@ -28,15 +28,25 @@ import { deleteObject } from '@/s3';
 import { getDatabase, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
+import { config as appConfig } from '@/config';
 import {
   buildContentDisposition,
   buildObjectKey,
   normalizeDisplayName,
   normalizeOriginalFilename,
-  sanitizeFilenameHint,
 } from '@/utils/object-key';
 import { serializeMediaRecord } from '@/utils/media';
-import { queueFFmpegThumbnail, queueFFmpegTranscode } from '@/jobs';
+import {
+  inferUploadMediaType,
+  normalizeWebpageUrl,
+  requiresDocumentConversion,
+} from '@/utils/media-processing';
+import {
+  queueDocumentConvert,
+  queueFFmpegThumbnail,
+  queueFFmpegTranscode,
+  queueWebpageVerifyCapture,
+} from '@/jobs';
 
 const logger = createLogger('media-routes');
 const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
@@ -211,6 +221,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
     if (media.status !== 'READY') {
       return serializeMediaRecord(media, null, {
         status: media.status,
+        status_reason: media.status_reason ?? undefined,
       });
     }
 
@@ -232,10 +243,42 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }),
       ]);
     } catch (error) {
-      await mediaRepo.update(mediaId, { status: 'FAILED' });
+      await mediaRepo.update(mediaId, { status: 'FAILED', status_reason: 'VIDEO_PROCESSING_QUEUE_FAILED' });
       throw AppError.internal('Failed to queue video processing jobs', {
         media_id: mediaId,
         source_object_id: sourceObjectId,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const queueDocumentFinalization = async (mediaId: string, sourceObjectId: string) => {
+    try {
+      await queueDocumentConvert({ mediaId, sourceObjectId });
+    } catch (error) {
+      await mediaRepo.update(mediaId, {
+        status: 'FAILED',
+        status_reason: 'DOCUMENT_CONVERSION_QUEUE_FAILED',
+      });
+      throw AppError.internal('Failed to queue document conversion job', {
+        media_id: mediaId,
+        source_object_id: sourceObjectId,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const queueWebpageVerification = async (mediaId: string, sourceUrl: string) => {
+    try {
+      await queueWebpageVerifyCapture({ mediaId, sourceUrl });
+    } catch (error) {
+      await mediaRepo.update(mediaId, {
+        status: 'FAILED',
+        status_reason: 'WEBPAGE_CAPTURE_QUEUE_FAILED',
+      });
+      throw AppError.internal('Failed to queue webpage verification job', {
+        media_id: mediaId,
+        source_url: sourceUrl,
         cause: error instanceof Error ? error.message : String(error),
       });
     }
@@ -279,6 +322,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       source_object_id: sourceObject.id,
       source_content_type: sourceContentType,
       source_size: sourceSize,
+      status_reason: null,
       width: data.width ?? media.width,
       height: data.height ?? media.height,
       duration_seconds: data.duration_seconds ?? media.duration_seconds,
@@ -295,6 +339,27 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       }
 
       await queueVideoFinalization(processingMedia.id, sourceObject.id);
+      return processingMedia;
+    }
+
+    if (
+      requiresDocumentConversion({
+        type: media.type,
+        sourceContentType,
+        filename: media.name,
+        objectKey: media.source_object_key,
+      })
+    ) {
+      const processingMedia = await mediaRepo.update(media.id, {
+        ...updateBase,
+        status: 'PROCESSING',
+      });
+
+      if (!processingMedia) {
+        throw AppError.internal('Failed to update media processing state');
+      }
+
+      await queueDocumentFinalization(processingMedia.id, sourceObject.id);
       return processingMedia;
     }
 
@@ -338,18 +403,14 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         const mediaId = randomUUID();
         const originalFilename = normalizeOriginalFilename(data.filename);
         const displayName = normalizeDisplayName(originalFilename);
-        const { objectKey, hint } = buildObjectKey({
+        const { objectKey } = buildObjectKey({
           originalFilename,
           mimeType: data.content_type,
           id: mediaId,
         });
         const bucket = 'media-source';
 
-        const inferredType = data.content_type?.startsWith('video')
-          ? 'VIDEO'
-          : data.content_type?.startsWith('image')
-          ? 'IMAGE'
-          : 'DOCUMENT';
+        const inferredType = inferUploadMediaType(data.content_type);
 
         // Ensure bucket exists
         await createBucketIfNotExists(bucket);
@@ -367,6 +428,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           source_object_key: objectKey,
           source_content_type: data.content_type,
           source_size: data.size,
+          status_reason: null,
           created_by: payload.sub,
         });
 
@@ -410,25 +472,32 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const data = createMediaSchema.parse(request.body);
+        if (data.type === 'WEBPAGE') {
+          const normalizedUrl = normalizeWebpageUrl(data.source_url, appConfig.NODE_ENV);
+          const media = await mediaRepo.create({
+            name: normalizeDisplayName(data.display_name || data.name),
+            type: 'WEBPAGE',
+            status: 'PROCESSING',
+            status_reason: null,
+            source_url: normalizedUrl,
+            created_by: payload.sub,
+          });
+
+          await queueWebpageVerification(media.id, normalizedUrl);
+          return reply.status(CREATED).send(await serializeCurrentMediaState(media));
+        }
+
         const originalFilename = normalizeOriginalFilename(data.name);
         const displayName = normalizeDisplayName(originalFilename);
-        const { hint } = sanitizeFilenameHint(originalFilename);
         const media = await mediaRepo.create({
-          name: data.name,
+          name: displayName,
           type: data.type,
           status: 'PENDING',
+          status_reason: null,
           created_by: payload.sub,
         });
 
-        return reply.status(CREATED).send({
-          id: media.id,
-          name: media.name,
-          type: media.type,
-          status: media.status,
-          created_by: media.created_by,
-          created_at: media.created_at.toISOString(),
-          updated_at: media.updated_at.toISOString(),
-        });
+        return reply.status(CREATED).send(await serializeCurrentMediaState(media));
       } catch (error) {
         logger.error(error, 'Create media error');
         return respondWithError(reply, error);

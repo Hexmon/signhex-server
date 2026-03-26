@@ -9,11 +9,15 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { getDatabase, schema } from '@/db';
 import { eq, desc, inArray, and, isNull, gte, lte, sql } from 'drizzle-orm';
-import { deleteObject, getPresignedUrl, getObject } from '@/s3';
+import { deleteObject, getObject } from '@/s3';
 import { pruneDefaultMediaTargetsForScreen, resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
-import { buildContentDisposition } from '@/utils/object-key';
 import { serializeMediaRecord } from '@/utils/media';
+import {
+  attachResolvedMediaToScheduleSnapshot,
+  buildResolvedMediaMap,
+  buildResolvedMediaRecord,
+} from '@/utils/resolved-media';
 import { KNOWN_ASPECT_RATIOS, getAspectRatioName, resolveAspectRatio } from '@/utils/aspect-ratio';
 import {
   buildScreenPlaybackStateById,
@@ -106,27 +110,6 @@ export async function screenRoutes(fastify: FastifyInstance) {
     }
   };
 
-  const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
-    if (!mediaId) return null;
-    const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
-    if (!media) return null;
-    try {
-      if ((media as any).ready_object_id) {
-        const [stor] = await db
-          .select()
-          .from(schema.storageObjects)
-          .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
-        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
-      }
-      if ((media as any).source_bucket && (media as any).source_object_key) {
-        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  };
-
   const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
     const [emergency] = await db
       .select()
@@ -151,7 +134,10 @@ export async function screenRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const mediaUrl = includeUrls ? await resolveEmergencyMediaUrl((emergency as any).media_id) : null;
+    const resolvedMedia =
+      includeUrls && (emergency as any).media_id
+        ? await buildResolvedMediaRecord((emergency as any).media_id, db)
+        : null;
     return {
       id: emergency.id,
       emergency_type_id: (emergency as any).emergency_type_id ?? null,
@@ -159,7 +145,13 @@ export async function screenRoutes(fastify: FastifyInstance) {
       message: emergency.message,
       severity: emergency.priority,
       media_id: (emergency as any).media_id ?? null,
-      media_url: mediaUrl,
+      media_url: resolvedMedia?.media_url ?? null,
+      fallback_url: resolvedMedia?.fallback_url ?? null,
+      source_url: resolvedMedia?.source_url ?? null,
+      url: resolvedMedia?.url ?? null,
+      media_type: resolvedMedia?.media_type ?? null,
+      type: resolvedMedia?.type === 'WEBPAGE' ? 'url' : resolvedMedia?.type ?? null,
+      source_content_type: resolvedMedia?.source_content_type ?? null,
       screen_ids: emergencyScreenIds,
       screen_group_ids: emergencyGroupIds,
       target_all: (emergency as any).target_all ?? false,
@@ -971,7 +963,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const schedule = rawPayload.schedule || {};
         const groupIds = await getGroupIdsForScreen(screenId);
         const filteredItems = filterPublishedItemsForScreen(schedule.items || [], screenId, groupIds);
-        const filteredSnapshot = {
+        let filteredSnapshot = {
           ...rawPayload,
           schedule: { ...schedule, items: filteredItems },
         };
@@ -995,44 +987,12 @@ export async function screenRoutes(fastify: FastifyInstance) {
 
           const ids = Array.from(mediaIds);
           if (ids.length > 0) {
-            const medias = await db.select().from(schema.media).where(inArray(schema.media.id, ids as any));
-            const readyIds = medias.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
-            const sourceRefs = medias
-              .filter((m: any) => m.source_bucket && m.source_object_key)
-              .map((m: any) => ({ id: m.id, bucket: m.source_bucket, key: m.source_object_key }));
-
-            const storageRows = readyIds.length
-              ? await db.select().from(schema.storageObjects).where(inArray(schema.storageObjects.id, readyIds as any))
-              : [];
-            const storageMap = new Map(storageRows.map((s: any) => [s.id, s]));
-
+            const resolvedMediaMap = await buildResolvedMediaMap(ids, db);
+            filteredSnapshot = attachResolvedMediaToScheduleSnapshot(filteredSnapshot, resolvedMediaMap);
             mediaUrls = {};
-            for (const m of medias as any[]) {
-              const filename = (m as any).original_filename ?? m.name ?? 'file';
-              const contentDisposition = buildContentDisposition(filename, 'inline');
-              try {
-                if (m.ready_object_id) {
-                  const stor = storageMap.get(m.ready_object_id);
-                  if (stor) {
-                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, {
-                      expiresIn: 3600,
-                      responseContentDisposition: contentDisposition,
-                    });
-                    continue;
-                  }
-                }
-                const source = sourceRefs.find((s) => s.id === m.id);
-                if (source) {
-                  mediaUrls[m.id] = await getPresignedUrl(source.bucket, source.key, {
-                    expiresIn: 3600,
-                    responseContentDisposition: contentDisposition,
-                  });
-                } else {
-                  mediaUrls[m.id] = null;
-                }
-              } catch {
-                mediaUrls[m.id] = null;
-              }
+            for (const [mediaId, media] of resolvedMediaMap.entries()) {
+              mediaUrls[mediaId] =
+                media.type === 'WEBPAGE' ? media.source_url ?? null : media.media_url ?? null;
             }
           }
         }
