@@ -21,10 +21,12 @@ import {
 } from '@/utils/resolved-media';
 import { KNOWN_ASPECT_RATIOS, getAspectRatioName, resolveAspectRatio } from '@/utils/aspect-ratio';
 import {
+  buildScheduleItemSummaries,
   buildScreenPlaybackStateById,
   buildScreenScheduleTimelinePayload,
   buildScreensOverviewPayload,
   filterItemsForScreen as filterPublishedItemsForScreen,
+  getLatestScreenshotPreview,
   getLatestPublishForScreen,
 } from '@/screens/playback';
 import { emitScreensRefreshRequired, setupScreensNamespace } from '@/realtime/screens-namespace';
@@ -857,9 +859,12 @@ export async function screenRoutes(fastify: FastifyInstance) {
           last_heartbeat_at: summary.last_heartbeat_at,
           current_schedule_id: summary.current_schedule_id,
           current_media_id: summary.current_media_id,
+          current_schedule: (summary as any).current_schedule ?? null,
           publish: summary.publish,
           active_items: summary.active_items,
+          active_item_summaries: buildScheduleItemSummaries(summary.active_items ?? []),
           upcoming_items: summary.upcoming_items,
+          upcoming_item_summaries: buildScheduleItemSummaries(summary.upcoming_items ?? []),
           booked_until: summary.booked_until,
           playback: summary.playback,
           emergency: summary.emergency,
@@ -896,10 +901,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
         if (!latest) {
           return reply.send({
             screen_id: screenId,
+            is_available_now: true,
             publish: null,
             current_items: [],
+            current_item_summaries: [],
             next_item: null,
+            next_item_summary: null,
             upcoming_items: [],
+            upcoming_item_summaries: [],
             booked_until: null,
           });
         }
@@ -908,9 +917,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const groupIds = await getGroupIdsForScreen(screenId);
         const items = filterItemsForScreen((schedulePayload?.items || []) as any[], screenId, groupIds);
         const { activeItems, upcomingItems, bookedUntil } = buildTimeline(items);
+        const scheduleName =
+          typeof schedulePayload?.name === 'string' && schedulePayload.name.trim().length > 0
+            ? schedulePayload.name.trim()
+            : null;
 
         return reply.send({
           screen_id: screenId,
+          is_available_now: activeItems.length === 0,
           publish: {
             publish_id: latest.publish_id,
             schedule_id: latest.schedule_id,
@@ -920,10 +934,14 @@ export async function screenRoutes(fastify: FastifyInstance) {
             selection_reason: (latest as any).selection_reason ?? null,
             schedule_start_at: schedulePayload?.start_at ?? null,
             schedule_end_at: schedulePayload?.end_at ?? null,
+            schedule_name: scheduleName,
           },
           current_items: activeItems,
+          current_item_summaries: buildScheduleItemSummaries(activeItems),
           next_item: upcomingItems[0] || null,
+          next_item_summary: upcomingItems[0] ? buildScheduleItemSummaries([upcomingItems[0]])[0] : null,
           upcoming_items: upcomingItems,
+          upcoming_item_summaries: buildScheduleItemSummaries(upcomingItems),
           booked_until: bookedUntil,
         });
       } catch (error) {
@@ -960,6 +978,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         }
 
         const serverTime = new Date().toISOString();
+        const preview = await getLatestScreenshotPreview(screenId, { db });
         const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
         const defaultMediaPayload = await serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
@@ -972,6 +991,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
             publish: null,
             snapshot: null,
             media_urls: undefined,
+            preview,
             emergency,
             ...defaultMediaPayload,
           });
@@ -1028,6 +1048,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
           },
           snapshot: filteredSnapshot,
           media_urls: mediaUrls,
+          preview,
           emergency,
           ...defaultMediaPayload,
         });

@@ -359,11 +359,156 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(body.playback.current_media.id).toBe(mediaId);
     expect(body.playback.started_at).toBe(startAt);
     expect(body.playback.ends_at).toBe(endAt);
+    expect(body.current_schedule).toEqual({
+      id: scheduleId,
+      name: 'Realtime Schedule',
+    });
     expect(body.active_items).toHaveLength(1);
+    expect(body.active_item_summaries).toEqual([
+      expect.objectContaining({
+        item_id: itemId,
+        presentation_id: expect.any(String),
+        presentation_name: 'Playback Presentation',
+        media: [
+          expect.objectContaining({
+            id: mediaId,
+            name: 'Playback Media',
+            type: 'VIDEO',
+          }),
+        ],
+      }),
+    ]);
+    expect(body.upcoming_item_summaries).toEqual([]);
     expect(body.publish.publish_id).toBe(publishId);
   });
 
-  it('returns latest screenshot preview data in overview and now-playing when include_preview=true', async () => {
+  it('returns explicit availability fields and normalized item summaries', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const mediaId = randomUUID();
+    const scheduleId = randomUUID();
+    const snapshotId = randomUUID();
+    const publishId = randomUUID();
+    const activeItemId = randomUUID();
+    const upcomingItemId = randomUUID();
+    const now = new Date();
+    const activeStart = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+    const activeEnd = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+    const upcomingStart = new Date(now.getTime() + 20 * 60 * 1000).toISOString();
+    const upcomingEnd = new Date(now.getTime() + 40 * 60 * 1000).toISOString();
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Availability Screen',
+      status: 'ACTIVE',
+      last_heartbeat_at: now,
+    });
+
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: 'Availability Media',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+    });
+
+    await db.insert(schema.schedules).values({
+      id: scheduleId,
+      name: 'Availability Schedule',
+      start_at: new Date(activeStart),
+      end_at: new Date(upcomingEnd),
+      is_active: true,
+      created_by: testUser.id,
+    });
+
+    await db.insert(schema.scheduleSnapshots).values({
+      id: snapshotId,
+      schedule_id: scheduleId,
+      payload: {
+        schedule: {
+          id: scheduleId,
+          name: 'Availability Schedule',
+          start_at: activeStart,
+          end_at: upcomingEnd,
+          items: [
+            {
+              ...(buildScheduleSnapshotPayload({
+                itemId: activeItemId,
+                mediaId,
+                scheduleId,
+                screenId,
+                startAt: activeStart,
+                endAt: activeEnd,
+              }).schedule.items[0] as Record<string, unknown>),
+            },
+            {
+              ...(buildScheduleSnapshotPayload({
+                itemId: upcomingItemId,
+                mediaId,
+                scheduleId,
+                screenId,
+                startAt: upcomingStart,
+                endAt: upcomingEnd,
+              }).schedule.items[0] as Record<string, unknown>),
+              id: upcomingItemId,
+              start_at: upcomingStart,
+              end_at: upcomingEnd,
+            },
+          ],
+        },
+      },
+    });
+
+    await db.insert(schema.publishes).values({
+      id: publishId,
+      schedule_id: scheduleId,
+      snapshot_id: snapshotId,
+      published_by: testUser.id,
+    });
+
+    await db.insert(schema.publishTargets).values({
+      publish_id: publishId,
+      screen_id: screenId,
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/availability`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as any;
+    expect(body.is_available_now).toBe(false);
+    expect(body.publish).toEqual(
+      expect.objectContaining({
+        publish_id: publishId,
+        schedule_id: scheduleId,
+        schedule_name: 'Availability Schedule',
+      })
+    );
+    expect(body.current_item_summaries).toEqual([
+      expect.objectContaining({
+        item_id: activeItemId,
+        presentation_name: 'Playback Presentation',
+      }),
+    ]);
+    expect(body.next_item_summary).toEqual(
+      expect.objectContaining({
+        item_id: upcomingItemId,
+      })
+    );
+    expect(body.upcoming_item_summaries).toEqual([
+      expect.objectContaining({
+        item_id: upcomingItemId,
+      }),
+    ]);
+    expect(body.booked_until).toBe(upcomingEnd);
+  });
+
+  it('returns latest screenshot preview data in overview, now-playing, and snapshot responses', async () => {
     const db = getDatabase();
     const screenId = randomUUID();
     const latestStorageId = randomUUID();
@@ -439,6 +584,23 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(nowPlayingResponse.statusCode).toBe(HTTP_STATUS.OK);
     const nowPlayingBody = JSON.parse(nowPlayingResponse.body) as any;
     expect(nowPlayingBody.preview).toEqual(
+      expect.objectContaining({
+        storage_object_id: latestStorageId,
+        screenshot_url: `https://cdn.example.com/device-screenshots/${screenId}/latest.png`,
+      })
+    );
+
+    const snapshotResponse = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/snapshot?include_urls=true`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(snapshotResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const snapshotBody = JSON.parse(snapshotResponse.body) as any;
+    expect(snapshotBody.preview).toEqual(
       expect.objectContaining({
         storage_object_id: latestStorageId,
         screenshot_url: `https://cdn.example.com/device-screenshots/${screenId}/latest.png`,
