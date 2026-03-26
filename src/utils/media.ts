@@ -20,6 +20,13 @@ type MediaRecord = {
   updated_at?: Date | string | null;
 };
 
+type SerializeMediaOptions = {
+  status?: string | null;
+  status_reason?: string | null;
+  content_type?: string | null;
+  size?: number | null;
+};
+
 const trimToUndefined = (value?: string | null) => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -49,8 +56,14 @@ const toIso = (value?: Date | string | null) => {
   return value instanceof Date ? value.toISOString() : value;
 };
 
-export const serializeMediaRecord = (media: MediaRecord, mediaUrl?: string | null) => {
+export const serializeMediaRecord = (
+  media: MediaRecord,
+  mediaUrl?: string | null,
+  options?: SerializeMediaOptions
+) => {
   const displayName = trimToUndefined(media.display_name) ?? media.name;
+  const contentType = options?.content_type ?? media.source_content_type;
+  const size = options?.size ?? media.source_size;
 
   return {
     id: media.id,
@@ -58,11 +71,14 @@ export const serializeMediaRecord = (media: MediaRecord, mediaUrl?: string | nul
     display_name: displayName,
     filename: media.name,
     type: media.type ?? undefined,
-    status: media.status ?? undefined,
+    status: options?.status ?? media.status ?? undefined,
+    status_reason: options?.status_reason ?? undefined,
+    content_type: contentType ?? undefined,
     source_bucket: media.source_bucket ?? undefined,
     source_object_key: media.source_object_key ?? undefined,
-    source_content_type: media.source_content_type ?? undefined,
-    source_size: media.source_size ?? undefined,
+    source_content_type: contentType ?? undefined,
+    source_size: size ?? undefined,
+    size: size ?? undefined,
     ready_object_id: media.ready_object_id ?? undefined,
     thumbnail_object_id: media.thumbnail_object_id ?? undefined,
     duration_seconds: media.duration_seconds ?? undefined,

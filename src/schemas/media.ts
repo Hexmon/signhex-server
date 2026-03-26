@@ -53,6 +53,16 @@ export const presignUploadResponseSchema = z.object({
 
 export type PresignUploadResponse = z.infer<typeof presignUploadResponseSchema>;
 
+export const completeUploadSchema = z.object({
+  content_type: z.string().optional(),
+  size: z.number().int().nonnegative().optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  duration_seconds: z.number().int().positive().optional(),
+});
+
+export type CompleteUploadRequest = z.infer<typeof completeUploadSchema>;
+
 export const processMediaSchema = z.object({
   quality: z.enum(['low', 'medium', 'high']).optional().default('medium'),
 });
@@ -77,7 +87,10 @@ export type MediaResponse = z.infer<typeof mediaResponseSchema>;
 export const listMediaQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
-  type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']).optional(),
+  type: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']).optional()
+  ),
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']).optional(),
 });
 

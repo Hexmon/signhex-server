@@ -1,6 +1,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import path from 'path';
-import { createMediaSchema, presignUploadSchema, listMediaQuerySchema } from '@/schemas/media';
+import {
+  completeUploadSchema,
+  createMediaSchema,
+  presignUploadSchema,
+  listMediaQuerySchema,
+} from '@/schemas/media';
 import { createMediaRepository } from '@/db/repositories/media';
 import type { MediaUsageReference } from '@/db/repositories/media';
 import { createUserRepository } from '@/db/repositories/user';
@@ -16,7 +21,6 @@ import {
 import { getPresignedPutUrl, createBucketIfNotExists, headObject, getPresignedUrl } from '@/s3';
 import { createLogger } from '@/utils/logger';
 import { randomUUID } from 'crypto';
-import { z } from 'zod';
 import { apiEndpoints, PENDINGSTATUS } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
@@ -32,18 +36,10 @@ import {
   sanitizeFilenameHint,
 } from '@/utils/object-key';
 import { serializeMediaRecord } from '@/utils/media';
+import { queueFFmpegThumbnail, queueFFmpegTranscode } from '@/jobs';
 
 const logger = createLogger('media-routes');
 const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
-
-const completeUploadSchema = z.object({
-  status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']).optional().default('READY'),
-  content_type: z.string().optional(),
-  size: z.number().int().nonnegative().optional(),
-  width: z.number().int().positive().optional(),
-  height: z.number().int().positive().optional(),
-  duration_seconds: z.number().int().positive().optional(),
-});
 
 export async function mediaRoutes(fastify: FastifyInstance) {
   const mediaRepo = createMediaRepository();
@@ -75,11 +71,29 @@ export async function mediaRoutes(fastify: FastifyInstance) {
     proof_of_play: 'Media cannot be deleted because it is referenced by playback history.',
   };
 
+  const isObjectMissingError = (error: unknown) => {
+    if (!error || typeof error !== 'object') return false;
+    const candidate = error as {
+      name?: string;
+      Code?: string;
+      code?: string;
+      $metadata?: { httpStatusCode?: number };
+    };
+
+    return (
+      candidate.name === 'NotFound' ||
+      candidate.Code === 'NotFound' ||
+      candidate.code === 'NotFound' ||
+      candidate.code === 'NoSuchKey' ||
+      candidate.$metadata?.httpStatusCode === 404
+    );
+  };
+
   const resolveApiStatus = (
     media: { status: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' },
-    mediaUrl: string | null
+    isObjectMissing: boolean
   ) => {
-    if (media.status === 'READY' && !mediaUrl) {
+    if (media.status === 'READY' && isObjectMissing) {
       return {
         status: 'FAILED' as const,
         status_reason: 'MEDIA_OBJECT_MISSING' as const,
@@ -92,34 +106,208 @@ export async function mediaRoutes(fastify: FastifyInstance) {
     };
   };
 
-  const resolveMediaUrl = async (media: any, readyMap?: Map<string, any>) => {
+  const normalizeHeadSize = (value: unknown) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'bigint') return Number(value);
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    return undefined;
+  };
+
+  const ensureSourceStorageObject = async (params: {
+    bucket: string;
+    objectKey: string;
+    contentType?: string | null;
+    size?: number | null;
+  }) => {
+    const [storageObject] = await db
+      .insert(schema.storageObjects)
+      .values({
+        bucket: params.bucket,
+        object_key: params.objectKey,
+        content_type: params.contentType ?? null,
+        size: params.size ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [schema.storageObjects.bucket, schema.storageObjects.object_key],
+        set: {
+          content_type: params.contentType ?? null,
+          size: params.size ?? null,
+        },
+      })
+      .returning();
+
+    return storageObject;
+  };
+
+  const resolveMediaAccess = async (media: any, readyMap?: Map<string, any>) => {
     const filename = (media as any).original_filename ?? media.name ?? 'file';
     const contentDisposition = buildContentDisposition(filename, 'inline');
-    try {
-      if (media.ready_object_id) {
-        const obj = readyMap?.get(media.ready_object_id) ||
-          (await db
+    let bucket: string | null = null;
+    let objectKey: string | null = null;
+
+    if (media.ready_object_id) {
+      const obj =
+        readyMap?.get(media.ready_object_id) ||
+        (
+          await db
             .select()
             .from(schema.storageObjects)
-            .where(eq(schema.storageObjects.id, media.ready_object_id)))[0];
-        if (obj) {
-          return await getPresignedUrl(obj.bucket, obj.object_key, {
-            expiresIn: 3600,
-            responseContentDisposition: contentDisposition,
-          });
-        }
+            .where(eq(schema.storageObjects.id, media.ready_object_id))
+        )[0];
+
+      if (!obj) {
+        return { media_url: null, is_object_missing: true };
       }
 
-      if (media.source_bucket && media.source_object_key) {
-        return await getPresignedUrl(media.source_bucket, media.source_object_key, {
+      bucket = obj.bucket;
+      objectKey = obj.object_key;
+    } else if (media.source_bucket && media.source_object_key) {
+      bucket = media.source_bucket;
+      objectKey = media.source_object_key;
+    }
+
+    if (!bucket || !objectKey) {
+      return { media_url: null, is_object_missing: media.status === 'READY' };
+    }
+
+    try {
+      await headObject(bucket, objectKey);
+    } catch (error) {
+      if (isObjectMissingError(error)) {
+        return { media_url: null, is_object_missing: true };
+      }
+
+      logger.warn(error, 'Failed to verify media object before generating media URL');
+      return { media_url: null, is_object_missing: false };
+    }
+
+    try {
+      return {
+        media_url: await getPresignedUrl(bucket, objectKey, {
           expiresIn: 3600,
           responseContentDisposition: contentDisposition,
-        });
-      }
-    } catch (err) {
-      logger.warn(err, 'Failed to generate media URL');
+        }),
+        is_object_missing: false,
+      };
+    } catch (error) {
+      logger.warn(error, 'Failed to generate media URL');
+      return { media_url: null, is_object_missing: false };
     }
-    return null;
+  };
+
+  const serializeMediaWithResolvedState = async (media: any, readyMap?: Map<string, any>) => {
+    const mediaAccess = await resolveMediaAccess(media, readyMap);
+    const statusState = resolveApiStatus(media, mediaAccess.is_object_missing);
+    return serializeMediaRecord(media, mediaAccess.media_url, {
+      status: statusState.status,
+      status_reason: statusState.status_reason,
+    });
+  };
+
+  const serializeCurrentMediaState = async (media: any) => {
+    if (media.status !== 'READY') {
+      return serializeMediaRecord(media, null, {
+        status: media.status,
+      });
+    }
+
+    return serializeMediaWithResolvedState(media);
+  };
+
+  const queueVideoFinalization = async (mediaId: string, sourceObjectId: string) => {
+    try {
+      await Promise.all([
+        queueFFmpegTranscode({
+          mediaId,
+          sourceObjectId,
+          targetFormat: 'mp4',
+          quality: 'high',
+        }),
+        queueFFmpegThumbnail({
+          mediaId,
+          sourceObjectId,
+        }),
+      ]);
+    } catch (error) {
+      await mediaRepo.update(mediaId, { status: 'FAILED' });
+      throw AppError.internal('Failed to queue video processing jobs', {
+        media_id: mediaId,
+        source_object_id: sourceObjectId,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const finalizeVerifiedUpload = async (media: any, data: typeof completeUploadSchema._type) => {
+    if (!media.source_bucket || !media.source_object_key) {
+      throw AppError.badRequest('Media missing source object info');
+    }
+
+    let head: any;
+    try {
+      head = await headObject(media.source_bucket, media.source_object_key);
+    } catch (error) {
+      logger.error(error, 'Head object failed');
+      throw AppError.badRequest('Source object not found in storage');
+    }
+
+    const storageSize = normalizeHeadSize(head?.ContentLength);
+    if (
+      typeof media.source_size === 'number' &&
+      typeof storageSize === 'number' &&
+      media.source_size !== storageSize
+    ) {
+      throw AppError.badRequest('Uploaded object size does not match expected size', {
+        expected_size: media.source_size,
+        actual_size: storageSize,
+      });
+    }
+
+    const sourceContentType = head?.ContentType ?? media.source_content_type ?? data.content_type;
+    const sourceSize = storageSize ?? media.source_size ?? data.size;
+    const sourceObject = await ensureSourceStorageObject({
+      bucket: media.source_bucket,
+      objectKey: media.source_object_key,
+      contentType: sourceContentType,
+      size: sourceSize,
+    });
+
+    const updateBase = {
+      source_object_id: sourceObject.id,
+      source_content_type: sourceContentType,
+      source_size: sourceSize,
+      width: data.width ?? media.width,
+      height: data.height ?? media.height,
+      duration_seconds: data.duration_seconds ?? media.duration_seconds,
+    };
+
+    if (media.type === 'VIDEO') {
+      const processingMedia = await mediaRepo.update(media.id, {
+        ...updateBase,
+        status: 'PROCESSING',
+      });
+
+      if (!processingMedia) {
+        throw AppError.internal('Failed to update media processing state');
+      }
+
+      await queueVideoFinalization(processingMedia.id, sourceObject.id);
+      return processingMedia;
+    }
+
+    const readyMedia = await mediaRepo.update(media.id, {
+      ...updateBase,
+      status: 'READY',
+    });
+
+    if (!readyMedia) {
+      throw AppError.internal('Failed to finalize media upload');
+    }
+
+    return readyMedia;
   };
 
   // Presign upload URL
@@ -271,6 +459,65 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         const createdByIds = isDepartmentScopedRole(payload.role)
           ? Array.from(new Set([...(await getDepartmentUserIds(payload.department_id)), ...(await getAdminUserIds())]))
           : undefined;
+        if (query.status === 'READY') {
+          const requestedOffset = (query.page - 1) * query.limit;
+          const batchSize = Math.max(query.limit, 100);
+          const collected: any[] = [];
+          let validTotal = 0;
+          let scanPage = 1;
+          let hasMore = true;
+
+          while (hasMore) {
+            const batch = await mediaRepo.list({
+              page: scanPage,
+              limit: batchSize,
+              type: query.type,
+              status: query.status,
+              created_by_ids: createdByIds,
+            });
+
+            hasMore = batch.items.length === batchSize;
+            if (batch.items.length === 0) {
+              break;
+            }
+
+            const readyIds = batch.items
+              .map((m: any) => m.ready_object_id)
+              .filter(Boolean) as string[];
+            const readyObjects = readyIds.length
+              ? await db
+                  .select()
+                  .from(schema.storageObjects)
+                  .where(inArray(schema.storageObjects.id, readyIds as any))
+              : [];
+            const readyMap = new Map(readyObjects.map((o: any) => [o.id, o]));
+
+            const resolvedBatch = await Promise.all(
+              batch.items.map((m) => serializeMediaWithResolvedState(m, readyMap))
+            );
+
+            for (const item of resolvedBatch) {
+              if (item.status !== 'READY') continue;
+
+              if (validTotal >= requestedOffset && collected.length < query.limit) {
+                collected.push(item);
+              }
+              validTotal += 1;
+            }
+
+            scanPage += 1;
+          }
+
+          return reply.send({
+            items: collected,
+            pagination: {
+              page: query.page,
+              limit: query.limit,
+              total: validTotal,
+            },
+          });
+        }
+
         const result = await mediaRepo.list({
           page: query.page,
           limit: query.limit,
@@ -285,43 +532,14 @@ export async function mediaRoutes(fastify: FastifyInstance) {
           : [];
         const readyMap = new Map(readyObjects.map((o: any) => [o.id, o]));
 
-        const rawItems = await Promise.all(
-          result.items.map(async (m) => {
-            const media_url = await resolveMediaUrl(m, readyMap);
-            const statusState = resolveApiStatus(m, media_url);
-            return {
-              id: m.id,
-              name: m.name,
-              type: m.type,
-              status: m.status,
-              source_bucket: m.source_bucket,
-              source_object_key: m.source_object_key,
-              source_content_type: m.source_content_type,
-              source_size: m.source_size,
-              ready_object_id: m.ready_object_id,
-              thumbnail_object_id: m.thumbnail_object_id,
-              duration_seconds: m.duration_seconds,
-              width: m.width,
-              height: m.height,
-              created_by: m.created_by,
-              created_at: m.created_at.toISOString(),
-              updated_at: m.updated_at.toISOString(),
-              media_url,
-            };
-          })
-        );
-
-        const items =
-          query.status === 'READY'
-            ? rawItems.filter((item) => item.status === 'READY')
-            : rawItems;
+        const items = await Promise.all(result.items.map((m) => serializeMediaWithResolvedState(m, readyMap)));
 
         return reply.send({
           items,
           pagination: {
             page: result.page,
             limit: result.limit,
-            total: query.status === 'READY' ? items.length : result.total,
+            total: result.total,
           },
         });
       } catch (error) {
@@ -361,28 +579,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         );
         if (!canReadMedia) throw AppError.forbidden('Forbidden');
 
-        const media_url = await resolveMediaUrl(media);
-        const statusState = resolveApiStatus(media, media_url);
-
-        return reply.send({
-          id: media.id,
-          name: media.name,
-          type: media.type,
-          status: media.status,
-          source_bucket: media.source_bucket,
-          source_object_key: media.source_object_key,
-          source_content_type: media.source_content_type,
-          source_size: media.source_size,
-          ready_object_id: media.ready_object_id,
-          thumbnail_object_id: media.thumbnail_object_id,
-          duration_seconds: media.duration_seconds,
-          width: media.width,
-          height: media.height,
-          created_by: media.created_by,
-          created_at: media.created_at.toISOString(),
-          updated_at: media.updated_at.toISOString(),
-          media_url,
-        });
+        return reply.send(await serializeMediaWithResolvedState(media));
       } catch (error) {
         logger.error(error, 'Get media error');
         return respondWithError(reply, error);
@@ -424,29 +621,12 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         );
         if (!canUpdateMedia) throw AppError.forbidden('Forbidden');
 
-        if (!media.source_bucket || !media.source_object_key) {
-          throw AppError.badRequest('Media missing source object info');
+        if (media.status === 'READY' || media.status === 'PROCESSING') {
+          return reply.send(await serializeCurrentMediaState(media));
         }
 
-        let head: any;
-        try {
-          head = await headObject(media.source_bucket, media.source_object_key);
-        } catch (err) {
-          logger.error(err, 'Head object failed');
-          throw AppError.badRequest('Source object not found in storage');
-        }
-
-        const updated = await mediaRepo.update(media.id, {
-          status: data.status || 'READY',
-          source_content_type: data.content_type || head?.ContentType,
-          source_size: data.size ?? (head?.ContentLength as number | undefined),
-          width: data.width ?? media.width,
-          height: data.height ?? media.height,
-          duration_seconds: data.duration_seconds ?? media.duration_seconds,
-          updated_at: new Date(),
-        });
-
-        return reply.send(serializeMediaRecord(updated!));
+        const updated = await finalizeVerifiedUpload(media, data);
+        return reply.send(await serializeCurrentMediaState(updated));
       } catch (error) {
         logger.error(error, 'Complete upload error');
         return respondWithError(reply, error);
@@ -515,11 +695,24 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         const db = getDatabase();
-        const storageObjects: { bucket: string; key: string; id?: string }[] = [];
+        const storageObjects = new Map<string, { bucket: string; key: string; id?: string }>();
         const deletedObjects: { bucket: string; key: string; success: boolean; error?: string }[] = [];
 
+        const addStorageObject = (obj: { bucket: string; key: string; id?: string }) => {
+          const mapKey = obj.id ?? `${obj.bucket}:${obj.key}`;
+          storageObjects.set(mapKey, obj);
+        };
+
         if (media.source_bucket && media.source_object_key) {
-          storageObjects.push({ bucket: media.source_bucket, key: media.source_object_key });
+          addStorageObject({ bucket: media.source_bucket, key: media.source_object_key });
+        }
+
+        if (media.source_object_id) {
+          const [obj] = await db
+            .select()
+            .from(schema.storageObjects)
+            .where(eq(schema.storageObjects.id, media.source_object_id));
+          if (obj) addStorageObject({ bucket: obj.bucket, key: obj.object_key, id: obj.id });
         }
 
         if (media.ready_object_id) {
@@ -527,7 +720,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
             .select()
             .from(schema.storageObjects)
             .where(eq(schema.storageObjects.id, media.ready_object_id));
-          if (obj) storageObjects.push({ bucket: obj.bucket, key: obj.object_key, id: obj.id });
+          if (obj) addStorageObject({ bucket: obj.bucket, key: obj.object_key, id: obj.id });
         }
 
         if (media.thumbnail_object_id) {
@@ -535,10 +728,10 @@ export async function mediaRoutes(fastify: FastifyInstance) {
             .select()
             .from(schema.storageObjects)
             .where(eq(schema.storageObjects.id, media.thumbnail_object_id));
-          if (obj) storageObjects.push({ bucket: obj.bucket, key: obj.object_key, id: obj.id });
+          if (obj) addStorageObject({ bucket: obj.bucket, key: obj.object_key, id: obj.id });
         }
 
-        for (const obj of storageObjects) {
+        for (const obj of storageObjects.values()) {
           try {
             await deleteObject(obj.bucket, obj.key);
             deletedObjects.push({ bucket: obj.bucket, key: obj.key, success: true });
@@ -554,7 +747,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
         }
 
         // Remove storage object rows for ready/thumbnail if present
-        for (const obj of storageObjects) {
+        for (const obj of storageObjects.values()) {
           if (obj.id) {
             try {
               await db.delete(schema.storageObjects).where(eq(schema.storageObjects.id, obj.id));
@@ -575,6 +768,7 @@ export async function mediaRoutes(fastify: FastifyInstance) {
 
         await mediaRepo.update(media.id, {
           status: 'FAILED',
+          source_object_id: null as any,
           source_bucket: null as any,
           source_object_key: null as any,
           ready_object_id: null as any,
