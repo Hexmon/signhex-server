@@ -30,12 +30,12 @@ import { eq, inArray } from 'drizzle-orm';
 import { AppError } from '@/utils/app-error';
 import { config as appConfig } from '@/config';
 import {
-  buildContentDisposition,
   buildObjectKey,
   normalizeDisplayName,
   normalizeOriginalFilename,
 } from '@/utils/object-key';
 import { serializeMediaRecord } from '@/utils/media';
+import { resolveMediaAccess } from '@/utils/media-access';
 import {
   inferUploadMediaType,
   normalizeWebpageUrl,
@@ -79,24 +79,6 @@ export async function mediaRoutes(fastify: FastifyInstance) {
     emergencies: 'Media cannot be deleted because it is used by emergency content.',
     settings: 'Media cannot be deleted because it is configured as the default media.',
     proof_of_play: 'Media cannot be deleted because it is referenced by playback history.',
-  };
-
-  const isObjectMissingError = (error: unknown) => {
-    if (!error || typeof error !== 'object') return false;
-    const candidate = error as {
-      name?: string;
-      Code?: string;
-      code?: string;
-      $metadata?: { httpStatusCode?: number };
-    };
-
-    return (
-      candidate.name === 'NotFound' ||
-      candidate.Code === 'NotFound' ||
-      candidate.code === 'NotFound' ||
-      candidate.code === 'NoSuchKey' ||
-      candidate.$metadata?.httpStatusCode === 404
-    );
   };
 
   const resolveApiStatus = (
@@ -152,68 +134,15 @@ export async function mediaRoutes(fastify: FastifyInstance) {
     return storageObject;
   };
 
-  const resolveMediaAccess = async (media: any, readyMap?: Map<string, any>) => {
-    const filename = (media as any).original_filename ?? media.name ?? 'file';
-    const contentDisposition = buildContentDisposition(filename, 'inline');
-    let bucket: string | null = null;
-    let objectKey: string | null = null;
-
-    if (media.ready_object_id) {
-      const obj =
-        readyMap?.get(media.ready_object_id) ||
-        (
-          await db
-            .select()
-            .from(schema.storageObjects)
-            .where(eq(schema.storageObjects.id, media.ready_object_id))
-        )[0];
-
-      if (!obj) {
-        return { media_url: null, is_object_missing: true };
-      }
-
-      bucket = obj.bucket;
-      objectKey = obj.object_key;
-    } else if (media.source_bucket && media.source_object_key) {
-      bucket = media.source_bucket;
-      objectKey = media.source_object_key;
-    }
-
-    if (!bucket || !objectKey) {
-      return { media_url: null, is_object_missing: media.status === 'READY' };
-    }
-
-    try {
-      await headObject(bucket, objectKey);
-    } catch (error) {
-      if (isObjectMissingError(error)) {
-        return { media_url: null, is_object_missing: true };
-      }
-
-      logger.warn(error, 'Failed to verify media object before generating media URL');
-      return { media_url: null, is_object_missing: false };
-    }
-
-    try {
-      return {
-        media_url: await getPresignedUrl(bucket, objectKey, {
-          expiresIn: 3600,
-          responseContentDisposition: contentDisposition,
-        }),
-        is_object_missing: false,
-      };
-    } catch (error) {
-      logger.warn(error, 'Failed to generate media URL');
-      return { media_url: null, is_object_missing: false };
-    }
-  };
-
   const serializeMediaWithResolvedState = async (media: any, readyMap?: Map<string, any>) => {
-    const mediaAccess = await resolveMediaAccess(media, readyMap);
+    const mediaAccess = await resolveMediaAccess(media, db, { readyObjectMap: readyMap });
     const statusState = resolveApiStatus(media, mediaAccess.is_object_missing);
     return serializeMediaRecord(media, mediaAccess.media_url, {
       status: statusState.status,
       status_reason: statusState.status_reason,
+      content_type: mediaAccess.content_type,
+      source_content_type: mediaAccess.source_content_type,
+      size: mediaAccess.size,
     });
   };
 
@@ -222,6 +151,8 @@ export async function mediaRoutes(fastify: FastifyInstance) {
       return serializeMediaRecord(media, null, {
         status: media.status,
         status_reason: media.status_reason ?? undefined,
+        content_type: media.source_content_type ?? undefined,
+        source_content_type: media.source_content_type ?? undefined,
       });
     }
 

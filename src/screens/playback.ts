@@ -302,6 +302,7 @@ export async function getActiveEmergencyForScreen(
       resolvedEmergencyMedia?.type === 'WEBPAGE'
         ? 'url'
         : resolvedEmergencyMedia?.type ?? null,
+    content_type: resolvedEmergencyMedia?.content_type ?? null,
     source_content_type: resolvedEmergencyMedia?.source_content_type ?? null,
     screen_ids: emergencyScreenIds,
     screen_group_ids: emergencyGroupIds,

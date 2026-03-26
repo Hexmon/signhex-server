@@ -26,6 +26,7 @@ type SerializeMediaOptions = {
   status?: string | null;
   status_reason?: string | null;
   content_type?: string | null;
+  source_content_type?: string | null;
   size?: number | null;
 };
 
@@ -65,6 +66,7 @@ export const serializeMediaRecord = (
 ) => {
   const displayName = trimToUndefined(media.display_name) ?? media.name;
   const contentType = options?.content_type ?? media.source_content_type;
+  const sourceContentType = options?.source_content_type ?? media.source_content_type;
   const size = options?.size ?? media.source_size;
   const isWebpage = (media.type ?? '').toUpperCase() === 'WEBPAGE';
   const sourceUrl = trimToUndefined(media.source_url) ?? undefined;
@@ -81,8 +83,8 @@ export const serializeMediaRecord = (
     content_type: contentType ?? undefined,
     source_bucket: media.source_bucket ?? undefined,
     source_object_key: media.source_object_key ?? undefined,
-    source_content_type: contentType ?? undefined,
-    source_size: size ?? undefined,
+    source_content_type: sourceContentType ?? undefined,
+    source_size: media.source_size ?? undefined,
     source_url: sourceUrl ?? null,
     size: size ?? undefined,
     ready_object_id: media.ready_object_id ?? undefined,

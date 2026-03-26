@@ -15,10 +15,10 @@ import {
   getDefaultMedia,
   getDefaultMediaTargetAssignments,
   getDefaultMediaVariants,
-  resolveMediaUrl,
 } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { serializeMediaRecord } from '@/utils/media';
+import { resolveMediaAccess } from '@/utils/media-access';
 import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 import {
   APPEARANCE_SETTINGS_KEY,
@@ -218,49 +218,42 @@ async function validateDefaultMediaTargets(
 export async function settingsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
-  const serializeMedia = (media: any, media_url: string | null) => ({
-    id: media.id,
-    name: media.name,
-    type: media.type,
-    status: media.status,
-    source_bucket: media.source_bucket,
-    source_object_key: media.source_object_key,
-    source_content_type: media.source_content_type,
-    source_size: media.source_size,
-    ready_object_id: media.ready_object_id,
-    thumbnail_object_id: media.thumbnail_object_id,
-    duration_seconds: media.duration_seconds,
-    width: media.width,
-    height: media.height,
-    created_by: media.created_by,
-    created_at: media.created_at.toISOString?.() ?? media.created_at,
-    updated_at: media.updated_at.toISOString?.() ?? media.updated_at,
-    media_url,
-  });
+  const serializeMedia = async (media: any) => {
+    const mediaAccess = await resolveMediaAccess(media, db);
+    return serializeMediaRecord(media, mediaAccess.media_url, {
+      content_type: mediaAccess.content_type,
+      source_content_type: mediaAccess.source_content_type,
+      size: mediaAccess.size,
+    });
+  };
 
   const serializeDefaultMediaVariants = async () => {
     const data = await getDefaultMediaVariants(db);
     return {
       global_media_id: data.global_media_id,
-      global_media: data.global_media ? serializeMedia(data.global_media, data.global_media_url) : null,
-      variants: data.variants.map((variant) => ({
-        aspect_ratio: variant.aspect_ratio,
-        media_id: variant.media_id,
-        media: variant.media ? serializeMedia(variant.media, variant.media_url) : null,
-      })),
+      global_media: data.global_media ? await serializeMedia(data.global_media) : null,
+      variants: await Promise.all(
+        data.variants.map(async (variant) => ({
+          aspect_ratio: variant.aspect_ratio,
+          media_id: variant.media_id,
+          media: variant.media ? await serializeMedia(variant.media) : null,
+        }))
+      ),
     };
   };
 
   const serializeDefaultMediaTargets = async () => {
     const data = await getDefaultMediaTargetAssignments(db);
     return {
-      assignments: data.map((assignment) => ({
-        target_type: assignment.target_type,
-        target_id: assignment.target_id,
-        aspect_ratio: assignment.aspect_ratio,
-        media_id: assignment.media_id,
-        media: assignment.media ? serializeMedia(assignment.media, assignment.media_url) : null,
-      })),
+      assignments: await Promise.all(
+        data.map(async (assignment) => ({
+          target_type: assignment.target_type,
+          target_id: assignment.target_id,
+          aspect_ratio: assignment.aspect_ratio,
+          media_id: assignment.media_id,
+          media: assignment.media ? await serializeMedia(assignment.media) : null,
+        }))
+      ),
     };
   };
 
@@ -632,7 +625,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 
         return reply.send({
           media_id: defaultMedia.media_id,
-          media: serializeMedia(defaultMedia.media, defaultMedia.media_url),
+          media: await serializeMedia(defaultMedia.media),
         });
       } catch (error) {
         logger.error(error, 'Get default media setting error');
@@ -683,10 +676,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           createdBy: payload.sub,
         });
 
-        const media_url = await resolveMediaUrl(media, db);
         return reply.status(OK).send({
           media_id: media.id,
-          media: serializeMedia(media, media_url),
+          media: await serializeMedia(media),
         });
       } catch (error) {
         logger.error(error, 'Update default media setting error');

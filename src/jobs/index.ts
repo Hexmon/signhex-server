@@ -13,10 +13,8 @@ import { createLogger } from '@/utils/logger';
 import { createMediaRepository } from '@/db/repositories/media';
 import { createBackupRun, getLatestBackupRun, runFullBackup } from '@/utils/backup-runs';
 import { getCachedSettings } from '@/utils/settings';
-import {
-  buildSourceFilename,
-  buildWebpageFallbackSvg,
-} from '@/utils/media-processing';
+import { buildSourceFilename } from '@/utils/media-processing';
+import { captureWebpagePreview } from '@/utils/webpage-capture';
 
 const logger = createLogger('jobs');
 
@@ -29,7 +27,7 @@ const HLS_SEGMENT_CONTENT_TYPE = 'video/mp2t';
 const THUMBNAIL_CONTENT_TYPE = 'image/jpeg';
 const NDJSON_CONTENT_TYPE = 'application/x-ndjson';
 const DOCUMENT_READY_CONTENT_TYPE = 'application/pdf';
-const WEBPAGE_FALLBACK_CONTENT_TYPE = 'image/svg+xml';
+const WEBPAGE_FALLBACK_CONTENT_TYPE = 'image/png';
 
 const QUALITY_OPTIONS: Record<FFmpegTranscodeJob['quality'], string[]> = {
   low: ['-preset', 'veryfast', '-crf', '30', '-b:a', '96k'],
@@ -138,19 +136,12 @@ async function upsertStorageObject(params: {
   return storageObject;
 }
 
-function extractTitleFromHtml(html: string) {
-  const match = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-  return match?.[1]?.trim() || null;
-}
-
-function isHtmlContentType(contentType?: string | null) {
-  if (!contentType) return true;
-  const normalized = contentType.toLowerCase();
-  return normalized.includes('text/html') || normalized.includes('application/xhtml+xml');
-}
-
 function getWebpageFailureReason(error: unknown) {
   if (error instanceof Error && error.name === 'AbortError') {
+    return 'WEBPAGE_REQUEST_TIMEOUT';
+  }
+
+  if (error instanceof Error && error.name === 'TimeoutError') {
     return 'WEBPAGE_REQUEST_TIMEOUT';
   }
 
@@ -168,47 +159,25 @@ function getWebpageFailureReason(error: unknown) {
     return 'WEBPAGE_UNREACHABLE';
   }
 
+  if (message.toLowerCase().includes('timeout')) {
+    return 'WEBPAGE_REQUEST_TIMEOUT';
+  }
+
+  if (message.toLowerCase().includes('net::')) {
+    return 'WEBPAGE_UNREACHABLE';
+  }
+
   return 'WEBPAGE_CAPTURE_FAILED';
 }
 
 async function verifyWebpageSource(sourceUrl: string) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-
-  try {
-    const response = await fetch(sourceUrl, {
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        'user-agent': 'HexmonSignage/1.0 (+webpage-verify)',
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Webpage request failed with status ${response.status}`);
-    }
-
-    const contentType = response.headers.get('content-type') || undefined;
-    if (!isHtmlContentType(contentType)) {
-      throw new Error(`Webpage URL did not return HTML content (${contentType})`);
-    }
-
-    let title: string | null = null;
-
-    if (isHtmlContentType(contentType)) {
-      const body = await response.text();
-      title = extractTitleFromHtml(body.slice(0, 200_000));
-    }
-
-    return {
-      finalUrl: response.url || sourceUrl,
-      contentType,
-      title,
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+  const capture = await captureWebpagePreview(sourceUrl);
+  return {
+    finalUrl: capture.finalUrl,
+    contentType: capture.contentType,
+    title: capture.title,
+    screenshot: capture.screenshot,
+  };
 }
 
 async function convertDocumentWithLibreOffice(inputPath: string, outputDir: string) {
@@ -947,12 +916,8 @@ export async function registerJobHandlers() {
         }
 
         const verification = await verifyWebpageSource(sourceUrl);
-        const previewBuffer = buildWebpageFallbackSvg({
-          sourceUrl: verification.finalUrl,
-          title: verification.title,
-          statusLabel: verification.contentType || 'Live webpage',
-        });
-        const fallbackKey = `${mediaId}/webpage-fallback.svg`;
+        const previewBuffer = verification.screenshot;
+        const fallbackKey = `${mediaId}/webpage-fallback.png`;
         const upload = await putObject(
           READY_BUCKET,
           fallbackKey,

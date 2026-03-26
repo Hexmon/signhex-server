@@ -13,6 +13,7 @@ import { deleteObject, getObject } from '@/s3';
 import { pruneDefaultMediaTargetsForScreen, resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { serializeMediaRecord } from '@/utils/media';
+import { resolveMediaAccess } from '@/utils/media-access';
 import {
   attachResolvedMediaToScheduleSnapshot,
   buildResolvedMediaMap,
@@ -151,6 +152,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
       url: resolvedMedia?.url ?? null,
       media_type: resolvedMedia?.media_type ?? null,
       type: resolvedMedia?.type === 'WEBPAGE' ? 'url' : resolvedMedia?.type ?? null,
+      content_type: resolvedMedia?.content_type ?? null,
       source_content_type: resolvedMedia?.source_content_type ?? null,
       screen_ids: emergencyScreenIds,
       screen_group_ids: emergencyGroupIds,
@@ -192,24 +194,40 @@ export async function screenRoutes(fastify: FastifyInstance) {
     return { activeItems, upcomingItems, bookedUntil };
   };
 
-  const serializeResolvedDefaultMedia = (
+  const serializeResolvedDefaultMedia = async (
     resolvedDefaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>,
     includeUrls: boolean
-  ) => ({
-    default_media: resolvedDefaultMedia.media
-      ? {
-          media_id: resolvedDefaultMedia.media.id,
-          ...serializeMediaRecord(
-            resolvedDefaultMedia.media,
-            includeUrls ? resolvedDefaultMedia.media_url : null
-          ),
-        }
-      : null,
-    default_media_resolution: {
-      source: resolvedDefaultMedia.source,
-      aspect_ratio: resolvedDefaultMedia.aspect_ratio,
-    },
-  });
+  ) => {
+    if (!resolvedDefaultMedia.media) {
+      return {
+        default_media: null,
+        default_media_resolution: {
+          source: resolvedDefaultMedia.source,
+          aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+        },
+      };
+    }
+
+    const mediaAccess = await resolveMediaAccess(resolvedDefaultMedia.media, db);
+    return {
+      default_media: {
+        media_id: resolvedDefaultMedia.media.id,
+        ...serializeMediaRecord(
+          resolvedDefaultMedia.media,
+          includeUrls ? mediaAccess.media_url : null,
+          {
+            content_type: mediaAccess.content_type,
+            source_content_type: mediaAccess.source_content_type,
+            size: mediaAccess.size,
+          }
+        ),
+      },
+      default_media_resolution: {
+        source: resolvedDefaultMedia.source,
+        aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+      },
+    };
+  };
 
   // Create screen
   fastify.post<{ Body: typeof createScreenSchema._type }>(
@@ -944,7 +962,7 @@ export async function screenRoutes(fastify: FastifyInstance) {
         const serverTime = new Date().toISOString();
         const emergency = await getActiveEmergencyForScreen(screenId, includeUrls);
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
-        const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
+        const defaultMediaPayload = await serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
         const latest = await getLatestPublishForScreen(screenId, db);
 
         if (!latest) {

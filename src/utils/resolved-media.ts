@@ -1,6 +1,6 @@
 import { eq, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
-import { resolveMediaUrl } from '@/utils/default-media';
+import { resolveMediaAccess } from '@/utils/media-access';
 import { serializeMediaRecord } from '@/utils/media';
 
 export async function buildResolvedMediaMap(
@@ -14,7 +14,17 @@ export async function buildResolvedMediaMap(
 
   const mediaRows = await db.select().from(schema.media).where(inArray(schema.media.id, uniqueIds as any));
   const resolvedEntries = await Promise.all(
-    mediaRows.map(async (media) => [media.id, serializeMediaRecord(media, await resolveMediaUrl(media, db))] as const)
+    mediaRows.map(async (media) => {
+      const access = await resolveMediaAccess(media, db);
+      return [
+        media.id,
+        serializeMediaRecord(media, access.media_url, {
+          content_type: access.content_type,
+          source_content_type: access.source_content_type,
+          size: access.size,
+        }),
+      ] as const;
+    })
   );
 
   return new Map(resolvedEntries);
@@ -111,7 +121,12 @@ export async function buildResolvedMediaRecord(
   const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId)).limit(1);
   if (!media) return null;
 
-  const serialized = serializeMediaRecord(media, await resolveMediaUrl(media, db));
+  const access = await resolveMediaAccess(media, db);
+  const serialized = serializeMediaRecord(media, access.media_url, {
+    content_type: access.content_type,
+    source_content_type: access.source_content_type,
+    size: access.size,
+  });
   return {
     ...serialized,
     url: serialized.type === 'WEBPAGE' ? serialized.source_url ?? null : serialized.media_url ?? null,

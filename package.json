@@ -59,6 +59,7 @@
     "pg-boss": "^10.0.1",
     "pino": "^8.17.2",
     "pino-http": "^8.6.1",
+    "playwright": "^1.58.2",
     "prom-client": "^15.0.0",
     "socket.io": "^4.7.2",
     "zod": "^3.22.4"

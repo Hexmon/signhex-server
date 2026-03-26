@@ -1,8 +1,7 @@
 import { eq, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
-import { getPresignedUrl } from '@/s3';
-import { buildContentDisposition } from '@/utils/object-key';
 import { resolveAspectRatio } from '@/utils/aspect-ratio';
+import { resolveMediaAccess } from '@/utils/media-access';
 
 export const DEFAULT_MEDIA_SETTING_KEY = 'default_media_id';
 export const DEFAULT_MEDIA_VARIANTS_SETTING_KEY = 'default_media_variants';
@@ -105,33 +104,8 @@ const extractDefaultMediaTargets = (value: unknown): DefaultMediaTargetAssignmen
 };
 
 export async function resolveMediaUrl(media: any, db = getDatabase()): Promise<string | null> {
-  const filename = media?.original_filename ?? media?.name ?? 'file';
-  const contentDisposition = buildContentDisposition(filename, 'inline');
-  try {
-    if (media.ready_object_id) {
-      const [obj] = await db
-        .select()
-        .from(schema.storageObjects)
-        .where(eq(schema.storageObjects.id, media.ready_object_id));
-      if (obj) {
-        return await getPresignedUrl(obj.bucket, obj.object_key, {
-          expiresIn: 3600,
-          responseContentDisposition: contentDisposition,
-        });
-      }
-    }
-
-    if (media.source_bucket && media.source_object_key) {
-      return await getPresignedUrl(media.source_bucket, media.source_object_key, {
-        expiresIn: 3600,
-        responseContentDisposition: contentDisposition,
-      });
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
+  const access = await resolveMediaAccess(media, db);
+  return access.media_url;
 }
 
 async function loadMediaRecord(mediaId: string, db = getDatabase()): Promise<DefaultMediaRecord> {

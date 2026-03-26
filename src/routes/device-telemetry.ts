@@ -13,6 +13,7 @@ import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
 import { serializeMediaRecord } from '@/utils/media';
+import { resolveMediaAccess } from '@/utils/media-access';
 import {
   attachResolvedMediaToScheduleSnapshot,
   buildResolvedMediaMap,
@@ -179,6 +180,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       url: resolvedMedia?.url ?? null,
       media_type: resolvedMedia?.media_type ?? null,
       type: resolvedMedia?.type === 'WEBPAGE' ? 'url' : resolvedMedia?.type ?? null,
+      content_type: resolvedMedia?.content_type ?? null,
       source_content_type: resolvedMedia?.source_content_type ?? null,
       screen_ids: emergencyScreenIds,
       screen_group_ids: emergencyGroupIds,
@@ -199,24 +201,40 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     });
   };
 
-  const serializeResolvedDefaultMedia = (
+  const serializeResolvedDefaultMedia = async (
     resolvedDefaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>,
     includeUrls: boolean
-  ) => ({
-    default_media: resolvedDefaultMedia.media
-      ? {
-          media_id: resolvedDefaultMedia.media.id,
-          ...serializeMediaRecord(
-            resolvedDefaultMedia.media,
-            includeUrls ? resolvedDefaultMedia.media_url : null
-          ),
-        }
-      : null,
-    default_media_resolution: {
-      source: resolvedDefaultMedia.source,
-      aspect_ratio: resolvedDefaultMedia.aspect_ratio,
-    },
-  });
+  ) => {
+    if (!resolvedDefaultMedia.media) {
+      return {
+        default_media: null,
+        default_media_resolution: {
+          source: resolvedDefaultMedia.source,
+          aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+        },
+      };
+    }
+
+    const mediaAccess = await resolveMediaAccess(resolvedDefaultMedia.media, db);
+    return {
+      default_media: {
+        media_id: resolvedDefaultMedia.media.id,
+        ...serializeMediaRecord(
+          resolvedDefaultMedia.media,
+          includeUrls ? mediaAccess.media_url : null,
+          {
+            content_type: mediaAccess.content_type,
+            source_content_type: mediaAccess.source_content_type,
+            size: mediaAccess.size,
+          }
+        ),
+      },
+      default_media_resolution: {
+        source: resolvedDefaultMedia.source,
+        aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+      },
+    };
+  };
 
   fastify.get<{ Params: { deviceId: string } }>(
     apiEndpoints.deviceTelemetry.defaultMedia,
@@ -236,12 +254,23 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         }
 
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        const defaultMediaAccess = resolvedDefaultMedia.media
+          ? await resolveMediaAccess(resolvedDefaultMedia.media, db)
+          : null;
         return reply.send({
           source: resolvedDefaultMedia.source,
           aspect_ratio: resolvedDefaultMedia.aspect_ratio,
           media_id: resolvedDefaultMedia.media_id,
           media: resolvedDefaultMedia.media
-            ? serializeMediaRecord(resolvedDefaultMedia.media, resolvedDefaultMedia.media_url)
+            ? serializeMediaRecord(
+                resolvedDefaultMedia.media,
+                defaultMediaAccess?.media_url ?? null,
+                {
+                  content_type: defaultMediaAccess?.content_type,
+                  source_content_type: defaultMediaAccess?.source_content_type,
+                  size: defaultMediaAccess?.size,
+                }
+              )
             : null,
         });
       } catch (error) {
@@ -278,7 +307,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         const emergency = await getActiveEmergencyForRuntime(deviceId, { db, includeUrls });
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
-        const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
+        const defaultMediaPayload = await serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
 
         const latest = await getLatestPublishForScreen(deviceId, db);
 
