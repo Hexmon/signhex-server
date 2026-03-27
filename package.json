@@ -27,7 +27,8 @@
     "screens:dry-run": "tsx scripts/screens-realtime-dry-run.ts",
     "test:default-media": "vitest run src/routes/settings.test.ts && vitest run src/routes/screens.test.ts && vitest run src/routes/device-telemetry-auth.test.ts",
     "notifications:reconcile": "tsx scripts/notifications-reconcile.ts",
-    "jobs:repair-pgboss-queues": "tsx scripts/repair-pgboss-queues.ts"
+    "jobs:repair-pgboss-queues": "tsx scripts/repair-pgboss-queues.ts",
+    "reset:data": "bash scripts/reset-local-data.sh"
   },
   "keywords": [
     "signage",
