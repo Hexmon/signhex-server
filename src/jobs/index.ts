@@ -15,10 +15,11 @@ import { createBackupRun, getLatestBackupRun, runFullBackup } from '@/utils/back
 import { getCachedSettings } from '@/utils/settings';
 import { buildSourceFilename } from '@/utils/media-processing';
 import { captureWebpagePreview } from '@/utils/webpage-capture';
+import { getLibreOfficeExecutable, getResolvedFfmpegPath } from '@/utils/runtime-dependencies';
 
 const logger = createLogger('jobs');
 
-ffmpeg.setFfmpegPath(appConfig.FFMPEG_PATH);
+ffmpeg.setFfmpegPath(getResolvedFfmpegPath() || appConfig.FFMPEG_PATH);
 
 const READY_BUCKET = 'media-ready';
 const THUMBNAIL_BUCKET = 'media-thumbnails';
@@ -181,7 +182,12 @@ async function verifyWebpageSource(sourceUrl: string) {
 }
 
 async function convertDocumentWithLibreOffice(inputPath: string, outputDir: string) {
-  await runCommand('soffice', [
+  const libreOfficeExecutable = getLibreOfficeExecutable();
+  if (!libreOfficeExecutable) {
+    throw new Error('LibreOffice/soffice is not available');
+  }
+
+  await runCommand(libreOfficeExecutable, [
     '--headless',
     '--nologo',
     '--nofirststartwizard',
@@ -230,7 +236,7 @@ async function convertDocumentToPdf(inputPath: string, outputDir: string) {
     return await convertDocumentWithMacPreview(inputPath, outputDir);
   }
 
-  throw new Error('No supported document conversion backend is available');
+  throw new Error('No supported document conversion backend is available. Use the official container runtime or install LibreOffice.');
 }
 
 let boss: PgBoss | null = null;

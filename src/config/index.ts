@@ -21,7 +21,7 @@ const envSchema = z.object({
   TLS_KEY_PATH: z.string().default('./certs/server.key'),
   CA_CERT_PATH: z.string().default('./certs/ca.crt'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-  FFMPEG_PATH: z.string().default('/usr/bin/ffmpeg'),
+  FFMPEG_PATH: z.string().default('ffmpeg'),
   PG_BOSS_SCHEMA: z.string().default('pgboss'),
   RATE_LIMIT_ENABLED: z.enum(['true', 'false']).transform((v) => v === 'true').default('true'),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(1000),

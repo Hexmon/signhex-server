@@ -257,32 +257,6 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     };
   };
 
-  const serializeDefaultMediaVariants = async () => {
-    const data = await getDefaultMediaVariants(db);
-    return {
-      global_media_id: data.global_media_id,
-      global_media: data.global_media ? serializeMedia(data.global_media, data.global_media_url) : null,
-      variants: data.variants.map((variant) => ({
-        aspect_ratio: variant.aspect_ratio,
-        media_id: variant.media_id,
-        media: variant.media ? serializeMedia(variant.media, variant.media_url) : null,
-      })),
-    };
-  };
-
-  const serializeDefaultMediaTargets = async () => {
-    const data = await getDefaultMediaTargetAssignments(db);
-    return {
-      assignments: data.map((assignment) => ({
-        target_type: assignment.target_type,
-        target_id: assignment.target_id,
-        aspect_ratio: assignment.aspect_ratio,
-        media_id: assignment.media_id,
-        media: assignment.media ? serializeMedia(assignment.media, assignment.media_url) : null,
-      })),
-    };
-  };
-
   fastify.get(
     apiEndpoints.settings.list,
     {

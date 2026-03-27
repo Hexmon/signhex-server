@@ -1,3 +1,4 @@
+import { existsSync } from 'fs';
 import type { Browser } from 'playwright';
 
 type CapturedWebpage = {
@@ -19,9 +20,14 @@ async function getBrowser() {
   if (!browserPromise) {
     browserPromise = import('playwright')
       .then(async ({ chromium }) => {
+        const configuredExecutable = process.env.HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH || undefined;
+        if (configuredExecutable && !existsSync(configuredExecutable)) {
+          throw new Error(`Configured Chromium executable not found at ${configuredExecutable}`);
+        }
+
         const browser = await chromium.launch({
           headless: true,
-          executablePath: process.env.HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH || undefined,
+          executablePath: configuredExecutable,
           args: ['--no-sandbox', '--disable-dev-shm-usage'],
         });
 
@@ -33,7 +39,9 @@ async function getBrowser() {
       })
       .catch((error) => {
         browserPromise = null;
-        throw error;
+        throw new Error(
+          `Playwright Chromium is not available. Install the browser runtime or use the official server container. ${error instanceof Error ? error.message : String(error)}`
+        );
       });
   }
 

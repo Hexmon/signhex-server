@@ -45,6 +45,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
+      HEXMON_RUNTIME_CONTAINER: 'true'
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     ports:
       - '${API_HOST_PORT:-3000}:3000'
       - '${DEVICE_HOST_PORT:-8443}:8443'

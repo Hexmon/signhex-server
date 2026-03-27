@@ -6,11 +6,15 @@ import { initializeS3, createBucketIfNotExists } from '@/s3';
 import { createServer } from '@/server';
 import { createLogger } from '@/utils/logger';
 import { initializeJobs, registerJobHandlers, scheduleRecurringJobs, stopJobs } from '@/jobs';
+import { validateRuntimeDependencies } from '@/utils/runtime-dependencies';
 
 const logger = createLogger('main');
 
 async function main() {
   try {
+    logger.info('Validating runtime dependencies...');
+    await validateRuntimeDependencies();
+
     // Initialize database
     logger.info('Initializing database...');
     await initializeDatabase();
