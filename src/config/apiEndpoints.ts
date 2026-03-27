@@ -196,6 +196,7 @@ export const apiEndpoints = {
     security: withBase('/settings/security'),
     appearance: withBase('/settings/appearance'),
     backups: withBase('/settings/backups'),
+    backupById: withBase('/settings/backups/:id'),
     backupRun: withBase('/settings/backups/run'),
     backupHistory: withBase('/settings/backups/history'),
     logs: withBase('/settings/logs'),

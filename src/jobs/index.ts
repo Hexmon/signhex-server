@@ -1192,7 +1192,9 @@ export async function registerJobHandlers() {
 
     const latestRun = await getLatestBackupRun();
     const now = Date.now();
-    const latestTimestamp = latestRun?.created_at ? new Date(latestRun.created_at).getTime() : 0;
+    const latestFinishedAt =
+      latestRun?.completed_at ?? latestRun?.started_at ?? latestRun?.created_at ?? null;
+    const latestTimestamp = latestFinishedAt ? new Date(latestFinishedAt).getTime() : 0;
     const intervalMs = backupsSettings.interval_hours * 60 * 60 * 1000;
 
     if (latestRun && ['PENDING', 'RUNNING'].includes(latestRun.status)) {

@@ -40,7 +40,7 @@ import {
   type GeneralSettings,
   type SecuritySettings,
 } from '@/utils/settings';
-import { createBackupRun, listBackupRuns } from '@/utils/backup-runs';
+import { createBackupRun, deleteBackupRun, listBackupRuns } from '@/utils/backup-runs';
 import { queueBackup } from '@/jobs';
 import { resolveAspectRatio } from '@/utils/aspect-ratio';
 
@@ -559,6 +559,27 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Run backup error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.delete<{ Params: { id: string } }>(
+    apiEndpoints.settings.backupById,
+    {
+      schema: {
+        description: 'Delete a completed or failed backup run and its archive files',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const result = await deleteBackupRun(request.params.id);
+        return reply.status(OK).send(result);
+      } catch (error) {
+        logger.error(error, 'Delete backup run error');
         return respondWithError(reply, error);
       }
     }
