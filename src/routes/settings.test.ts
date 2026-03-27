@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import { eq, inArray } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
@@ -7,6 +7,11 @@ import { getDatabase, schema } from '@/db';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { generateAccessToken } from '@/auth/jwt';
 import { createSessionRepository } from '@/db/repositories/session';
+import {
+  DEFAULT_MEDIA_SETTING_KEY,
+  DEFAULT_MEDIA_TARGETS_SETTING_KEY,
+  DEFAULT_MEDIA_VARIANTS_SETTING_KEY,
+} from '@/utils/default-media';
 
 async function issueSuperAdminToken() {
   const db = getDatabase();
@@ -31,6 +36,19 @@ describe('Settings routes - dimension-wise default media', () => {
   beforeAll(async () => {
     server = await createTestServer();
     adminToken = await issueSuperAdminToken();
+  });
+
+  beforeEach(async () => {
+    const db = getDatabase();
+    await db
+      .delete(schema.settings)
+      .where(
+        inArray(schema.settings.key, [
+          DEFAULT_MEDIA_SETTING_KEY,
+          DEFAULT_MEDIA_VARIANTS_SETTING_KEY,
+          DEFAULT_MEDIA_TARGETS_SETTING_KEY,
+        ])
+      );
   });
 
   afterAll(async () => {
