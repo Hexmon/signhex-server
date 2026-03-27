@@ -23,6 +23,13 @@ function formatDateTime(value?: Date | string | null) {
   return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 }
 
+function toIsoOrNull(value?: Date | string | null) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
 function formatCount(value: number | null | undefined) {
   if (value === null || typeof value === 'undefined') return '—';
   return new Intl.NumberFormat('en-US').format(value);
@@ -601,7 +608,7 @@ export async function reportsRoutes(fastify: FastifyInstance) {
             pending: transcodeQueue,
           },
           publishes: {
-            last_published_at: lastPublish?.lastPublishedAt?.toISOString() ?? null,
+            last_published_at: toIsoOrNull(lastPublish?.lastPublishedAt),
           },
           jobs: {
             failed_last_24h: failedJobs24h,
