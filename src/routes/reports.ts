@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { sql, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { config as appConfig } from '@/config';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
@@ -10,12 +10,115 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 import { isDepartmentScopedRole } from '@/rbac/policy';
+import { createEmergencyRepository } from '@/db/repositories/emergency';
+import { escapeHtml, renderPdfDocument } from '@/utils/pdf-render';
 
 const logger = createLogger('reports-routes');
 const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
 
+function formatDateTime(value?: Date | string | null) {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+function formatCount(value: number | null | undefined) {
+  if (value === null || typeof value === 'undefined') return '—';
+  return new Intl.NumberFormat('en-US').format(value);
+}
+
+function buildPdfHtml(title: string, sectionsHtml: string) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #111827;
+        font-size: 12px;
+        margin: 0;
+      }
+      h1, h2, h3, p {
+        margin: 0;
+      }
+      .header {
+        margin-bottom: 20px;
+      }
+      .subtitle {
+        color: #6b7280;
+        margin-top: 4px;
+      }
+      .section {
+        margin-top: 20px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .card {
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .label {
+        color: #6b7280;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .value {
+        font-size: 20px;
+        font-weight: 700;
+        margin-top: 6px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+      }
+      th, td {
+        border: 1px solid #e5e7eb;
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: #f9fafb;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .muted {
+        color: #6b7280;
+      }
+      .pill {
+        display: inline-block;
+        border: 1px solid #d1d5db;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 10px;
+        margin-right: 6px;
+      }
+      .empty {
+        margin-top: 12px;
+        color: #6b7280;
+      }
+    </style>
+  </head>
+  <body>
+    ${sectionsHtml}
+  </body>
+</html>`;
+}
+
 export async function reportsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
+  const emergencyRepo = createEmergencyRepository();
 
   fastify.get(
     apiEndpoints.reports.summary,
@@ -66,6 +169,205 @@ export async function reportsRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Reports summary error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.reports.export,
+    {
+      schema: {
+        description: 'Export current reports snapshot as PDF',
+        tags: ['Reports'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Dashboard')) throw AppError.forbidden('Forbidden');
+
+        const [mediaCount] = await db.select({ count: sql<number>`count(*)` }).from(schema.media);
+        const [requestsOpen] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.requests)
+          .where(sql`${schema.requests.status} = 'OPEN'`);
+        const [screensActive] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.screens)
+          .where(sql`${schema.screens.status} = 'ACTIVE'`);
+        const [screensOffline] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.screens)
+          .where(sql`${schema.screens.status} = 'OFFLINE'`);
+        const [requestsCompleted] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.requests)
+          .where(sql`${schema.requests.status} = 'COMPLETED'`);
+        const notifications = await db
+          .select({
+            id: schema.notifications.id,
+            title: schema.notifications.title,
+            message: schema.notifications.message,
+            is_read: schema.notifications.is_read,
+            created_at: schema.notifications.created_at,
+          })
+          .from(schema.notifications)
+          .where(eq(schema.notifications.user_id, payload.sub))
+          .orderBy(desc(schema.notifications.created_at))
+          .limit(5);
+        const recentProofOfPlay = await db
+          .select({
+            id: schema.proofOfPlay.id,
+            created_at: schema.proofOfPlay.created_at,
+            started_at: schema.proofOfPlay.started_at,
+            ended_at: schema.proofOfPlay.ended_at,
+            screen_id: schema.proofOfPlay.screen_id,
+            media_id: schema.proofOfPlay.media_id,
+            screen_name: schema.screens.name,
+            media_name: schema.media.name,
+          })
+          .from(schema.proofOfPlay)
+          .leftJoin(schema.screens, eq(schema.screens.id, schema.proofOfPlay.screen_id))
+          .leftJoin(schema.media, eq(schema.media.id, schema.proofOfPlay.media_id))
+          .orderBy(desc(schema.proofOfPlay.created_at))
+          .limit(10);
+
+        const activeEmergencies = await emergencyRepo.listActive();
+        const primaryEmergency = activeEmergencies[0] ?? null;
+        const generatedAt = new Date();
+        const html = buildPdfHtml(
+          'Reports Snapshot',
+          `
+            <div class="header">
+              <h1>Reports Snapshot</h1>
+              <p class="subtitle">Generated ${escapeHtml(formatDateTime(generatedAt))}</p>
+            </div>
+            <div class="section">
+              <h2>Summary</h2>
+              <div class="grid">
+                <div class="card">
+                  <div class="label">Total Media</div>
+                  <div class="value">${escapeHtml(formatCount(Number(mediaCount?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Open Requests</div>
+                  <div class="value">${escapeHtml(formatCount(Number(requestsOpen?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Completed Requests</div>
+                  <div class="value">${escapeHtml(formatCount(Number(requestsCompleted?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Active Screens</div>
+                  <div class="value">${escapeHtml(formatCount(Number(screensActive?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Offline Screens</div>
+                  <div class="value">${escapeHtml(formatCount(Number(screensOffline?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Report Owner</div>
+                  <div class="value" style="font-size: 14px;">${escapeHtml(payload.email)}</div>
+                </div>
+              </div>
+            </div>
+            <div class="section">
+              <h2>Emergency Status</h2>
+              ${
+                primaryEmergency
+                  ? `
+                    <p><span class="pill">ACTIVE</span><span class="pill">${escapeHtml(primaryEmergency.priority)}</span></p>
+                    <p class="subtitle" style="margin-top: 8px;">${escapeHtml(primaryEmergency.message)}</p>
+                    <p class="subtitle" style="margin-top: 4px;">Triggered ${escapeHtml(formatDateTime(primaryEmergency.created_at))}</p>
+                  `
+                  : `<p class="empty">No active emergency.</p>`
+              }
+            </div>
+            <div class="section">
+              <h2>Latest Notifications</h2>
+              ${
+                notifications.length
+                  ? `
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Title</th>
+                          <th>Message</th>
+                          <th>Status</th>
+                          <th>Created</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${notifications
+                          .map(
+                            (item) => `
+                              <tr>
+                                <td>${escapeHtml(item.title)}</td>
+                                <td>${escapeHtml(item.message)}</td>
+                                <td>${item.is_read ? 'Read' : 'New'}</td>
+                                <td>${escapeHtml(formatDateTime(item.created_at))}</td>
+                              </tr>
+                            `
+                          )
+                          .join('')}
+                      </tbody>
+                    </table>
+                  `
+                  : `<p class="empty">No notifications available.</p>`
+              }
+            </div>
+            <div class="section">
+              <h2>Recent Proof of Play</h2>
+              ${
+                recentProofOfPlay.length
+                  ? `
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Screen</th>
+                          <th>Media</th>
+                          <th>Started</th>
+                          <th>Ended</th>
+                          <th>Reported</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${recentProofOfPlay
+                          .map(
+                            (item) => `
+                              <tr>
+                                <td>${escapeHtml(item.screen_name || item.screen_id)}</td>
+                                <td>${escapeHtml(item.media_name || item.media_id)}</td>
+                                <td>${escapeHtml(formatDateTime(item.started_at))}</td>
+                                <td>${escapeHtml(formatDateTime(item.ended_at))}</td>
+                                <td>${escapeHtml(formatDateTime(item.created_at))}</td>
+                              </tr>
+                            `
+                          )
+                          .join('')}
+                      </tbody>
+                    </table>
+                  `
+                  : `<p class="empty">No proof-of-play events recorded yet.</p>`
+              }
+            </div>
+          `
+        );
+
+        const pdf = await renderPdfDocument(html);
+        reply.header('Content-Type', 'application/pdf');
+        reply.header(
+          'Content-Disposition',
+          `attachment; filename="reports-${generatedAt.toISOString().slice(0, 10)}.pdf"`
+        );
+        return reply.send(pdf);
+      } catch (error) {
+        logger.error(error, 'Report PDF export error');
         return respondWithError(reply, error);
       }
     }

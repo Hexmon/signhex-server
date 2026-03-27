@@ -8,6 +8,7 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { escapeHtml, renderPdfDocument } from '@/utils/pdf-render';
 
 const logger = createLogger('audit-log-routes');
 const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -21,6 +22,13 @@ const listAuditLogsQuerySchema = z.object({
   start_date: z.string().datetime().optional(),
   end_date: z.string().datetime().optional(),
 });
+
+function formatDateTime(value?: Date | string | null) {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
 
 export async function auditLogRoutes(fastify: FastifyInstance) {
   const auditRepo = createAuditLogRepository();
@@ -80,6 +88,120 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List audit logs error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Querystring: typeof listAuditLogsQuerySchema._type }>(
+    apiEndpoints.auditLogs.export,
+    {
+      schema: {
+        description: 'Export audit logs as PDF',
+        tags: ['Audit Logs'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest<{ Querystring: typeof listAuditLogsQuerySchema._type }>, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          throw AppError.unauthorized('Missing authorization header');
+        }
+
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+
+        if (!ability.can('read', 'AuditLog')) {
+          throw AppError.forbidden('Forbidden');
+        }
+
+        const query = listAuditLogsQuerySchema.parse(request.query);
+        const items = await auditRepo.listAll({
+          user_id: query.user_id,
+          resource_type: query.resource_type,
+          action: query.action,
+          startDate: query.start_date ? new Date(query.start_date) : undefined,
+          endDate: query.end_date ? new Date(query.end_date) : undefined,
+        });
+        const generatedAt = new Date();
+
+        const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Audit Logs</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; font-size: 12px; margin: 0; }
+      h1, h2, p { margin: 0; }
+      .header { margin-bottom: 20px; }
+      .subtitle { color: #6b7280; margin-top: 4px; }
+      .filters { margin-top: 12px; }
+      .pill { display: inline-block; border: 1px solid #d1d5db; border-radius: 999px; padding: 2px 8px; font-size: 10px; margin-right: 6px; margin-top: 6px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+      th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
+      th { background: #f9fafb; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+      .empty { color: #6b7280; margin-top: 14px; }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Audit Logs</h1>
+      <p class="subtitle">Generated ${escapeHtml(formatDateTime(generatedAt))}</p>
+      <div class="filters">
+        <span class="pill">Resource: ${escapeHtml(query.resource_type || 'Any')}</span>
+        <span class="pill">Action: ${escapeHtml(query.action || 'Any')}</span>
+        <span class="pill">User: ${escapeHtml(query.user_id || 'Any')}</span>
+        <span class="pill">Start: ${escapeHtml(formatDateTime(query.start_date || null))}</span>
+        <span class="pill">End: ${escapeHtml(formatDateTime(query.end_date || null))}</span>
+      </div>
+    </div>
+    ${
+      items.length
+        ? `
+          <table>
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Resource</th>
+                <th>Resource ID</th>
+                <th>User</th>
+                <th>IP</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items
+                .map(
+                  (log) => `
+                    <tr>
+                      <td>${escapeHtml(log.action)}</td>
+                      <td>${escapeHtml(log.entity_type)}</td>
+                      <td>${escapeHtml(log.entity_id || '—')}</td>
+                      <td>${escapeHtml(log.user_id || 'system')}</td>
+                      <td>${escapeHtml(log.ip_address || '—')}</td>
+                      <td>${escapeHtml(formatDateTime(log.created_at))}</td>
+                    </tr>
+                  `
+                )
+                .join('')}
+            </tbody>
+          </table>
+        `
+        : '<p class="empty">No logs found for the selected filters.</p>'
+    }
+  </body>
+</html>`;
+
+        const pdf = await renderPdfDocument(html);
+        reply.header('Content-Type', 'application/pdf');
+        reply.header(
+          'Content-Disposition',
+          `attachment; filename="audit-logs-${generatedAt.toISOString().slice(0, 10)}.pdf"`
+        );
+        return reply.send(pdf);
+      } catch (error) {
+        logger.error(error, 'Export audit logs PDF error');
         return respondWithError(reply, error);
       }
     }

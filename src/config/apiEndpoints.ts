@@ -136,6 +136,7 @@ export const apiEndpoints = {
   auditLogs: {
     list: withBase('/audit-logs'),
     get: withBase('/audit-logs/:id'),
+    export: withBase('/audit-logs/export'),
   },
   apiKeys: {
     create: withBase('/api-keys'),
@@ -250,6 +251,7 @@ export const apiEndpoints = {
     offlineScreens: withBase('/reports/offline-screens'),
     storage: withBase('/reports/storage'),
     systemHealth: withBase('/reports/system-health'),
+    export: withBase('/reports/export'),
   },
   roles: {
     create: withBase('/roles'),
