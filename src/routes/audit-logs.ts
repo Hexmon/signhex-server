@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { inArray } from 'drizzle-orm';
 import { createAuditLogRepository } from '@/db/repositories/audit-log';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
 import { defineAbilityFor } from '@/rbac';
@@ -9,6 +10,7 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 import { escapeHtml, renderPdfDocument } from '@/utils/pdf-render';
+import { getDatabase, schema } from '@/db';
 
 const logger = createLogger('audit-log-routes');
 const { BAD_REQUEST, FORBIDDEN, NOT_FOUND, UNAUTHORIZED } = HTTP_STATUS;
@@ -28,6 +30,45 @@ function formatDateTime(value?: Date | string | null) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+type AuditLogRow = typeof schema.auditLogs.$inferSelect;
+
+async function serializeAuditLogs(logs: AuditLogRow[]) {
+  const db = getDatabase();
+  const userIds = Array.from(new Set(logs.map((log) => log.user_id).filter((value): value is string => Boolean(value))));
+
+  const users =
+    userIds.length > 0
+      ? await db
+          .select({
+            id: schema.users.id,
+            email: schema.users.email,
+            first_name: schema.users.first_name,
+            last_name: schema.users.last_name,
+            role_id: schema.users.role_id,
+            department_id: schema.users.department_id,
+            is_active: schema.users.is_active,
+          })
+          .from(schema.users)
+          .where(inArray(schema.users.id, userIds))
+      : [];
+
+  const usersById = new Map(users.map((user) => [user.id, user]));
+
+  return logs.map((log) => ({
+    id: log.id,
+    user_id: log.user_id,
+    user: log.user_id ? usersById.get(log.user_id) ?? null : null,
+    action: log.action,
+    resource_type: log.entity_type,
+    resource_id: log.entity_id,
+    changes: null,
+    ip_address: log.ip_address,
+    user_agent: null,
+    storage_object_id: log.storage_object_id,
+    created_at: log.created_at.toISOString(),
+  }));
 }
 
 export async function auditLogRoutes(fastify: FastifyInstance) {
@@ -69,17 +110,7 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
         });
 
         return reply.send({
-          items: result.items.map((log) => ({
-            id: log.id,
-            user_id: log.user_id,
-            action: log.action,
-            resource_type: log.entity_type,
-            resource_id: log.entity_id,
-            changes: null,
-            ip_address: log.ip_address,
-            user_agent: null,
-            created_at: log.created_at.toISOString(),
-          })),
+          items: await serializeAuditLogs(result.items),
           pagination: {
             page: result.page,
             limit: result.limit,
@@ -236,17 +267,8 @@ export async function auditLogRoutes(fastify: FastifyInstance) {
           throw AppError.notFound('Audit log not found');
         }
 
-        return reply.send({
-          id: log.id,
-          user_id: log.user_id,
-          action: log.action,
-          resource_type: log.entity_type,
-          resource_id: log.entity_id,
-          changes: null,
-          ip_address: log.ip_address,
-          user_agent: null,
-          created_at: log.created_at.toISOString(),
-        });
+        const [serialized] = await serializeAuditLogs([log]);
+        return reply.send(serialized);
       } catch (error) {
         logger.error(error, 'Get audit log error');
         return respondWithError(reply, error);
