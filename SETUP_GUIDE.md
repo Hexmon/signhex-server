@@ -24,7 +24,7 @@ This comprehensive guide will walk you through setting up the Hexmon Signage Bac
 ### 1.1 Required Software
 
 #### Node.js (Required)
-- **Version:** Node.js 18.x or higher (20.x recommended)
+- **Version:** Node.js 20.x LTS
 - **Download:** https://nodejs.org/
 - **Verify Installation:**
   ```bash
@@ -253,9 +253,9 @@ LOG_LEVEL=info
 # ============================================
 
 # Path to FFmpeg binary
-# Linux/Mac: /usr/bin/ffmpeg
+# Linux/Mac: ffmpeg
 # Windows: C:/ffmpeg/bin/ffmpeg.exe
-FFMPEG_PATH=/usr/bin/ffmpeg
+FFMPEG_PATH=ffmpeg
 
 # ============================================
 # PG-BOSS CONFIGURATION
@@ -641,7 +641,7 @@ CA_CERT_PATH=/etc/ssl/certs/ca.crt
 LOG_LEVEL=warn
 
 # FFmpeg
-FFMPEG_PATH=/usr/bin/ffmpeg
+FFMPEG_PATH=ffmpeg
 
 # pg-boss
 PG_BOSS_SCHEMA=pgboss
@@ -1681,7 +1681,7 @@ docker exec -it hexmon-postgres psql -U postgres  # Access database
 | `ADMIN_EMAIL` | Yes | - | Default admin email |
 | `ADMIN_PASSWORD` | Yes | - | Default admin password |
 | `LOG_LEVEL` | No | info | Log level (trace/debug/info/warn/error/fatal) |
-| `FFMPEG_PATH` | No | /usr/bin/ffmpeg | Path to FFmpeg binary |
+| `FFMPEG_PATH` | No | ffmpeg | Path to FFmpeg binary |
 | `PG_BOSS_SCHEMA` | No | pgboss | pg-boss schema name |
 | `TLS_CERT_PATH` | No | - | TLS certificate path |
 | `TLS_KEY_PATH` | No | - | TLS private key path |

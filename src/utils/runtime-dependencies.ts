@@ -27,6 +27,10 @@ function dedupeCandidates(candidates: Array<string | undefined>) {
   return Array.from(new Set(candidates.filter((candidate): candidate is string => Boolean(candidate && candidate.trim()))));
 }
 
+function normalizeErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function findExecutableCandidate(candidate: string) {
   const treatAsPath = isAbsolute(candidate) || candidate.includes(sep) || (sep === '\\' && candidate.includes('/'));
   const resolvedCandidate = treatAsPath ? resolve(candidate) : candidate;
@@ -62,7 +66,7 @@ function resolveFfmpegPath() {
 
 function resolveLibreOfficePath() {
   const candidates = dedupeCandidates([
-    process.env.LIBREOFFICE_PATH,
+    appConfig.LIBREOFFICE_PATH,
     'soffice',
     process.platform === 'win32' ? 'C:\\Program Files\\LibreOffice\\program\\soffice.exe' : undefined,
     process.platform === 'win32' ? 'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe' : undefined,
@@ -80,9 +84,14 @@ export function getResolvedFfmpegPath() {
 }
 
 async function resolveChromiumPath() {
-  const configured = process.env.HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH?.trim();
+  const configured = appConfig.HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH?.trim();
   if (configured) {
-    return findExecutableCandidate(configured);
+    const resolvedConfigured = findExecutableCandidate(configured);
+    if (!resolvedConfigured) {
+      throw new Error(`Configured Chromium executable not found at ${configured}`);
+    }
+
+    return resolvedConfigured;
   }
 
   try {
@@ -92,26 +101,45 @@ async function resolveChromiumPath() {
       return candidate;
     }
   } catch (error) {
-    return `ERROR:${error instanceof Error ? error.message : String(error)}`;
+    throw new Error(`Playwright Chromium is not available: ${normalizeErrorMessage(error)}`);
   }
 
-  return null;
+  throw new Error('Playwright Chromium executable is not installed. Run "npx playwright install chromium" or set HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH.');
 }
 
 function resolvePgDumpPath() {
-  return findExecutableCandidate('pg_dump');
+  return dedupeCandidates([appConfig.PG_DUMP_PATH, 'pg_dump']).map(findExecutableCandidate).find(Boolean) || null;
 }
 
 function resolveTarPath() {
-  return findExecutableCandidate('tar');
+  return dedupeCandidates([appConfig.TAR_PATH, 'tar']).map(findExecutableCandidate).find(Boolean) || null;
+}
+
+export function getResolvedPgDumpPath() {
+  return resolvePgDumpPath();
+}
+
+export function getResolvedTarPath() {
+  return resolveTarPath();
+}
+
+export async function getResolvedChromiumExecutable() {
+  return resolveChromiumPath();
 }
 
 export async function inspectRuntimeDependencies(): Promise<RuntimeDependencyReport> {
   const ffmpegPath = resolveFfmpegPath();
   const libreOfficePath = resolveLibreOfficePath();
-  const chromiumPath = await resolveChromiumPath();
   const pgDumpPath = resolvePgDumpPath();
   const tarPath = resolveTarPath();
+  let chromiumPath: string | null = null;
+  let chromiumDetail: string | undefined;
+
+  try {
+    chromiumPath = await resolveChromiumPath();
+  } catch (error) {
+    chromiumDetail = normalizeErrorMessage(error);
+  }
 
   return {
     runningInContainer: runningInContainer(),
@@ -120,32 +148,35 @@ export async function inspectRuntimeDependencies(): Promise<RuntimeDependencyRep
         name: 'ffmpeg',
         status: ffmpegPath ? 'available' : 'missing',
         path: ffmpegPath || undefined,
+        detail: ffmpegPath ? undefined : 'Install ffmpeg or set FFMPEG_PATH to the executable.',
       },
       {
         name: 'libreoffice',
-        status:
-          libreOfficePath || process.platform === 'darwin'
-            ? 'available'
-            : 'missing',
+        status: libreOfficePath ? 'available' : 'missing',
         path: libreOfficePath || undefined,
-        detail: process.platform === 'darwin' && !libreOfficePath ? 'macOS QuickLook fallback remains available for host-run development' : undefined,
+        detail: libreOfficePath ? undefined : 'Install LibreOffice/soffice or set LIBREOFFICE_PATH to the executable.',
       },
       {
         name: 'chromium',
-        status: chromiumPath && !chromiumPath.startsWith('ERROR:') ? 'available' : 'missing',
-        path: chromiumPath && !chromiumPath.startsWith('ERROR:') ? chromiumPath : undefined,
-        detail: chromiumPath?.startsWith('ERROR:') ? chromiumPath.replace(/^ERROR:/, '') : undefined,
+        status: chromiumPath ? 'available' : 'missing',
+        path: chromiumPath || undefined,
+        detail:
+          chromiumPath
+            ? undefined
+            : chromiumDetail ||
+              'Install Playwright Chromium with "npx playwright install chromium" or set HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH.',
       },
       {
         name: 'pg_dump',
         status: pgDumpPath ? 'available' : 'missing',
         path: pgDumpPath || undefined,
-        detail: pgDumpPath ? undefined : 'host backups can fall back to docker exec when Docker is available',
+        detail: pgDumpPath ? undefined : 'Install pg_dump or set PG_DUMP_PATH to the executable.',
       },
       {
         name: 'tar',
         status: tarPath ? 'available' : 'missing',
         path: tarPath || undefined,
+        detail: tarPath ? undefined : 'Install tar or set TAR_PATH to the executable.',
       },
     ],
   };
@@ -155,19 +186,11 @@ export async function validateRuntimeDependencies() {
   const report = await inspectRuntimeDependencies();
   const missingCritical = report.dependencies.filter((dependency) => dependency.status === 'missing');
 
-  if (report.runningInContainer && missingCritical.length > 0) {
-    throw new Error(
-      `Container runtime is missing required dependencies: ${missingCritical.map((dependency) => dependency.name).join(', ')}`
-    );
-  }
-
   if (missingCritical.length > 0) {
-    logger.warn(
-      {
-        runningInContainer: report.runningInContainer,
-        missing: missingCritical,
-      },
-      'Runtime dependency gaps detected. Prefer the official container runtime for media processing and backups.'
+    throw new Error(
+      `Missing required runtime dependencies: ${missingCritical
+        .map((dependency) => dependency.name)
+        .join(', ')}. Install the missing tools on the host or configure FFMPEG_PATH, LIBREOFFICE_PATH, PG_DUMP_PATH, TAR_PATH, and HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH as needed.`
     );
   } else {
     logger.info(

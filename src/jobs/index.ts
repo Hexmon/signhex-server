@@ -207,36 +207,8 @@ async function convertDocumentWithLibreOffice(inputPath: string, outputDir: stri
   return join(outputDir, pdfFile);
 }
 
-async function convertDocumentWithMacPreview(inputPath: string, outputDir: string) {
-  const previewDir = join(outputDir, 'quicklook');
-  await fs.mkdir(previewDir, { recursive: true });
-
-  await runCommand('/usr/bin/qlmanage', ['-t', '-s', '1800', '-o', previewDir, inputPath]);
-
-  const entries = await fs.readdir(previewDir);
-  const previewImage = entries.find((entry) => entry.toLowerCase().endsWith('.png'));
-  if (!previewImage) {
-    throw new Error('QuickLook did not produce a preview image');
-  }
-
-  const inputPreviewPath = join(previewDir, previewImage);
-  const outputPdfPath = join(outputDir, 'converted.pdf');
-  await runCommand('/usr/bin/sips', ['-s', 'format', 'pdf', inputPreviewPath, '--out', outputPdfPath]);
-  return outputPdfPath;
-}
-
 async function convertDocumentToPdf(inputPath: string, outputDir: string) {
-  try {
-    return await convertDocumentWithLibreOffice(inputPath, outputDir);
-  } catch (error) {
-    logger.warn({ error }, 'LibreOffice conversion unavailable, falling back to QuickLook preview conversion');
-  }
-
-  if (process.platform === 'darwin') {
-    return await convertDocumentWithMacPreview(inputPath, outputDir);
-  }
-
-  throw new Error('No supported document conversion backend is available. Use the official container runtime or install LibreOffice.');
+  return convertDocumentWithLibreOffice(inputPath, outputDir);
 }
 
 let boss: PgBoss | null = null;

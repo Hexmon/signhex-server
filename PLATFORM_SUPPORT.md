@@ -4,13 +4,14 @@
 
 | Platform | Status | Notes |
 | --- | --- | --- |
-| Ubuntu container runtime | Production | Official production target. Use the provided container image for media processing, webpage capture, and backups. |
-| Windows host | Development only | Supported for local development and validation through Docker. Not an official production host target. |
-| macOS host | Development only | Supported for local development and validation through Docker. Not an official production host target. |
+| Linux host | Supported | Feature-complete host-run backend with Node 20 LTS plus `ffmpeg`, `LibreOffice`, Playwright Chromium, `pg_dump`, and `tar`. Ubuntu is the reference distro. |
+| macOS host | Supported | Feature-complete host-run backend with the same toolchain as Linux. |
+| Docker runtime | Supported | Optional packaging and convenience runtime. Same backend features, same APIs. |
+| Windows host | Unsupported | Backend production and host-run support are out of scope. Use Linux or macOS. |
 
-## Official Runtime
+## Host-Run Contract
 
-The supported production backend runtime is the container image. It includes:
+Both macOS and Linux host-run servers require:
 
 - `ffmpeg`
 - `LibreOffice/soffice`
@@ -18,22 +19,31 @@ The supported production backend runtime is the container image. It includes:
 - `pg_dump`
 - `tar`
 
-## Host-Run Behavior
+Install them on the host or point the server at explicit executables with:
 
-The backend performs dependency checks at startup and through:
+- `FFMPEG_PATH`
+- `LIBREOFFICE_PATH`
+- `PG_DUMP_PATH`
+- `TAR_PATH`
+- `HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH`
+
+## Runtime Validation
+
+The backend validates these dependencies at startup and through:
 
 - `npm run doctor:runtime`
 
-Outside the official container runtime, missing processing tools are reported clearly so Windows and macOS development environments can fall back to Docker instead of failing silently.
+Missing dependencies are treated as startup errors on both macOS and Linux so media processing, webpage capture, and backups fail early instead of at job execution time.
 
 ## Media Processing Notes
 
-- Official document conversion backend: LibreOffice in the container runtime
-- macOS QuickLook fallback remains available only as a host-run development convenience
-- Webpage capture uses Playwright Chromium and is treated as a containerized runtime dependency
+- Document conversion uses LibreOffice on both macOS and Linux.
+- Webpage capture uses Playwright Chromium on both macOS and Linux.
+- FFmpeg processing resolves through `FFMPEG_PATH` or the host `PATH`.
 
 ## Backup Notes
 
 - Object storage backup remains in-process
-- PostgreSQL backup relies on `pg_dump`, which is guaranteed in the container image
-- Host-run backups may still fall back to Docker for PostgreSQL when available
+- PostgreSQL backup uses `pg_dump` from `PG_DUMP_PATH` or the host `PATH`
+- Docker fallback for `pg_dump` may still be used when available, but host-installed `pg_dump` is the primary supported path
+- For host-run setup and verification, use [MACOS_RUNTIME.md](./MACOS_RUNTIME.md) and [UBUNTU_RUNTIME.md](./UBUNTU_RUNTIME.md).

@@ -10,6 +10,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { deleteObject, getPresignedUrl, getS3Client, putObject } from '@/s3';
 import { AppError } from '@/utils/app-error';
+import { getResolvedPgDumpPath, getResolvedTarPath } from '@/utils/runtime-dependencies';
 
 const execFileAsync = promisify(execFile);
 const ARCHIVE_BUCKET = 'archives';
@@ -153,6 +154,7 @@ async function createPostgresArchive(backupDir: string) {
   const connection = parseDatabaseUrl();
   const timestamp = formatBackupTimestamp();
   const outputPath = join(backupDir, `hexmon_postgres_${timestamp}.sql.gz`);
+  const pgDumpCommand = getResolvedPgDumpPath();
   const baseArgs = [
     '-h',
     connection.host,
@@ -165,18 +167,20 @@ async function createPostgresArchive(backupDir: string) {
     '--verbose',
   ];
 
-  try {
-    await runCommandToGzipFile({
-      command: 'pg_dump',
-      args: baseArgs,
-      outputPath,
-      env: { ...process.env, PGPASSWORD: connection.password },
-      label: 'pg_dump',
-    });
-    return outputPath;
-  } catch (error) {
-    if (!isCommandNotFound(error)) {
-      throw new Error(`PostgreSQL backup failed: ${normalizeErrorMessage(error)}`);
+  if (pgDumpCommand) {
+    try {
+      await runCommandToGzipFile({
+        command: pgDumpCommand,
+        args: baseArgs,
+        outputPath,
+        env: { ...process.env, PGPASSWORD: connection.password },
+        label: 'pg_dump',
+      });
+      return outputPath;
+    } catch (error) {
+      if (!isCommandNotFound(error)) {
+        throw new Error(`PostgreSQL backup failed: ${normalizeErrorMessage(error)}`);
+      }
     }
   }
 
@@ -207,7 +211,7 @@ async function createPostgresArchive(backupDir: string) {
     return outputPath;
   } catch (error) {
     throw new Error(
-      `PostgreSQL backup failed: pg_dump is not installed on the host, and docker fallback via "${POSTGRES_BACKUP_CONTAINER}" could not run. ${normalizeErrorMessage(error)}`
+      `PostgreSQL backup failed: pg_dump is not installed or could not be executed from PG_DUMP_PATH/PATH, and docker fallback via "${POSTGRES_BACKUP_CONTAINER}" could not run. ${normalizeErrorMessage(error)}`
     );
   }
 }
@@ -257,6 +261,7 @@ async function createObjectStorageArchive(backupDir: string) {
   const timestamp = formatBackupTimestamp();
   const mirrorRoot = join(backupDir, 'minio-export');
   const outputPath = join(backupDir, `hexmon_minio_${timestamp}.tar.gz`);
+  const tarCommand = getResolvedTarPath();
 
   await fs.mkdir(mirrorRoot, { recursive: true });
 
@@ -266,11 +271,15 @@ async function createObjectStorageArchive(backupDir: string) {
     await downloadBucketObjects(bucket, bucketDir);
   }
 
+  if (!tarCommand) {
+    throw new Error('Object storage backup failed: tar is not available. Install tar or set TAR_PATH to the executable.');
+  }
+
   try {
-    await execFileAsync('tar', ['-czf', outputPath, '-C', mirrorRoot, '.']);
+    await execFileAsync(tarCommand, ['-czf', outputPath, '-C', mirrorRoot, '.']);
   } catch (error) {
     if (isCommandNotFound(error)) {
-      throw new Error('Object storage backup failed: tar is not available on this machine.');
+      throw new Error('Object storage backup failed: tar is not available. Install tar or set TAR_PATH to the executable.');
     }
 
     throw new Error(`Object storage backup failed: ${normalizeErrorMessage(error)}`);

@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import 'dotenv/config'; 
 
+const optionalTrimmedString = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  },
+  z.string().optional()
+);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -22,6 +31,10 @@ const envSchema = z.object({
   CA_CERT_PATH: z.string().default('./certs/ca.crt'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   FFMPEG_PATH: z.string().default('ffmpeg'),
+  LIBREOFFICE_PATH: z.string().default('soffice'),
+  PG_DUMP_PATH: z.string().default('pg_dump'),
+  TAR_PATH: z.string().default('tar'),
+  HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH: optionalTrimmedString,
   PG_BOSS_SCHEMA: z.string().default('pgboss'),
   RATE_LIMIT_ENABLED: z.enum(['true', 'false']).transform((v) => v === 'true').default('true'),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(1000),

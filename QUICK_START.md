@@ -8,7 +8,7 @@ This is a condensed version of the full [SETUP_GUIDE.md](./SETUP_GUIDE.md). For 
 
 ## Prerequisites
 
-- ✅ Node.js 18+ installed
+- ✅ Node.js 20 LTS installed
 - ✅ Docker Desktop installed (recommended)
 - ✅ Git installed
 

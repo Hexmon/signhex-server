@@ -3,12 +3,14 @@
 Production-ready digital signage CMS backend built with Node.js, TypeScript, Fastify, PostgreSQL, MinIO, and pg-boss.
 
 See [PLATFORM_SUPPORT.md](./PLATFORM_SUPPORT.md) for the current production and development support matrix.
+See [MACOS_RUNTIME.md](./MACOS_RUNTIME.md) and [UBUNTU_RUNTIME.md](./UBUNTU_RUNTIME.md) for host-run setup guides.
 
 ## Support Model
 
-- Ubuntu production: supported through the official container runtime
-- Windows and macOS development: supported through Docker-based local environments
-- Container-first runtime for media processing, webpage capture, and backups
+- macOS host-run: supported
+- Linux host-run: supported
+- Docker runtime: supported and optional
+- Windows backend hosting: unsupported
 
 ## Features
 
@@ -26,11 +28,17 @@ See [PLATFORM_SUPPORT.md](./PLATFORM_SUPPORT.md) for the current production and 
 
 ## Prerequisites
 
-- Node.js 18+
-- Docker and Docker Compose for the supported local runtime
+- Node.js 20 LTS
+- PostgreSQL and MinIO available locally or remotely
+- Host-installed runtime tools on both macOS and Linux:
+  - `ffmpeg`
+  - `LibreOffice/soffice`
+  - Playwright Chromium
+  - `pg_dump`
+  - `tar`
 - `.env` configured from `.env.example`
 
-The official production image includes:
+The optional Docker image also includes:
 
 - `ffmpeg`
 - `LibreOffice/soffice`
@@ -45,13 +53,14 @@ git clone https://github.com/Hexmon/signhex-server
 cd signhex-server
 cp .env.example .env
 npm install
+npx playwright install chromium
 docker compose up -d postgres minio
 npm run db:push
 npm run seed
 npm run dev:watch
 ```
 
-For the dependency-complete local runtime, prefer running the API through Docker Compose too:
+If you prefer running the API in Docker instead of directly on the host:
 
 ```bash
 docker compose up -d postgres minio api
@@ -82,7 +91,7 @@ Use the runtime doctor when you run the server outside the official container:
 npm run doctor:runtime
 ```
 
-It reports the availability of:
+It validates the required host-run toolchain:
 
 - `ffmpeg`
 - `LibreOffice`
@@ -90,7 +99,7 @@ It reports the availability of:
 - `pg_dump`
 - `tar`
 
-Outside the container runtime, missing dependencies are reported clearly so you can fall back to Docker instead of discovering failures during media jobs or backups.
+Startup and the runtime doctor both fail fast when any required dependency is missing.
 
 ## Docker Runtime
 
@@ -116,9 +125,20 @@ See `.env.example` for the full list. Common variables:
 - `MINIO_ACCESS_KEY`
 - `MINIO_SECRET_KEY`
 - `FFMPEG_PATH`
+- `LIBREOFFICE_PATH`
+- `PG_DUMP_PATH`
+- `TAR_PATH`
+- `HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH`
 - `APP_PUBLIC_BASE_URL`
 
-`FFMPEG_PATH` now defaults to `ffmpeg` and resolves through `PATH`. The official container sets the toolchain up for you.
+All executable overrides resolve through `PATH` by default:
+
+- `FFMPEG_PATH=ffmpeg`
+- `LIBREOFFICE_PATH=soffice`
+- `PG_DUMP_PATH=pg_dump`
+- `TAR_PATH=tar`
+
+Set `HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH` only when Chromium is installed outside the standard Playwright location.
 
 ## Project Layout
 
@@ -142,8 +162,8 @@ scripts/
 
 ## Deployment Notes
 
-- The official production path is the container image on Ubuntu hosts.
-- Host-installed production dependencies are not the supported contract anymore.
+- Host-run server deployments on macOS and Linux are supported when the required tools are installed locally.
+- Docker remains available for packaging and operational convenience, but it is not the only feature-complete runtime.
 - Windows backend production hosting remains out of scope.
 
 ## License
