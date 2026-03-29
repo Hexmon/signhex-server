@@ -4,6 +4,7 @@ Production-ready digital signage CMS backend built with Node.js, TypeScript, Fas
 
 See [PLATFORM_SUPPORT.md](./PLATFORM_SUPPORT.md) for the current production and development support matrix.
 See [MACOS_RUNTIME.md](./MACOS_RUNTIME.md) and [UBUNTU_RUNTIME.md](./UBUNTU_RUNTIME.md) for host-run setup guides.
+See [`../ops/onprem/README.md`](../ops/onprem/README.md) for the air-gapped on-prem bundle workflow.
 
 ## Support Model
 
@@ -150,6 +151,7 @@ See `.env.example` for the full list. Common variables:
 - `TAR_PATH`
 - `HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH`
 - `APP_PUBLIC_BASE_URL`
+- `ENABLE_SWAGGER_UI`
 
 All executable overrides resolve through `PATH` by default:
 
