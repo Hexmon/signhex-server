@@ -102,13 +102,19 @@ Verify these existing features against the host-run server:
 
 ## 8. Optional Docker Runtime
 
-Docker remains supported, but it is optional:
+Docker remains supported, but it is optional. The checked-in base compose file is production-safe:
 
 ```bash
 docker compose up -d postgres minio api
 ```
 
-Use this when you want packaging convenience, not because host-run Linux is incomplete.
+For a containerized development API with bind mounts and `npm run dev`, use the dev override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres minio api
+```
+
+Use the base compose file when you want a production-style container runtime, not because host-run Linux is incomplete.
 
 ## 9. Regression Checklist
 

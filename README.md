@@ -60,10 +60,16 @@ npm run seed
 npm run dev:watch
 ```
 
-If you prefer running the API in Docker instead of directly on the host:
+If you prefer running the API in Docker instead of directly on the host, the checked-in `docker-compose.yml` is now production-safe:
 
 ```bash
 docker compose up -d postgres minio api
+```
+
+For a containerized development API with bind mounts and `npm run dev`, use the dev override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres minio api
 ```
 
 API:
@@ -115,6 +121,20 @@ Run it:
 docker run --env-file .env -p 3000:3000 -p 8443:8443 hexmon-signage-api
 ```
 
+For the checked-in production compose stack:
+
+```bash
+docker compose up -d postgres minio api
+docker compose logs -f api
+```
+
+For the checked-in containerized development stack:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres minio api
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f api
+```
+
 ## Environment Highlights
 
 See `.env.example` for the full list. Common variables:
@@ -164,6 +184,8 @@ scripts/
 
 - Host-run server deployments on macOS and Linux are supported when the required tools are installed locally.
 - Docker remains available for packaging and operational convenience, but it is not the only feature-complete runtime.
+- `docker-compose.yml` is production-safe and runs the built server with `npm start`.
+- `docker-compose.dev.yml` is the opt-in development override that restores bind mounts and `npm run dev`.
 - Windows backend production hosting remains out of scope.
 
 ## License

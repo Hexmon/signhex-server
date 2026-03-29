@@ -832,69 +832,26 @@ docker build -t hexmon-signage-api:latest .
 
 #### Step 2: Run with Docker Compose
 
-Create `docker-compose.prod.yml`:
+Use the checked-in production-safe compose file:
 
-```yaml
-version: '3.8'
+```bash
+docker compose up -d postgres minio api
+```
 
-services:
-  api:
-    image: hexmon-signage-api:latest
-    container_name: hexmon-api-prod
-    restart: always
-    environment:
-      NODE_ENV: production
-    env_file:
-      - .env.production
-    ports:
-      - "3000:3000"
-      - "8443:8443"
-    volumes:
-      - ./logs:/app/logs
-    depends_on:
-      - postgres
-      - minio
+Use the checked-in development override only when you explicitly want bind mounts and `npm run dev` inside the container:
 
-  postgres:
-    image: postgres:15-alpine
-    container_name: hexmon-postgres-prod
-    restart: always
-    environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-
-  minio:
-    image: minio/minio:latest
-    container_name: hexmon-minio-prod
-    restart: always
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    command: server /data --console-address ":9001"
-
-volumes:
-  postgres_data:
-  minio_data:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres minio api
 ```
 
 #### Step 3: Start Production Stack
 
 ```bash
 # Start all services
-docker-compose -f docker-compose.prod.yml up -d
+docker compose up -d postgres minio api
 
 # View logs
-docker-compose -f docker-compose.prod.yml logs -f api
+docker compose logs -f api
 ```
 
 ### 4.8 Configure Reverse Proxy (Nginx)

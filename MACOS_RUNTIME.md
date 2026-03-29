@@ -110,3 +110,5 @@ Verify these existing features against the host-run server:
 
 - macOS QuickLook is not used for document conversion. LibreOffice is the only supported conversion backend.
 - Docker remains available, but it is optional and not required for feature-complete host-run support.
+- `docker-compose.yml` is production-safe and runs the built server with `npm start`.
+- `docker-compose.dev.yml` is the opt-in development override for bind mounts and `npm run dev`.
