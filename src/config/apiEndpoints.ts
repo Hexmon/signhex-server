@@ -254,6 +254,9 @@ export const apiEndpoints = {
     systemHealth: withBase('/reports/system-health'),
     export: withBase('/reports/export'),
   },
+  security: {
+    clientEvents: withBase('/security/client-events'),
+  },
   roles: {
     create: withBase('/roles'),
     list: withBase('/roles'),

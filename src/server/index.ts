@@ -38,6 +38,7 @@ import { scheduleReservationRoutes } from '@/routes/schedule-reservations';
 import { roleRoutes } from '@/routes/roles';
 import { permissionRoutes } from '@/routes/permissions';
 import { chatRoutes } from '@/routes/chat';
+import { securityEventRoutes } from '@/routes/security-events';
 import csrfProtectionPlugin from '@/middleware/csrf';
 import { formatErrorResponse } from '@/utils/app-error';
 import { toAppError } from '@/utils/errors';
@@ -272,33 +273,34 @@ export async function createServer() {
     });
   }
 
-  // Swagger
-  await fastify.register(swagger, {
-    swagger: {
-      info: {
-        title: 'Hexmon Signage API',
-        description: 'Production-ready digital signage CMS backend',
-        version: '1.0.0',
-      },
-      host: `localhost:${appConfig.PORT}`,
-      schemes: ['http', 'https'],
-      consumes: ['application/json'],
-      produces: ['application/json'],
-      securityDefinitions: {
-        bearerAuth: {
-          type: 'apiKey',
-          name: 'Authorization',
-          in: 'header',
-          description: 'Use: Bearer <JWT>',
+  if (appConfig.ENABLE_SWAGGER_UI) {
+    await fastify.register(swagger, {
+      swagger: {
+        info: {
+          title: 'Hexmon Signage API',
+          description: 'Production-ready digital signage CMS backend',
+          version: '1.0.0',
         },
+        host: `localhost:${appConfig.PORT}`,
+        schemes: ['http', 'https'],
+        consumes: ['application/json'],
+        produces: ['application/json'],
+        securityDefinitions: {
+          bearerAuth: {
+            type: 'apiKey',
+            name: 'Authorization',
+            in: 'header',
+            description: 'Use: Bearer <JWT>',
+          },
+        },
+        security: [{ bearerAuth: [] }],
       },
-      security: [{ bearerAuth: [] }],
-    },
-  });
+    });
 
-  await fastify.register(swaggerUi, {
-    routePrefix: '/docs',
-  });
+    await fastify.register(swaggerUi, {
+      routePrefix: '/docs',
+    });
+  }
 
   // Health check
   fastify.get('/api/v1/health', async () => {
@@ -328,6 +330,7 @@ export async function createServer() {
   await fastify.register(proofOfPlayRoutes);
   await fastify.register(metricsRoutes);
   await fastify.register(reportsRoutes);
+  await fastify.register(securityEventRoutes);
   await fastify.register(userInviteRoutes);
   await fastify.register(userActivateRoutes);
   await fastify.register(layoutRoutes);

@@ -10,6 +10,18 @@ const optionalTrimmedString = z.preprocess(
   z.string().optional()
 );
 
+const optionalBooleanString = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed.length === 0) return undefined;
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+    return value;
+  },
+  z.boolean().optional()
+);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -56,6 +68,7 @@ const envSchema = z.object({
   LOGIN_LOCKOUT_WINDOW_SECONDS: z.coerce.number().int().positive().default(15 * 60),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(200),
   STORAGE_QUOTA_BYTES: z.coerce.number().int().nonnegative().default(0),
+  ENABLE_SWAGGER_UI: optionalBooleanString,
 });
 const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -63,5 +76,8 @@ if (!parsed.success) {
   throw new Error('Invalid environment variables');
 }
 
-export const config = Object.freeze(parsed.data);
+export const config = Object.freeze({
+  ...parsed.data,
+  ENABLE_SWAGGER_UI: parsed.data.ENABLE_SWAGGER_UI ?? parsed.data.NODE_ENV !== 'production',
+});
 export type Config = typeof config;
