@@ -16,14 +16,38 @@ export function parseAllowedOrigins(value: string): string[] {
     .filter(Boolean);
 }
 
+function dedupeOrigins(origins: string[]): string[] {
+  return Array.from(new Set(origins.filter(Boolean)));
+}
+
+function getConfiguredHttpOrigins(): string[] {
+  return dedupeOrigins([
+    appConfig.APP_PUBLIC_BASE_URL || '',
+    ...parseAllowedOrigins(appConfig.CORS_ORIGINS || ''),
+  ]);
+}
+
+export function getHttpAllowedOrigins(): string[] {
+  const configured = getConfiguredHttpOrigins();
+  if (appConfig.NODE_ENV === 'production') {
+    return configured;
+  }
+
+  return dedupeOrigins([DEFAULT_ORIGIN, ...configured]);
+}
+
 export function getSocketAllowedOrigins(): string[] {
   const fromSocketEnv = parseAllowedOrigins(appConfig.SOCKET_ALLOWED_ORIGINS || '');
   if (fromSocketEnv.length > 0) {
-    return fromSocketEnv;
+    return dedupeOrigins(fromSocketEnv);
   }
 
-  const fromCorsEnv = parseAllowedOrigins(appConfig.CORS_ORIGINS || '');
-  return Array.from(new Set([DEFAULT_ORIGIN, ...fromCorsEnv]));
+  const fromHttpOrigins = getConfiguredHttpOrigins();
+  if (appConfig.NODE_ENV === 'production') {
+    return fromHttpOrigins;
+  }
+
+  return dedupeOrigins([DEFAULT_ORIGIN, ...fromHttpOrigins]);
 }
 
 export function isAllowedOrigin(origin: string | undefined, allowlist = getSocketAllowedOrigins()): boolean {

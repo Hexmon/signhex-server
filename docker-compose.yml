@@ -53,7 +53,6 @@ services:
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     ports:
       - '${API_HOST_PORT:-3000}:3000'
-      - '${DEVICE_HOST_PORT:-8443}:8443'
     depends_on:
       postgres:
         condition: service_healthy

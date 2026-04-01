@@ -32,7 +32,7 @@ COPY scripts ./scripts
 RUN npm run build
 
 # Expose ports
-EXPOSE 3000 8443
+EXPOSE 3000
 
 # Start application
 CMD ["npm", "start"]

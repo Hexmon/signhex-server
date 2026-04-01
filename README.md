@@ -2,9 +2,26 @@
 
 Production-ready digital signage CMS backend built with Node.js, TypeScript, Fastify, PostgreSQL, MinIO, and pg-boss.
 
+For on-prem runtime-bundle deployment, start with:
+
+- QA: [`../ops/onprem/QA_SETUP_GUIDE.md`](../ops/onprem/QA_SETUP_GUIDE.md)
+- Production: [`../ops/onprem/PRODUCTION_SETUP_GUIDE.md`](../ops/onprem/PRODUCTION_SETUP_GUIDE.md)
 See [PLATFORM_SUPPORT.md](./PLATFORM_SUPPORT.md) for the current production and development support matrix.
 See [MACOS_RUNTIME.md](./MACOS_RUNTIME.md) and [UBUNTU_RUNTIME.md](./UBUNTU_RUNTIME.md) for host-run setup guides.
-See [`../ops/onprem/README.md`](../ops/onprem/README.md) for the air-gapped on-prem bundle workflow.
+See [`../ops/onprem/README.md`](../ops/onprem/README.md) for the unified QA + production runtime bundle workflow.
+
+Supported on-prem production contract:
+
+- CMS at `https://<cms-ip>`
+- backend at `http://<backend-ip>:3000`
+- player devices connect directly to backend port `3000`
+- no DNS required in the supported air-gapped profile
+
+Supported deployment workflow:
+
+- target QA and production machines receive generated runtime folders only
+- do not copy the repository to deployment targets
+- the bundle builder stages backend image archives, CMS static assets, configs, scripts, and player installers
 
 ## Support Model
 
@@ -23,7 +40,7 @@ See [`../ops/onprem/README.md`](../ops/onprem/README.md) for the air-gapped on-p
 - LibreOffice-backed document conversion
 - Playwright-backed webpage capture
 - Background jobs with pg-boss
-- Device mTLS on a dedicated port
+- Device pairing and telemetry APIs on the main backend port
 - Audit logging and report export
 - OpenAPI/Swagger docs
 
@@ -119,7 +136,7 @@ docker build -t hexmon-signage-api .
 Run it:
 
 ```bash
-docker run --env-file .env -p 3000:3000 -p 8443:8443 hexmon-signage-api
+docker run --env-file .env -p 3000:3000 hexmon-signage-api
 ```
 
 For the checked-in production compose stack:

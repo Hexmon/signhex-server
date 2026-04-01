@@ -1,5 +1,7 @@
 # Hexmon Signage Backend - Complete Setup & Deployment Guide
 
+> Support note: for current on-prem bundle deployments, start with [../ops/onprem/QA_SETUP_GUIDE.md](../ops/onprem/QA_SETUP_GUIDE.md) for QA or [../ops/onprem/PRODUCTION_SETUP_GUIDE.md](../ops/onprem/PRODUCTION_SETUP_GUIDE.md) for production. This older guide still contains legacy examples and is not the primary supported bundle path.
+
 **Version:** 1.0.0  
 **Last Updated:** 2025-11-05
 

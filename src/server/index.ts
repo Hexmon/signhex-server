@@ -48,6 +48,7 @@ import { createSessionRepository } from '@/db/repositories/session';
 import { extractTokenFromHeader, refreshAccessToken, verifyAccessToken } from '@/auth/jwt';
 import { getIdleTimeoutSeconds, getRuntimeLogLevelSetting, preloadSettingsCache } from '@/utils/settings';
 import { setRuntimeLogLevel } from '@/utils/logger';
+import { getHttpAllowedOrigins } from '@/realtime/socket-server';
 
 const REFRESHED_AUTH_KEY = Symbol.for('signhex.refreshedAuth');
 const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -247,10 +248,7 @@ export async function createServer() {
     hook: 'onRequest',
   });
 
-  const allowedOrigins = [
-    'http://localhost:8080',
-    ...appConfig.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean),
-  ];
+  const allowedOrigins = getHttpAllowedOrigins();
 
   // CORS
   await fastify.register(cors, {

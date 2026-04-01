@@ -1,5 +1,7 @@
 # Hexmon Signage Backend - Quick Start Guide
 
+> Support note: for current on-prem bundle deployments, start with [../ops/onprem/QA_SETUP_GUIDE.md](../ops/onprem/QA_SETUP_GUIDE.md) for QA or [../ops/onprem/PRODUCTION_SETUP_GUIDE.md](../ops/onprem/PRODUCTION_SETUP_GUIDE.md) for production. This quick-start is not the primary deployment runbook.
+
 **⚡ Get up and running in 5 minutes!**
 
 This is a condensed version of the full [SETUP_GUIDE.md](./SETUP_GUIDE.md). For detailed instructions, troubleshooting, and production deployment, please refer to the complete guide.
