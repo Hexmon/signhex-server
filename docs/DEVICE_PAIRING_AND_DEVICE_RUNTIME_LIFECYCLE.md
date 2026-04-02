@@ -597,9 +597,9 @@ Check:
 - use `last_heartbeat_at` and snapshot versioning to drive UI
 
 ## Existing Doc Mismatches
-- [`DEVICE_PLAYER_GUIDE.md`](/Users/anuragkumar/Desktop/signhex/signhex-server/DEVICE_PLAYER_GUIDE.md)
+- `signhex-platform/docs/contracts/device-player-guide.md`
 - [`docs/DESKTOP_PLAYER_INTEGRATION.md`](/Users/anuragkumar/Desktop/signhex/signhex-server/docs/DESKTOP_PLAYER_INTEGRATION.md)
-- [`PLAYER_FLOW.md`](/Users/anuragkumar/Desktop/signhex/signhex-server/PLAYER_FLOW.md)
+- `signhex-platform/docs/contracts/player-flow.md`
 
 These docs are directionally useful, but current code truth differs in these places:
 - no separate device server is started on `DEVICE_PORT`

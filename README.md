@@ -2,13 +2,13 @@
 
 Production-ready digital signage CMS backend built with Node.js, TypeScript, Fastify, PostgreSQL, MinIO, and pg-boss.
 
-For on-prem runtime-bundle deployment, start with:
+For on-prem runtime-bundle deployment, start with the canonical runbooks in the `signhex-platform` repo:
 
-- QA: [`../ops/onprem/QA_SETUP_GUIDE.md`](../ops/onprem/QA_SETUP_GUIDE.md)
-- Production: [`../ops/onprem/PRODUCTION_SETUP_GUIDE.md`](../ops/onprem/PRODUCTION_SETUP_GUIDE.md)
+- QA: `signhex-platform/docs/runbooks/onprem-qa-setup.md`
+- Production: `signhex-platform/docs/runbooks/onprem-production-setup.md`
 See [PLATFORM_SUPPORT.md](./PLATFORM_SUPPORT.md) for the current production and development support matrix.
 See [MACOS_RUNTIME.md](./MACOS_RUNTIME.md) and [UBUNTU_RUNTIME.md](./UBUNTU_RUNTIME.md) for host-run setup guides.
-See [`../ops/onprem/README.md`](../ops/onprem/README.md) for the unified QA + production runtime bundle workflow.
+See `signhex-platform/docs/runbooks/onprem-bundle-builder.md` for the unified QA + production runtime bundle workflow.
 
 Supported on-prem production contract:
 
