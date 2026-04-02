@@ -4,6 +4,7 @@ Production-ready digital signage CMS backend built with Node.js, TypeScript, Fas
 
 For on-prem runtime-bundle deployment, start with the canonical runbooks in the `signhex-platform` repo:
 
+- product export packaging: `signhex-platform/docs/runbooks/product-export-packaging.md`
 - QA: `signhex-platform/docs/runbooks/onprem-qa-setup.md`
 - Production: `signhex-platform/docs/runbooks/onprem-production-setup.md`
 See [PLATFORM_SUPPORT.md](./PLATFORM_SUPPORT.md) for the current production and development support matrix.
@@ -21,6 +22,7 @@ Supported deployment workflow:
 
 - target QA and production machines receive generated runtime folders only
 - do not copy the repository to deployment targets
+- generate the source-free backend deploy package from `signhex-platform/scripts/export/package-server.sh`
 - the bundle builder stages backend image archives, CMS static assets, configs, scripts, and player installers
 
 ## Support Model
