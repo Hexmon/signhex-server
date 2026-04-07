@@ -1,74 +1,30 @@
 process.setMaxListeners(20);
 
-import { config as appConfig } from '@/config';
-import { initializeDatabase } from '@/db';
-import { initializeS3, createBucketIfNotExists } from '@/s3';
-import { createServer } from '@/server';
 import { createLogger } from '@/utils/logger';
-import { initializeJobs, registerJobHandlers, scheduleRecurringJobs, stopJobs } from '@/jobs';
-import { validateRuntimeDependencies } from '@/utils/runtime-dependencies';
+import { resolveProcessRole } from '@/runtime/process-role';
+import { startRuntime, stopRuntime, type RuntimeContext } from '@/runtime/bootstrap';
 
 const logger = createLogger('main');
 
 async function main() {
   try {
-    logger.info('Validating runtime dependencies...');
-    await validateRuntimeDependencies();
-
-    // Initialize database
-    logger.info('Initializing database...');
-    await initializeDatabase();
-
-    // Initialize S3
-    logger.info('Initializing S3/MinIO...');
-    initializeS3();
-
-    // Initialize jobs
-    logger.info('Initializing background jobs...');
-    await initializeJobs();
-    await registerJobHandlers();
-    await scheduleRecurringJobs();
-
-    // Create required buckets
-    const buckets = [
-      'media-source',
-      'media-ready',
-      'media-thumbnails',
-      'device-screenshots',
-      'logs-audit',
-      'logs-system',
-      'logs-auth',
-      'logs-heartbeats',
-      'logs-proof-of-play',
-      'archives',
-    ];
-
-    for (const bucket of buckets) {
-      logger.info(`Creating bucket: ${bucket}`);
-      await createBucketIfNotExists(bucket);
-    }
-
-    // Create Fastify server
-    logger.info('Creating Fastify server...');
-    const fastify = await createServer();
-
-    // Start server
-    await fastify.listen({ port: appConfig.PORT, host: appConfig.HOST });
-    logger.info(`Server listening on ${appConfig.HOST}:${appConfig.PORT} (env: ${appConfig.NODE_ENV})`);
+    const role = resolveProcessRole();
+    logger.info({ role }, 'Starting runtime');
+    const runtime = await startRuntime(role);
 
     // Graceful shutdown
-    process.on('SIGTERM', async () => {
-      logger.info('SIGTERM received, shutting down gracefully...');
-      await fastify.close();
-      await stopJobs();
+    const shutdown = async (signal: 'SIGTERM' | 'SIGINT', runtime: RuntimeContext) => {
+      logger.info({ role: runtime.role, signal }, 'Shutdown signal received');
+      await stopRuntime(runtime);
       process.exit(0);
+    };
+
+    process.on('SIGTERM', async () => {
+      await shutdown('SIGTERM', runtime);
     });
 
     process.on('SIGINT', async () => {
-      logger.info('SIGINT received, shutting down gracefully...');
-      await fastify.close();
-      await stopJobs();
-      process.exit(0);
+      await shutdown('SIGINT', runtime);
     });
   } catch (error) {
     logger.error(error, 'Fatal error during startup');

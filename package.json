@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon",
-    "dev:watch": "tsx watch src/index.ts",
+    "dev:watch": "HEXMON_PROCESS_ROLE=api tsx watch src/index.ts",
     "build": "tsc && tsc-alias",
     "start": "node dist/index.js",
+    "start:api": "node dist/index.js --role=api",
+    "start:worker": "node dist/index.js --role=worker",
     "test": "npx tsx scripts/api-test-report.ts",
     "lint": "eslint src --ext .ts",
     "lint:chat": "eslint src/chat src/realtime/chat-namespace.ts src/realtime/socket-server.ts src/auth/request-auth.ts src/routes/chat.ts src/routes/conversations.ts src/db/repositories/chat.ts src/db/repositories/conversation.ts src/db/repositories/notification.ts --ext .ts",

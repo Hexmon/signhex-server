@@ -6,6 +6,7 @@ import { config as appConfig } from '@/config';
 const logger = createLogger('runtime-dependencies');
 
 export type RuntimeDependencyStatus = 'available' | 'missing' | 'optional';
+export type RuntimeDependencyRole = 'all' | 'api' | 'worker';
 
 export interface RuntimeDependency {
   name: 'ffmpeg' | 'libreoffice' | 'chromium' | 'pg_dump' | 'tar';
@@ -16,6 +17,7 @@ export interface RuntimeDependency {
 
 export interface RuntimeDependencyReport {
   runningInContainer: boolean;
+  role: RuntimeDependencyRole;
   dependencies: RuntimeDependency[];
 }
 
@@ -127,11 +129,20 @@ export async function getResolvedChromiumExecutable() {
   return resolveChromiumPath();
 }
 
-export async function inspectRuntimeDependencies(): Promise<RuntimeDependencyReport> {
+function getRequiredDependencyNames(role: RuntimeDependencyRole) {
+  if (role === 'api') {
+    return new Set<RuntimeDependency['name']>();
+  }
+
+  return new Set<RuntimeDependency['name']>(['ffmpeg', 'libreoffice', 'chromium', 'pg_dump', 'tar']);
+}
+
+export async function inspectRuntimeDependencies(role: RuntimeDependencyRole = 'all'): Promise<RuntimeDependencyReport> {
   const ffmpegPath = resolveFfmpegPath();
   const libreOfficePath = resolveLibreOfficePath();
   const pgDumpPath = resolvePgDumpPath();
   const tarPath = resolveTarPath();
+  const requiredNames = getRequiredDependencyNames(role);
   let chromiumPath: string | null = null;
   let chromiumDetail: string | undefined;
 
@@ -143,22 +154,23 @@ export async function inspectRuntimeDependencies(): Promise<RuntimeDependencyRep
 
   return {
     runningInContainer: runningInContainer(),
+    role,
     dependencies: [
       {
         name: 'ffmpeg',
-        status: ffmpegPath ? 'available' : 'missing',
+        status: ffmpegPath ? 'available' : requiredNames.has('ffmpeg') ? 'missing' : 'optional',
         path: ffmpegPath || undefined,
         detail: ffmpegPath ? undefined : 'Install ffmpeg or set FFMPEG_PATH to the executable.',
       },
       {
         name: 'libreoffice',
-        status: libreOfficePath ? 'available' : 'missing',
+        status: libreOfficePath ? 'available' : requiredNames.has('libreoffice') ? 'missing' : 'optional',
         path: libreOfficePath || undefined,
         detail: libreOfficePath ? undefined : 'Install LibreOffice/soffice or set LIBREOFFICE_PATH to the executable.',
       },
       {
         name: 'chromium',
-        status: chromiumPath ? 'available' : 'missing',
+        status: chromiumPath ? 'available' : requiredNames.has('chromium') ? 'missing' : 'optional',
         path: chromiumPath || undefined,
         detail:
           chromiumPath
@@ -168,13 +180,13 @@ export async function inspectRuntimeDependencies(): Promise<RuntimeDependencyRep
       },
       {
         name: 'pg_dump',
-        status: pgDumpPath ? 'available' : 'missing',
+        status: pgDumpPath ? 'available' : requiredNames.has('pg_dump') ? 'missing' : 'optional',
         path: pgDumpPath || undefined,
         detail: pgDumpPath ? undefined : 'Install pg_dump or set PG_DUMP_PATH to the executable.',
       },
       {
         name: 'tar',
-        status: tarPath ? 'available' : 'missing',
+        status: tarPath ? 'available' : requiredNames.has('tar') ? 'missing' : 'optional',
         path: tarPath || undefined,
         detail: tarPath ? undefined : 'Install tar or set TAR_PATH to the executable.',
       },
@@ -182,8 +194,8 @@ export async function inspectRuntimeDependencies(): Promise<RuntimeDependencyRep
   };
 }
 
-export async function validateRuntimeDependencies() {
-  const report = await inspectRuntimeDependencies();
+export async function validateRuntimeDependencies(role: RuntimeDependencyRole = 'all') {
+  const report = await inspectRuntimeDependencies(role);
   const missingCritical = report.dependencies.filter((dependency) => dependency.status === 'missing');
 
   if (missingCritical.length > 0) {

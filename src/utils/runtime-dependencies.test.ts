@@ -101,4 +101,26 @@ describe('runtime dependency resolution', () => {
 
     await expect(validateRuntimeDependencies()).rejects.toThrow('Missing required runtime dependencies');
   });
+
+  it('allows api-only runtime when worker dependencies are absent', async () => {
+    vi.doMock('playwright', () => ({
+      chromium: {
+        executablePath: () => join(tmpdir(), 'missing-playwright-chromium'),
+      },
+    }));
+
+    process.env.FFMPEG_PATH = join(tmpdir(), 'missing-ffmpeg');
+    process.env.LIBREOFFICE_PATH = join(tmpdir(), 'missing-soffice');
+    process.env.PG_DUMP_PATH = join(tmpdir(), 'missing-pg-dump');
+    process.env.TAR_PATH = join(tmpdir(), 'missing-tar');
+    process.env.HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH = join(tmpdir(), 'missing-chromium');
+    process.env.PATH = '';
+    applyMinimumEnv();
+
+    const { inspectRuntimeDependencies, validateRuntimeDependencies } = await import('@/utils/runtime-dependencies');
+
+    const report = await inspectRuntimeDependencies('api');
+    expect(report.dependencies.every((dependency) => dependency.status !== 'missing')).toBe(true);
+    await expect(validateRuntimeDependencies('api')).resolves.toBeDefined();
+  });
 });

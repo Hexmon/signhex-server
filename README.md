@@ -101,6 +101,8 @@ API:
 
 ```bash
 npm run build
+npm run start:api
+npm run start:worker
 npm run lint
 npm run verify
 npm run doctor:runtime
@@ -125,7 +127,7 @@ It validates the required host-run toolchain:
 - `pg_dump`
 - `tar`
 
-Startup and the runtime doctor both fail fast when any required dependency is missing.
+`npm run start:api` only validates API runtime dependencies. `npm start`, `npm run start:worker`, and `npm run doctor:runtime` validate the full worker toolchain.
 
 ## Docker Runtime
 
@@ -205,7 +207,9 @@ scripts/
 
 - Host-run server deployments on macOS and Linux are supported when the required tools are installed locally.
 - Docker remains available for packaging and operational convenience, but it is not the only feature-complete runtime.
-- `docker-compose.yml` is production-safe and runs the built server with `npm start`.
+- `npm start` keeps the legacy combined mode.
+- `npm run start:api` and `npm run start:worker` are the explicit split-runtime entrypoints. You can also set `HEXMON_PROCESS_ROLE=api|worker|all`.
+- `docker-compose.yml` is production-safe and still runs the built server in combined mode with `npm start`.
 - `docker-compose.dev.yml` is the opt-in development override that restores bind mounts and `npm run dev`.
 - Windows backend production hosting remains out of scope.
 
