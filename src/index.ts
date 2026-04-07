@@ -1,8 +1,15 @@
+process.env['TZ'] ||= 'UTC';
 process.setMaxListeners(20);
+export {};
 
-import { createLogger } from '@/utils/logger';
-import { resolveProcessRole } from '@/runtime/process-role';
-import { startRuntime, stopRuntime, type RuntimeContext } from '@/runtime/bootstrap';
+const [{ createLogger }, { resolveProcessRole }, runtimeBootstrap] = await Promise.all([
+  import('@/utils/logger'),
+  import('@/runtime/process-role'),
+  import('@/runtime/bootstrap'),
+]);
+
+const { startRuntime, stopRuntime } = runtimeBootstrap;
+type RuntimeContext = import('@/runtime/bootstrap').RuntimeContext;
 
 const logger = createLogger('main');
 

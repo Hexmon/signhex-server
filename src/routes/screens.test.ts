@@ -382,6 +382,156 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(body.publish.publish_id).toBe(publishId);
   });
 
+  it('reports default playback without heartbeat schedule ids when the screen is on fallback media', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const fallbackMediaId = randomUUID();
+    const now = new Date();
+
+    await db.insert(schema.media).values({
+      id: fallbackMediaId,
+      name: 'Fallback Media',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+      width: 1920,
+      height: 1080,
+    });
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Fallback Now Playing Screen',
+      status: 'ACTIVE',
+      last_heartbeat_at: now,
+      aspect_ratio: '16:9',
+      current_schedule_id: null,
+      current_media_id: null,
+    } as any);
+
+    await db
+      .insert(schema.settings)
+      .values({ key: 'default_media_variants', value: { '16:9': fallbackMediaId } })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: { value: { '16:9': fallbackMediaId }, updated_at: new Date() },
+      });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/now-playing?include_media=true`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as any;
+    expect(body.current_schedule_id).toBeNull();
+    expect(body.current_media_id).toBeNull();
+    expect(body.playback.source).toBe('DEFAULT');
+    expect(body.playback.current_schedule_id).toBeNull();
+    expect(body.playback.current_media_id).toBe(fallbackMediaId);
+    expect(body.playback.current_media.id).toBe(fallbackMediaId);
+  });
+
+  it('does not treat a taken-down direct publish as the latest publish for now-playing', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const mediaId = randomUUID();
+    const scheduleId = randomUUID();
+    const snapshotId = randomUUID();
+    const publishId = randomUUID();
+    const now = new Date();
+    const startAt = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+    const endAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_id'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_variants'));
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'default_media_targets'));
+
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: 'Taken Down Default Media',
+      type: 'IMAGE',
+      status: 'READY',
+      created_by: testUser.id,
+      width: 1920,
+      height: 1080,
+    });
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: 'Taken Down Publish Screen',
+      status: 'ACTIVE',
+      last_heartbeat_at: now,
+      aspect_ratio: '16:9',
+      current_schedule_id: null,
+      current_media_id: null,
+    } as any);
+
+    await db
+      .insert(schema.settings)
+      .values({ key: 'default_media_variants', value: { '16:9': mediaId } })
+      .onConflictDoUpdate({
+        target: schema.settings.key,
+        set: { value: { '16:9': mediaId }, updated_at: new Date() },
+      });
+
+    await db.insert(schema.schedules).values({
+      id: scheduleId,
+      name: 'Taken Down Schedule',
+      start_at: new Date(startAt),
+      end_at: new Date(endAt),
+      is_active: true,
+      created_by: testUser.id,
+    });
+
+    await db.insert(schema.scheduleSnapshots).values({
+      id: snapshotId,
+      schedule_id: scheduleId,
+      payload: buildScheduleSnapshotPayload({
+        itemId: randomUUID(),
+        mediaId,
+        scheduleId,
+        screenId,
+        startAt,
+        endAt,
+      }),
+    });
+
+    await db.insert(schema.publishes).values({
+      id: publishId,
+      schedule_id: scheduleId,
+      snapshot_id: snapshotId,
+      published_by: testUser.id,
+      status: 'TAKEN_DOWN',
+      taken_down_at: now,
+      taken_down_by: testUser.id,
+      takedown_reason: 'test cleanup',
+    });
+
+    await db.insert(schema.publishTargets).values({
+      publish_id: publishId,
+      screen_id: screenId,
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens/${screenId}/now-playing?include_media=true`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as any;
+    expect(body.publish).toBeNull();
+    expect(body.current_schedule).toBeNull();
+    expect(body.playback.source).toBe('DEFAULT');
+    expect(body.playback.current_schedule_id).toBeNull();
+    expect(body.playback.current_media_id).toBe(mediaId);
+  });
+
   it('returns explicit availability fields and normalized item summaries', async () => {
     const db = getDatabase();
     const screenId = randomUUID();

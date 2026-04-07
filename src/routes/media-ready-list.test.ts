@@ -14,12 +14,24 @@ const { headObjectMock, getPresignedUrlMock } = vi.hoisted(() => ({
   getPresignedUrlMock: vi.fn(),
 }));
 
+const { queueWebpageVerifyCaptureMock } = vi.hoisted(() => ({
+  queueWebpageVerifyCaptureMock: vi.fn(),
+}));
+
 vi.mock('@/s3', async () => {
   const actual = await vi.importActual<typeof import('@/s3')>('@/s3');
   return {
     ...actual,
     headObject: headObjectMock,
     getPresignedUrl: getPresignedUrlMock,
+  };
+});
+
+vi.mock('@/jobs', async () => {
+  const actual = await vi.importActual<typeof import('@/jobs')>('@/jobs');
+  return {
+    ...actual,
+    queueWebpageVerifyCapture: queueWebpageVerifyCaptureMock,
   };
 });
 
@@ -96,6 +108,7 @@ describe('Media Routes - READY list pagination', () => {
   beforeEach(() => {
     headObjectMock.mockReset();
     getPresignedUrlMock.mockReset();
+    queueWebpageVerifyCaptureMock.mockReset();
     getPresignedUrlMock.mockResolvedValue('http://signed.test/valid');
   });
 
@@ -161,5 +174,65 @@ describe('Media Routes - READY list pagination', () => {
       ])
     );
     expect(body.pagination.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it('requeues legacy webpage svg previews while still returning the current preview response', async () => {
+    const db = getDatabase();
+    const mediaId = randomUUID();
+    const readyObjectId = randomUUID();
+    const objectKey = `${mediaId}/webpage-fallback.svg`;
+    const sourceUrl = 'https://example.com/dashboard';
+
+    headObjectMock.mockResolvedValue({
+      ContentLength: 4096,
+      ContentType: 'image/svg+xml',
+    });
+    getPresignedUrlMock.mockResolvedValue('http://signed.test/webpage-preview');
+    queueWebpageVerifyCaptureMock.mockResolvedValue(undefined);
+
+    await db.insert(schema.storageObjects).values({
+      id: readyObjectId,
+      bucket: 'media-ready',
+      object_key: objectKey,
+      content_type: 'image/svg+xml',
+      size: 4096,
+    });
+
+    await db.insert(schema.media).values({
+      id: mediaId,
+      name: `legacy-webpage-${Date.now()}`,
+      type: 'WEBPAGE',
+      status: 'READY',
+      created_by: ownerUserId,
+      source_url: sourceUrl,
+      ready_object_id: readyObjectId,
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/media?limit=20&page=1&status=READY&type=WEBPAGE',
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    expect(body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: mediaId,
+          type: 'WEBPAGE',
+          media_url: 'http://signed.test/webpage-preview',
+          fallback_media_url: 'http://signed.test/webpage-preview',
+        }),
+      ])
+    );
+    expect(queueWebpageVerifyCaptureMock).toHaveBeenCalledWith({
+      mediaId,
+      sourceUrl,
+    });
   });
 });

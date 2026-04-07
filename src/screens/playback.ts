@@ -277,7 +277,13 @@ export async function getLatestPublishForScreen(
     .from(schema.publishTargets)
     .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
     .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-    .where(eq(schema.publishTargets.screen_id, screenId))
+    .where(
+      and(
+        eq(schema.publishTargets.screen_id, screenId),
+        eq(schema.publishes.status, 'ACTIVE'),
+        isNull(schema.publishes.taken_down_at)
+      )
+    )
     .orderBy(desc(schema.publishes.published_at), desc(schema.publishes.id))
     .limit(1);
 
@@ -624,6 +630,7 @@ function derivePlaybackState(params: {
   emergency: Awaited<ReturnType<typeof getActiveEmergencyForScreen>> | null;
   defaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>;
   currentMediaId?: string | null;
+  reportedHeartbeatMediaId?: string | null;
   lastProofOfPlayAt?: string | null;
   includeMedia?: boolean;
   currentMedia?: Record<string, unknown> | null;
@@ -639,22 +646,30 @@ function derivePlaybackState(params: {
 
   const resolvedCurrentMediaId =
     params.emergency?.media_id ??
-    params.currentMediaId ??
+    params.reportedHeartbeatMediaId ??
     fallbackMediaIdFromItem ??
     params.defaultMedia?.media_id ??
     null;
 
+  const reportedHeartbeatScheduleId = params.screen.current_schedule_id ?? null;
   let source: PlaybackSource = 'UNKNOWN';
   if (params.emergency?.media_id) source = 'EMERGENCY';
-  else if (params.currentMediaId) source = 'HEARTBEAT';
+  else if (params.reportedHeartbeatMediaId || reportedHeartbeatScheduleId) source = 'HEARTBEAT';
   else if (fallbackItem) source = 'SCHEDULE';
   else if (params.defaultMedia?.media_id) source = 'DEFAULT';
+
+  let playbackScheduleId: string | null = null;
+  if (source === 'HEARTBEAT') {
+    playbackScheduleId = reportedHeartbeatScheduleId ?? params.latest?.schedule_id ?? null;
+  } else if (source === 'SCHEDULE') {
+    playbackScheduleId = params.latest?.schedule_id ?? null;
+  }
 
   const playback: Record<string, unknown> = {
     source,
     is_live: Boolean(resolvedCurrentMediaId || fallbackItem || params.emergency || params.defaultMedia?.media_id),
     current_media_id: resolvedCurrentMediaId,
-    current_schedule_id: params.screen.current_schedule_id ?? params.latest?.schedule_id ?? null,
+    current_schedule_id: playbackScheduleId,
     current_item_id: fallbackItem?.id ?? null,
     started_at: toIso(fallbackItem?.start_at),
     ends_at: toIso(fallbackItem?.end_at),
@@ -692,6 +707,7 @@ export async function buildScreenPlaybackState(
     pickPrimaryMediaIdFromPresentation(activeItems[0]?.presentation) ??
     defaultMedia?.media_id ??
     null;
+  const reportedHeartbeatMediaId = emergency?.media_id ?? screen.current_media_id ?? null;
   const currentMedia =
     options.includeMedia && currentMediaId ? await getMediaSummary(currentMediaId, db) : null;
   const preview = options.includePreview ? await getLatestScreenshotPreview(screen.id, { db, now }) : null;
@@ -755,6 +771,7 @@ export async function buildScreenPlaybackState(
       emergency,
       defaultMedia,
       currentMediaId,
+      reportedHeartbeatMediaId,
       lastProofOfPlayAt: options.lastProofOfPlayAt ?? null,
       includeMedia: options.includeMedia,
       currentMedia,

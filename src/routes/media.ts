@@ -50,6 +50,8 @@ import {
 
 const logger = createLogger('media-routes');
 const { CREATED, FORBIDDEN, OK } = HTTP_STATUS;
+const LEGACY_WEBPAGE_PREVIEW_REQUEUE_COOLDOWN_MS = 5 * 60 * 1000;
+const legacyWebpagePreviewRequeueAt = new Map<string, number>();
 
 export async function mediaRoutes(fastify: FastifyInstance) {
   const mediaRepo = createMediaRepository();
@@ -134,8 +136,65 @@ export async function mediaRoutes(fastify: FastifyInstance) {
     return storageObject;
   };
 
+  const isLegacyWebpagePreview = (params: {
+    media: any;
+    readyObject?: any;
+    resolvedContentType?: string | null;
+  }) => {
+    if ((params.media.type ?? '').toUpperCase() !== 'WEBPAGE') return false;
+    if (params.media.status !== 'READY') return false;
+    if (!params.media.source_url) return false;
+
+    const contentType = (params.readyObject?.content_type ?? params.resolvedContentType ?? '')
+      .toString()
+      .toLowerCase();
+    const objectKey = (params.readyObject?.object_key ?? '').toString().toLowerCase();
+
+    return contentType === 'image/svg+xml' || objectKey.endsWith('/webpage-fallback.svg');
+  };
+
+  const maybeQueueLegacyWebpagePreviewRefresh = async (params: {
+    media: any;
+    readyObject?: any;
+    resolvedContentType?: string | null;
+  }) => {
+    if (!isLegacyWebpagePreview(params)) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastQueuedAt = legacyWebpagePreviewRequeueAt.get(params.media.id) ?? 0;
+    if (now - lastQueuedAt < LEGACY_WEBPAGE_PREVIEW_REQUEUE_COOLDOWN_MS) {
+      return;
+    }
+
+    legacyWebpagePreviewRequeueAt.set(params.media.id, now);
+
+    try {
+      await queueWebpageVerifyCapture({
+        mediaId: params.media.id,
+        sourceUrl: params.media.source_url,
+      });
+      logger.info({ mediaId: params.media.id }, 'Queued legacy webpage preview recapture');
+    } catch (error) {
+      logger.warn(
+        {
+          error,
+          mediaId: params.media.id,
+        },
+        'Failed to queue legacy webpage preview recapture'
+      );
+    }
+  };
+
   const serializeMediaWithResolvedState = async (media: any, readyMap?: Map<string, any>) => {
     const mediaAccess = await resolveMediaAccess(media, db, { readyObjectMap: readyMap });
+    const readyObject = media.ready_object_id ? readyMap?.get(media.ready_object_id) : undefined;
+    await maybeQueueLegacyWebpagePreviewRefresh({
+      media,
+      readyObject,
+      resolvedContentType: mediaAccess.content_type,
+    });
     const statusState = resolveApiStatus(media, mediaAccess.is_object_missing);
     return serializeMediaRecord(media, mediaAccess.media_url, {
       status: statusState.status,
