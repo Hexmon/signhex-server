@@ -148,6 +148,7 @@ export const apiEndpoints = {
     heartbeat: withBase('/device/heartbeat'),
     proofOfPlay: withBase('/device/proof-of-play'),
     screenshot: withBase('/device/screenshot'),
+    screenshotPolicy: withBase('/device/:deviceId/screenshot-policy'),
     commands: withBase('/device/:deviceId/commands'),
     ackCommand: withBase('/device/:deviceId/commands/:commandId/ack'),
     snapshot: withBase('/device/:deviceId/snapshot'),

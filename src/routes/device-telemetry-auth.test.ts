@@ -168,6 +168,41 @@ describe('Device telemetry auth runtime validation', () => {
     );
   });
 
+  it('returns screenshot policy for an authenticated device', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Policy Device',
+      status: 'OFFLINE',
+      screenshot_enabled: true,
+      screenshot_interval_seconds: 45,
+    } as any);
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${deviceId}/screenshot-policy`,
+      headers: {
+        'x-device-serial': serial,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(response.body)).toEqual({
+      enabled: true,
+      interval_seconds: 45,
+    });
+  });
+
   it('returns aspect-ratio and global default media for authenticated devices when no target assignment exists', async () => {
     const db = getDatabase();
     const aspectDeviceId = randomUUID();

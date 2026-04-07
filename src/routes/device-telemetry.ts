@@ -237,6 +237,36 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   };
 
   fastify.get<{ Params: { deviceId: string } }>(
+    apiEndpoints.deviceTelemetry.screenshotPolicy,
+    {
+      schema: {
+        description: 'Return screenshot capture policy for an authenticated device',
+        tags: ['Device Telemetry'],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const deviceId = (request.params as any).deviceId;
+        await authenticateDeviceOrThrow(request, deviceId, { allowUserToken: true });
+
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, deviceId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Device not registered');
+        }
+
+        return reply.send({
+          enabled: screen.screenshot_enabled === true,
+          interval_seconds:
+            typeof screen.screenshot_interval_seconds === 'number' ? screen.screenshot_interval_seconds : null,
+        });
+      } catch (error) {
+        logger.error(error, 'Device screenshot policy error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Params: { deviceId: string } }>(
     apiEndpoints.deviceTelemetry.defaultMedia,
     {
       schema: {
