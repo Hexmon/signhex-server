@@ -7,6 +7,7 @@ import { createTestServer, closeTestServer, testUser } from '@/test/helpers';
 import { getDatabase, schema } from '@/db';
 import { HTTP_STATUS } from '@/http-status-codes';
 import * as s3 from '@/s3';
+import * as jobs from '@/jobs';
 
 describe('Device telemetry auth runtime validation', () => {
   let server: FastifyInstance;
@@ -837,7 +838,7 @@ describe('Device telemetry auth runtime validation', () => {
     expect(typeof body.storage_object_id).toBe('string');
     expect(body.timestamp).toBe(timestamp);
     expect(putObjectSpy).toHaveBeenCalledOnce();
-    expect(presignedSpy).toHaveBeenCalledOnce();
+    expect(presignedSpy).not.toHaveBeenCalled();
 
     const [storageObject] = await db
       .select()
@@ -858,6 +859,57 @@ describe('Device telemetry auth runtime validation', () => {
 
     putObjectSpy.mockRestore();
     presignedSpy.mockRestore();
+  });
+
+  it('falls back to inline screenshot persistence when queueing is unavailable', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const queueSpy = vi.spyOn(jobs, 'queueScreenshotTelemetry').mockRejectedValueOnce(new Error('pg-boss down'));
+    const putObjectSpy = vi.spyOn(s3, 'putObject').mockResolvedValue({ etag: 'etag-inline', sha256: 'sha-inline' });
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Inline Fallback Screenshot Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const timestamp = new Date().toISOString();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device/screenshot',
+      headers: {
+        'x-device-serial': serial,
+      },
+      payload: {
+        device_id: deviceId,
+        timestamp,
+        image_data: Buffer.from('inline-fallback-png').toString('base64'),
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.CREATED);
+    expect(queueSpy).toHaveBeenCalledOnce();
+    expect(putObjectSpy).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(response.body);
+    const [screenshot] = await db
+      .select()
+      .from(schema.screenshots)
+      .where(eq(schema.screenshots.storage_object_id, body.storage_object_id))
+      .limit(1);
+
+    expect(screenshot).toBeTruthy();
+
+    queueSpy.mockRestore();
+    putObjectSpy.mockRestore();
   });
 
   it('accepts screenshot uploads above the default Fastify body limit', async () => {
@@ -904,7 +956,7 @@ describe('Device telemetry auth runtime validation', () => {
     expect(body.success).toBe(true);
     expect(body.timestamp).toBe(timestamp);
     expect(putObjectSpy).toHaveBeenCalledOnce();
-    expect(presignedSpy).toHaveBeenCalledOnce();
+    expect(presignedSpy).not.toHaveBeenCalled();
 
     putObjectSpy.mockRestore();
     presignedSpy.mockRestore();

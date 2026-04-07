@@ -39,7 +39,7 @@ async function main() {
       'logs-system',
       'logs-auth',
       'logs-heartbeats',
-      'logs-pop',
+      'logs-proof-of-play',
       'archives',
     ];
 

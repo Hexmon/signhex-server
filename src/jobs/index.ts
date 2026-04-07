@@ -16,6 +16,14 @@ import { getCachedSettings } from '@/utils/settings';
 import { buildSourceFilename } from '@/utils/media-processing';
 import { captureWebpagePreview } from '@/utils/webpage-capture';
 import { getLibreOfficeExecutable, getResolvedFfmpegPath } from '@/utils/runtime-dependencies';
+import {
+  type HeartbeatTelemetryJob,
+  type ProofOfPlayTelemetryJob,
+  type ScreenshotTelemetryJob,
+  processHeartbeatTelemetry,
+  processProofOfPlayTelemetry,
+  processScreenshotTelemetry,
+} from '@/jobs/device-telemetry';
 
 const logger = createLogger('jobs');
 
@@ -219,6 +227,9 @@ type PgBossError = Error & {
 
 const RECURRING_QUEUE_NAMES = ['cleanup', 'archive', 'chat:media-cleanup', 'backup', 'backup:check'] as const;
 const WORK_QUEUE_NAMES = [
+  'telemetry:heartbeat',
+  'telemetry:proof-of-play',
+  'telemetry:screenshot',
   'ffmpeg:transcode',
   'ffmpeg:thumbnail',
   'document:convert',
@@ -385,6 +396,32 @@ export interface BackupJob {
 
 export interface BackupCheckJob {
   trigger: 'scheduled-check';
+}
+
+export async function queueHeartbeatTelemetry(job: HeartbeatTelemetryJob, options?: any) {
+  return sendJob('telemetry:heartbeat', job, {
+    retryLimit: 5,
+    retryDelay: 15,
+    ...options,
+  });
+}
+
+export async function queueProofOfPlayTelemetry(job: ProofOfPlayTelemetryJob, options?: any) {
+  return sendJob('telemetry:proof-of-play', job, {
+    retryLimit: 5,
+    retryDelay: 15,
+    singletonKey: job.idempotencyKey,
+    singletonSeconds: 60 * 60,
+    ...options,
+  });
+}
+
+export async function queueScreenshotTelemetry(job: ScreenshotTelemetryJob, options?: any) {
+  return sendJob('telemetry:screenshot', job, {
+    retryLimit: 5,
+    retryDelay: 30,
+    ...options,
+  });
 }
 
 // Job queue functions
@@ -574,6 +611,27 @@ export async function registerJobHandlers() {
   for (const queueName of WORK_QUEUE_NAMES) {
     await ensureQueueExists(jobs, queueName);
   }
+
+  await jobs.work<HeartbeatTelemetryJob>('telemetry:heartbeat', async (jobBatch) => {
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+    for (const job of batch) {
+      await processHeartbeatTelemetry(job.data);
+    }
+  });
+
+  await jobs.work<ProofOfPlayTelemetryJob>('telemetry:proof-of-play', async (jobBatch) => {
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+    for (const job of batch) {
+      await processProofOfPlayTelemetry(job.data);
+    }
+  });
+
+  await jobs.work<ScreenshotTelemetryJob>('telemetry:screenshot', async (jobBatch) => {
+    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+    for (const job of batch) {
+      await processScreenshotTelemetry(job.data);
+    }
+  });
 
   // FFmpeg transcode handler
   await jobs.work<FFmpegTranscodeJob>('ffmpeg:transcode', async (jobBatch) => {

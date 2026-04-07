@@ -4,6 +4,7 @@ import { config as appConfig } from '@/config';
 
 const DEFAULT_ORIGIN = 'http://localhost:8080';
 const SOCKET_SERVER_KEY = Symbol.for('signhex.socket.io.server');
+let socketServer: SocketIOServer | null = null;
 
 type HttpServerWithSocket = {
   [SOCKET_SERVER_KEY]?: SocketIOServer;
@@ -60,11 +61,15 @@ export function getOrCreateSocketServer(fastify: FastifyInstance): SocketIOServe
   const existingOnServer = httpServer[SOCKET_SERVER_KEY];
   if (existingOnServer) {
     (fastify as any).io = existingOnServer;
+    socketServer = existingOnServer;
     return existingOnServer;
   }
 
   const existing = (fastify as any).io as SocketIOServer | undefined;
-  if (existing) return existing;
+  if (existing) {
+    socketServer = existing;
+    return existing;
+  }
 
   const allowlist = getSocketAllowedOrigins();
   const io = new SocketIOServer(fastify.server, {
@@ -80,5 +85,10 @@ export function getOrCreateSocketServer(fastify: FastifyInstance): SocketIOServe
 
   (fastify as any).io = io;
   httpServer[SOCKET_SERVER_KEY] = io;
+  socketServer = io;
   return io;
+}
+
+export function getSocketServer(): SocketIOServer | null {
+  return socketServer;
 }

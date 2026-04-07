@@ -6,7 +6,7 @@ import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
 import { buildScreenPlaybackStateById, buildScreensOverviewPayload } from '@/screens/playback';
 import { resolveSocketAuthToken } from '@/realtime/chat-namespace';
-import { getOrCreateSocketServer, getSocketAllowedOrigins } from '@/realtime/socket-server';
+import { getOrCreateSocketServer, getSocketAllowedOrigins, getSocketServer } from '@/realtime/socket-server';
 import { inArray } from 'drizzle-orm';
 
 const logger = createLogger('screens-namespace');
@@ -158,11 +158,7 @@ export async function setupScreensNamespace(fastify: FastifyInstance) {
   (fastify as any)._screensNamespaceReady = true;
 }
 
-export function emitScreenStateUpdate(
-  fastify: FastifyInstance,
-  screen: Record<string, unknown> & { id: string }
-) {
-  const io = getOrCreateSocketServer(fastify);
+function emitScreenState(io: ReturnType<typeof getOrCreateSocketServer>, screen: Record<string, unknown> & { id: string }) {
   io.of(SCREENS_NAMESPACE)
     .to(screensAllRoom())
     .to(screenRoom(screen.id))
@@ -170,6 +166,37 @@ export function emitScreenStateUpdate(
       server_time: new Date().toISOString(),
       screen,
     });
+}
+
+export function emitScreenStateUpdate(
+  fastify: FastifyInstance,
+  screen: Record<string, unknown> & { id: string }
+) {
+  const io = getOrCreateSocketServer(fastify);
+  emitScreenState(io, screen);
+}
+
+export function emitScreenStateUpdateGlobal(screen: Record<string, unknown> & { id: string }) {
+  const io = getSocketServer();
+  if (!io) {
+    return false;
+  }
+
+  emitScreenState(io, screen);
+  return true;
+}
+
+function emitScreenPreview(io: ReturnType<typeof getOrCreateSocketServer>, payload: {
+  screenId: string;
+  captured_at: string;
+  screenshot_url: string | null;
+  stale: boolean;
+  storage_object_id?: string | null;
+}) {
+  io.of(SCREENS_NAMESPACE)
+    .to(screensAllRoom())
+    .to(screenRoom(payload.screenId))
+    .emit('screens:preview:update', payload);
 }
 
 export function emitScreenPreviewUpdate(
@@ -183,10 +210,23 @@ export function emitScreenPreviewUpdate(
   }
 ) {
   const io = getOrCreateSocketServer(fastify);
-  io.of(SCREENS_NAMESPACE)
-    .to(screensAllRoom())
-    .to(screenRoom(payload.screenId))
-    .emit('screens:preview:update', payload);
+  emitScreenPreview(io, payload);
+}
+
+export function emitScreenPreviewUpdateGlobal(payload: {
+  screenId: string;
+  captured_at: string;
+  screenshot_url: string | null;
+  stale: boolean;
+  storage_object_id?: string | null;
+}) {
+  const io = getSocketServer();
+  if (!io) {
+    return false;
+  }
+
+  emitScreenPreview(io, payload);
+  return true;
 }
 
 export function emitScreensRefreshRequired(

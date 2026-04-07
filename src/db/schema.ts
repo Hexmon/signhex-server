@@ -490,6 +490,7 @@ export const heartbeats = pgTable(
   (table) => ({
     screenIdIdx: index('heartbeats_screen_id_idx').on(table.screen_id),
     createdAtIdx: index('heartbeats_created_at_idx').on(table.created_at),
+    storageObjectIdx: uniqueIndex('heartbeats_storage_object_id_idx').on(table.storage_object_id),
   })
 );
 
@@ -504,11 +505,13 @@ export const proofOfPlay = pgTable(
     started_at: timestamp('started_at').notNull(),
     ended_at: timestamp('ended_at'),
     storage_object_id: uuid('storage_object_id'),
+    idempotency_key: varchar('idempotency_key', { length: 64 }).notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => ({
     screenIdIdx: index('proof_of_play_screen_id_idx').on(table.screen_id),
     createdAtIdx: index('proof_of_play_created_at_idx').on(table.created_at),
+    idempotencyIdx: uniqueIndex('proof_of_play_idempotency_key_idx').on(table.idempotency_key),
   })
 );
 
@@ -523,6 +526,7 @@ export const screenshots = pgTable(
   },
   (table) => ({
     screenIdIdx: index('screenshots_screen_id_idx').on(table.screen_id),
+    storageObjectIdx: uniqueIndex('screenshots_storage_object_id_idx').on(table.storage_object_id),
   })
 );
 

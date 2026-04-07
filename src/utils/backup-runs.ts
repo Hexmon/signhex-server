@@ -24,7 +24,7 @@ const MINIO_BACKUP_BUCKETS = [
   'logs-system',
   'logs-auth',
   'logs-heartbeats',
-  'logs-pop',
+  'logs-proof-of-play',
 ] as const;
 
 export type BackupRunRecord = typeof schema.backupRuns.$inferSelect;

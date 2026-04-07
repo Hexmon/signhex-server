@@ -1,9 +1,9 @@
+import { randomUUID } from 'crypto';
 import { and, eq, desc, isNull } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
-import { putObject, getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
@@ -24,13 +24,20 @@ import {
   getActiveEmergencyForScreen as getActiveEmergencyForRuntime,
   getLatestPublishForScreen,
 } from '@/screens/playback';
-import { emitScreenPreviewUpdate, emitScreenStateUpdate } from '@/realtime/screens-namespace';
+import { emitScreenStateUpdate } from '@/realtime/screens-namespace';
+import { queueHeartbeatTelemetry, queueProofOfPlayTelemetry, queueScreenshotTelemetry } from '@/jobs';
+import {
+  buildHeartbeatObjectKey,
+  buildProofOfPlayIdempotencyKey,
+  buildProofOfPlayObjectKey,
+  buildScreenshotObjectKey,
+  processHeartbeatTelemetry,
+  processProofOfPlayTelemetry,
+  processScreenshotTelemetry,
+} from '@/jobs/device-telemetry';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
-const HEARTBEAT_BUCKET = 'logs-heartbeats';
-const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
-const SCREENSHOT_BUCKET = 'device-screenshots';
 const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
 const heartbeatSchema = z.object({
@@ -127,6 +134,19 @@ const normalizeEtagToken = (value: string) =>
     .replace(/\\/g, '')
     .replace(/^"+|"+$/g, '')
     .trim();
+
+async function enqueueTelemetryWithFallback(params: {
+  label: string;
+  enqueue: () => Promise<unknown>;
+  fallback: () => Promise<void>;
+}) {
+  try {
+    await params.enqueue();
+  } catch (error) {
+    logger.warn({ error, label: params.label }, 'Telemetry queue unavailable; using inline fallback');
+    await params.fallback();
+  }
+}
 
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
@@ -490,28 +510,17 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         }
 
         const receivedAt = new Date();
-        const objectKey = `heartbeats/${data.device_id}/${receivedAt.getTime()}.json`;
-        const payload = JSON.stringify({ ...data, received_at: receivedAt.toISOString() });
-
-        const upload = await putObject(HEARTBEAT_BUCKET, objectKey, payload, 'application/json');
-
-        const [storageObject] = await db
-          .insert(schema.storageObjects)
-          .values({
-            bucket: HEARTBEAT_BUCKET,
-            object_key: objectKey,
-            content_type: 'application/json',
-            size: Buffer.byteLength(payload),
-            sha256: upload.sha256,
-          })
-          .returning();
-
-        await db.insert(schema.heartbeats).values({
-          screen_id: data.device_id,
+        const receivedAtIso = receivedAt.toISOString();
+        const storageObjectId = randomUUID();
+        const objectKey = buildHeartbeatObjectKey(data.device_id, receivedAtIso, data as unknown as Record<string, unknown>);
+        const heartbeatJob = {
+          deviceId: data.device_id,
           status: data.status,
-          storage_object_id: storageObject?.id,
-          created_at: receivedAt,
-        });
+          payload: data as unknown as Record<string, unknown>,
+          receivedAt: receivedAtIso,
+          objectKey,
+          storageObjectId,
+        };
 
         const screenStatus =
           data.status === 'ONLINE' ? 'ACTIVE' : data.status === 'OFFLINE' ? 'OFFLINE' : 'INACTIVE';
@@ -531,6 +540,12 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         if (playbackState) {
           emitScreenStateUpdate(fastify, playbackState);
         }
+
+        await enqueueTelemetryWithFallback({
+          label: 'heartbeat',
+          enqueue: () => queueHeartbeatTelemetry(heartbeatJob),
+          fallback: () => processHeartbeatTelemetry(heartbeatJob),
+        });
 
         logger.info(
           {
@@ -587,37 +602,33 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         await authenticateDeviceOrThrow(request, data.device_id);
 
         const receivedAt = new Date();
-        const startedAt = new Date(data.start_time);
-        const endedAt = new Date(data.end_time);
-        const objectKey = `proof-of-play/${data.device_id}/${receivedAt.getTime()}.json`;
-        const payload = JSON.stringify({ ...data, received_at: receivedAt.toISOString() });
-
-        const upload = await putObject(PROOF_OF_PLAY_BUCKET, objectKey, payload, 'application/json');
-
-        const [storageObject] = await db
-          .insert(schema.storageObjects)
-          .values({
-            bucket: PROOF_OF_PLAY_BUCKET,
-            object_key: objectKey,
-            content_type: 'application/json',
-            size: Buffer.byteLength(payload),
-            sha256: upload.sha256,
-          })
-          .returning();
-
-        await db.insert(schema.proofOfPlay).values({
-          screen_id: data.device_id,
-          media_id: data.media_id,
-          presentation_id: data.schedule_id,
-          started_at: startedAt,
-          ended_at: endedAt,
-          storage_object_id: storageObject?.id,
+        const idempotencyKey = buildProofOfPlayIdempotencyKey({
+          deviceId: data.device_id,
+          mediaId: data.media_id,
+          scheduleId: data.schedule_id,
+          startTime: data.start_time,
+          endTime: data.end_time,
+          duration: data.duration,
+          completed: data.completed,
         });
+        const proofOfPlayJob = {
+          deviceId: data.device_id,
+          mediaId: data.media_id,
+          scheduleId: data.schedule_id,
+          startTime: data.start_time,
+          endTime: data.end_time,
+          duration: data.duration,
+          completed: data.completed,
+          receivedAt: receivedAt.toISOString(),
+          idempotencyKey,
+          objectKey: buildProofOfPlayObjectKey(data.device_id, idempotencyKey),
+        };
 
-        const playbackState = await buildScreenPlaybackStateById(data.device_id, { db });
-        if (playbackState) {
-          emitScreenStateUpdate(fastify, playbackState);
-        }
+        await enqueueTelemetryWithFallback({
+          label: 'proof-of-play',
+          enqueue: () => queueProofOfPlayTelemetry(proofOfPlayJob),
+          fallback: () => processProofOfPlayTelemetry(proofOfPlayJob),
+        });
 
         logger.info(
           {
@@ -654,58 +665,27 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       try {
         const data = screenshotSchema.parse(request.body);
         await authenticateDeviceOrThrow(request, data.device_id);
+        const storageObjectId = randomUUID();
+        const objectKey = buildScreenshotObjectKey(data.device_id, data.timestamp, storageObjectId);
+        const screenshotJob = {
+          deviceId: data.device_id,
+          timestamp: data.timestamp,
+          imageData: data.image_data,
+          objectKey,
+          storageObjectId,
+        };
 
-        // Decode base64 image
-        const imageBuffer = Buffer.from(data.image_data, 'base64');
-
-        // Upload to MinIO
-        const objectKey = `device-screenshots/${data.device_id}/${Date.now()}.png`;
-        const upload = await putObject(SCREENSHOT_BUCKET, objectKey, imageBuffer, 'image/png');
-        const [storageObject] = await db
-          .insert(schema.storageObjects)
-          .values({
-            bucket: SCREENSHOT_BUCKET,
-            object_key: objectKey,
-            content_type: 'image/png',
-            size: imageBuffer.length,
-            sha256: upload.sha256,
-          })
-          .returning({
-            id: schema.storageObjects.id,
-            bucket: schema.storageObjects.bucket,
-            object_key: schema.storageObjects.object_key,
-          });
-
-        if (!storageObject) {
-          throw new Error('Failed to persist screenshot storage reference');
-        }
-
-        await db.insert(schema.screenshots).values({
-          screen_id: data.device_id,
-          storage_object_id: storageObject.id,
-          created_at: new Date(data.timestamp),
-        });
-
-        let screenshotUrl: string | null = null;
-        try {
-          screenshotUrl = await getPresignedUrl(storageObject.bucket, storageObject.object_key, 3600);
-        } catch {
-          screenshotUrl = null;
-        }
-
-        emitScreenPreviewUpdate(fastify, {
-          screenId: data.device_id,
-          captured_at: data.timestamp,
-          screenshot_url: screenshotUrl,
-          stale: false,
-          storage_object_id: storageObject.id,
+        await enqueueTelemetryWithFallback({
+          label: 'screenshot',
+          enqueue: () => queueScreenshotTelemetry(screenshotJob),
+          fallback: () => processScreenshotTelemetry(screenshotJob),
         });
 
         logger.info(
           {
             deviceId: data.device_id,
             objectKey,
-            size: imageBuffer.length,
+            size: Buffer.byteLength(data.image_data, 'base64'),
           },
           'Device screenshot uploaded'
         );
@@ -713,7 +693,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           success: true,
           object_key: objectKey,
-          storage_object_id: storageObject.id,
+          storage_object_id: storageObjectId,
           timestamp: data.timestamp,
         });
       } catch (error) {
