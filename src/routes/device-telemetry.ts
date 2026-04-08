@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { and, eq, desc, isNull } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { config as appConfig } from '@/config';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
 import { apiEndpoints } from '@/config/apiEndpoints';
@@ -135,11 +136,25 @@ const normalizeEtagToken = (value: string) =>
     .replace(/^"+|"+$/g, '')
     .trim();
 
+export function shouldPersistTelemetryInline(
+  nodeEnv: string = appConfig.NODE_ENV,
+  processRole: string | undefined = process.env.HEXMON_PROCESS_ROLE?.trim()
+) {
+  return nodeEnv === 'development' && processRole === 'api';
+}
+
 async function enqueueTelemetryWithFallback(params: {
   label: string;
   enqueue: () => Promise<unknown>;
   fallback: () => Promise<void>;
 }) {
+  const processRole = process.env.HEXMON_PROCESS_ROLE?.trim();
+  if (shouldPersistTelemetryInline(appConfig.NODE_ENV, processRole)) {
+    logger.info({ label: params.label, processRole, env: appConfig.NODE_ENV }, 'Persisting telemetry inline in api-only runtime');
+    await params.fallback();
+    return;
+  }
+
   try {
     await params.enqueue();
   } catch (error) {

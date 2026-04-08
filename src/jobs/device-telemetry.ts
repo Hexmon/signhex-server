@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
 import { getPresignedUrl, putObject } from '@/s3';
@@ -102,39 +102,40 @@ export async function processHeartbeatTelemetry(job: HeartbeatTelemetryJob) {
     received_at: job.receivedAt,
   });
   const upload = await putObject(HEARTBEAT_BUCKET, job.objectKey, payload, 'application/json');
+  const [existingStorageObject] = await db
+    .select({ id: schema.storageObjects.id })
+    .from(schema.storageObjects)
+    .where(eq(schema.storageObjects.id, job.storageObjectId))
+    .limit(1);
 
-  await db
-    .insert(schema.storageObjects)
-    .values({
+  if (existingStorageObject) {
+    await db
+      .update(schema.storageObjects)
+      .set({
+        bucket: HEARTBEAT_BUCKET,
+        object_key: job.objectKey,
+        content_type: 'application/json',
+        size: Buffer.byteLength(payload),
+        sha256: upload.sha256,
+      })
+      .where(eq(schema.storageObjects.id, job.storageObjectId));
+  } else {
+    await db.insert(schema.storageObjects).values({
       id: job.storageObjectId,
       bucket: HEARTBEAT_BUCKET,
       object_key: job.objectKey,
       content_type: 'application/json',
       size: Buffer.byteLength(payload),
       sha256: upload.sha256,
-    })
-    .onConflictDoUpdate({
-      target: schema.storageObjects.id,
-      set: {
-        bucket: HEARTBEAT_BUCKET,
-        object_key: job.objectKey,
-        content_type: 'application/json',
-        size: Buffer.byteLength(payload),
-        sha256: upload.sha256,
-      },
     });
+  }
 
-  await db
-    .insert(schema.heartbeats)
-    .values({
-      screen_id: job.deviceId,
-      status: job.status,
-      storage_object_id: job.storageObjectId,
-      created_at: new Date(job.receivedAt),
-    })
-    .onConflictDoNothing({
-      target: schema.heartbeats.storage_object_id,
-    });
+  await db.insert(schema.heartbeats).values({
+    screen_id: job.deviceId,
+    status: job.status,
+    storage_object_id: job.storageObjectId,
+    created_at: new Date(job.receivedAt),
+  });
 }
 
 export async function processProofOfPlayTelemetry(job: ProofOfPlayTelemetryJob) {
@@ -160,25 +161,36 @@ export async function processProofOfPlayTelemetry(job: ProofOfPlayTelemetryJob) 
     received_at: job.receivedAt,
   });
   const upload = await putObject(PROOF_OF_PLAY_BUCKET, job.objectKey, payload, 'application/json');
+  const [existingStorageObject] = await db
+    .select({ id: schema.storageObjects.id })
+    .from(schema.storageObjects)
+    .where(and(eq(schema.storageObjects.bucket, PROOF_OF_PLAY_BUCKET), eq(schema.storageObjects.object_key, job.objectKey)))
+    .limit(1);
 
-  const [storageObject] = await db
-    .insert(schema.storageObjects)
-    .values({
-      bucket: PROOF_OF_PLAY_BUCKET,
-      object_key: job.objectKey,
-      content_type: 'application/json',
-      size: Buffer.byteLength(payload),
-      sha256: upload.sha256,
-    })
-    .onConflictDoUpdate({
-      target: [schema.storageObjects.bucket, schema.storageObjects.object_key],
-      set: {
+  let storageObjectId = existingStorageObject?.id ?? null;
+
+  if (existingStorageObject) {
+    await db
+      .update(schema.storageObjects)
+      .set({
         content_type: 'application/json',
         size: Buffer.byteLength(payload),
         sha256: upload.sha256,
-      },
-    })
-    .returning({ id: schema.storageObjects.id });
+      })
+      .where(eq(schema.storageObjects.id, existingStorageObject.id));
+  } else {
+    const [storageObject] = await db
+      .insert(schema.storageObjects)
+      .values({
+        bucket: PROOF_OF_PLAY_BUCKET,
+        object_key: job.objectKey,
+        content_type: 'application/json',
+        size: Buffer.byteLength(payload),
+        sha256: upload.sha256,
+      })
+      .returning({ id: schema.storageObjects.id });
+    storageObjectId = storageObject?.id ?? null;
+  }
 
   const inserted = await db
     .insert(schema.proofOfPlay)
@@ -188,12 +200,9 @@ export async function processProofOfPlayTelemetry(job: ProofOfPlayTelemetryJob) 
       presentation_id: job.scheduleId,
       started_at: new Date(job.startTime),
       ended_at: new Date(job.endTime),
-      storage_object_id: storageObject?.id ?? null,
+      storage_object_id: storageObjectId,
       created_at: new Date(job.receivedAt),
       idempotency_key: job.idempotencyKey,
-    })
-    .onConflictDoNothing({
-      target: schema.proofOfPlay.idempotency_key,
     })
     .returning({ id: schema.proofOfPlay.id });
 
@@ -221,38 +230,39 @@ export async function processScreenshotTelemetry(job: ScreenshotTelemetryJob) {
 
   const imageBuffer = Buffer.from(job.imageData, 'base64');
   const upload = await putObject(SCREENSHOT_BUCKET, job.objectKey, imageBuffer, 'image/png');
+  const [existingStorageObject] = await db
+    .select({ id: schema.storageObjects.id })
+    .from(schema.storageObjects)
+    .where(eq(schema.storageObjects.id, job.storageObjectId))
+    .limit(1);
 
-  await db
-    .insert(schema.storageObjects)
-    .values({
+  if (existingStorageObject) {
+    await db
+      .update(schema.storageObjects)
+      .set({
+        bucket: SCREENSHOT_BUCKET,
+        object_key: job.objectKey,
+        content_type: 'image/png',
+        size: imageBuffer.length,
+        sha256: upload.sha256,
+      })
+      .where(eq(schema.storageObjects.id, job.storageObjectId));
+  } else {
+    await db.insert(schema.storageObjects).values({
       id: job.storageObjectId,
       bucket: SCREENSHOT_BUCKET,
       object_key: job.objectKey,
       content_type: 'image/png',
       size: imageBuffer.length,
       sha256: upload.sha256,
-    })
-    .onConflictDoUpdate({
-      target: schema.storageObjects.id,
-      set: {
-        bucket: SCREENSHOT_BUCKET,
-        object_key: job.objectKey,
-        content_type: 'image/png',
-        size: imageBuffer.length,
-        sha256: upload.sha256,
-      },
     });
+  }
 
-  await db
-    .insert(schema.screenshots)
-    .values({
-      screen_id: job.deviceId,
-      storage_object_id: job.storageObjectId,
-      created_at: new Date(job.timestamp),
-    })
-    .onConflictDoNothing({
-      target: schema.screenshots.storage_object_id,
-    });
+  await db.insert(schema.screenshots).values({
+    screen_id: job.deviceId,
+    storage_object_id: job.storageObjectId,
+    created_at: new Date(job.timestamp),
+  });
 
   if (!getSocketServer()) {
     return;

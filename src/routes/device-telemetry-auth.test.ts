@@ -838,7 +838,7 @@ describe('Device telemetry auth runtime validation', () => {
     expect(typeof body.storage_object_id).toBe('string');
     expect(body.timestamp).toBe(timestamp);
     expect(putObjectSpy).toHaveBeenCalledOnce();
-    expect(presignedSpy).not.toHaveBeenCalled();
+    expect(presignedSpy).toHaveBeenCalledOnce();
 
     const [storageObject] = await db
       .select()
@@ -956,7 +956,7 @@ describe('Device telemetry auth runtime validation', () => {
     expect(body.success).toBe(true);
     expect(body.timestamp).toBe(timestamp);
     expect(putObjectSpy).toHaveBeenCalledOnce();
-    expect(presignedSpy).not.toHaveBeenCalled();
+    expect(presignedSpy).toHaveBeenCalledOnce();
 
     putObjectSpy.mockRestore();
     presignedSpy.mockRestore();
