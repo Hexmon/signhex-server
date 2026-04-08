@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { and, eq, desc, isNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { config as appConfig } from '@/config';
@@ -18,7 +18,6 @@ import { resolveMediaAccess } from '@/utils/media-access';
 import {
   attachResolvedMediaToScheduleSnapshot,
   buildResolvedMediaMap,
-  buildResolvedMediaRecord,
 } from '@/utils/resolved-media';
 import {
   buildScreenPlaybackStateById,
@@ -36,6 +35,7 @@ import {
   processProofOfPlayTelemetry,
   processScreenshotTelemetry,
 } from '@/jobs/device-telemetry';
+import { recordTelemetryIngest } from '@/observability/metrics';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
@@ -144,22 +144,70 @@ export function shouldPersistTelemetryInline(
 }
 
 async function enqueueTelemetryWithFallback(params: {
+  telemetryType: 'heartbeat' | 'proof_of_play' | 'screenshot';
   label: string;
   enqueue: () => Promise<unknown>;
   fallback: () => Promise<void>;
+  heartbeatStatus?: 'ONLINE' | 'OFFLINE' | 'ERROR';
 }) {
+  const startedAt = process.hrtime.bigint();
   const processRole = process.env.HEXMON_PROCESS_ROLE?.trim();
   if (shouldPersistTelemetryInline(appConfig.NODE_ENV, processRole)) {
-    logger.info({ label: params.label, processRole, env: appConfig.NODE_ENV }, 'Persisting telemetry inline in api-only runtime');
-    await params.fallback();
-    return;
+    try {
+      logger.info({ label: params.label, processRole, env: appConfig.NODE_ENV }, 'Persisting telemetry inline in api-only runtime');
+      await params.fallback();
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'inline',
+        result: 'success',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      return 'inline' as const;
+    } catch (error) {
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'inline',
+        result: 'error',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      throw error;
+    }
   }
 
   try {
     await params.enqueue();
+    recordTelemetryIngest({
+      telemetryType: params.telemetryType,
+      persistMode: 'queue',
+      result: 'success',
+      heartbeatStatus: params.heartbeatStatus,
+      durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+    });
+    return 'queue' as const;
   } catch (error) {
     logger.warn({ error, label: params.label }, 'Telemetry queue unavailable; using inline fallback');
-    await params.fallback();
+    try {
+      await params.fallback();
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'fallback',
+        result: 'success',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      return 'fallback' as const;
+    } catch (fallbackError) {
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'fallback',
+        result: 'error',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      throw fallbackError;
+    }
   }
 }
 
@@ -172,57 +220,6 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       .from(schema.screenGroupMembers)
       .where(eq(schema.screenGroupMembers.screen_id, screenId));
     return rows.map((r) => r.group_id);
-  };
-
-  const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
-    const [emergency] = await db
-      .select()
-      .from(schema.emergencies)
-      .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
-      .orderBy(desc(schema.emergencies.created_at))
-      .limit(1);
-    if (!emergency) return null;
-
-    const emergencyScreenIds = ((emergency as any).screen_ids || []) as string[];
-    const emergencyGroupIds = ((emergency as any).screen_group_ids || []) as string[];
-    const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
-    const targetAll = (emergency as any).target_all === true || !hasTargets;
-
-    if (!targetAll) {
-      if (emergencyScreenIds.includes(screenId)) {
-        // ok
-      } else {
-        const groupIds = await getGroupIdsForScreen(screenId);
-        const groupMatch = emergencyGroupIds.some((gid) => groupIds.includes(gid));
-        if (!groupMatch) return null;
-      }
-    }
-
-    const resolvedMedia =
-      includeUrls && (emergency as any).media_id
-        ? await buildResolvedMediaRecord((emergency as any).media_id, db)
-        : null;
-    return {
-      id: emergency.id,
-      emergency_type_id: (emergency as any).emergency_type_id ?? null,
-      triggered_by: emergency.triggered_by,
-      message: emergency.message,
-      severity: emergency.priority,
-      media_id: (emergency as any).media_id ?? null,
-      media_url: resolvedMedia?.media_url ?? null,
-      fallback_url: resolvedMedia?.fallback_url ?? null,
-      source_url: resolvedMedia?.source_url ?? null,
-      url: resolvedMedia?.url ?? null,
-      media_type: resolvedMedia?.media_type ?? null,
-      type: resolvedMedia?.type === 'WEBPAGE' ? 'url' : resolvedMedia?.type ?? null,
-      content_type: resolvedMedia?.content_type ?? null,
-      source_content_type: resolvedMedia?.source_content_type ?? null,
-      screen_ids: emergencyScreenIds,
-      screen_group_ids: emergencyGroupIds,
-      target_all: (emergency as any).target_all ?? false,
-      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
-      cleared_at: emergency.cleared_at?.toISOString?.() ?? emergency.cleared_at,
-    };
   };
 
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
@@ -557,9 +554,11 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         }
 
         await enqueueTelemetryWithFallback({
+          telemetryType: 'heartbeat',
           label: 'heartbeat',
           enqueue: () => queueHeartbeatTelemetry(heartbeatJob),
           fallback: () => processHeartbeatTelemetry(heartbeatJob),
+          heartbeatStatus: data.status,
         });
 
         logger.info(
@@ -640,6 +639,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         };
 
         await enqueueTelemetryWithFallback({
+          telemetryType: 'proof_of_play',
           label: 'proof-of-play',
           enqueue: () => queueProofOfPlayTelemetry(proofOfPlayJob),
           fallback: () => processProofOfPlayTelemetry(proofOfPlayJob),
@@ -691,6 +691,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         };
 
         await enqueueTelemetryWithFallback({
+          telemetryType: 'screenshot',
           label: 'screenshot',
           enqueue: () => queueScreenshotTelemetry(screenshotJob),
           fallback: () => processScreenshotTelemetry(screenshotJob),

@@ -11,6 +11,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createHash } from 'crypto';
 import { config as appConfig } from '@/config';
 import { HTTP_STATUS } from '@/http-status-codes';
+import { observeS3Operation } from '@/observability/metrics';
 
 const { NOT_FOUND } = HTTP_STATUS;
 
@@ -42,11 +43,11 @@ export async function createBucketIfNotExists(bucketName: string): Promise<void>
 
   try {
     // Check if bucket exists using HeadBucketCommand
-    await client.send(new HeadBucketCommand({ Bucket: bucketName }));
+    await observeS3Operation('head_bucket', () => client.send(new HeadBucketCommand({ Bucket: bucketName })));
   } catch (error: any) {
     // If bucket doesn't exist (404), create it
     if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === NOT_FOUND) {
-      await client.send(new CreateBucketCommand({ Bucket: bucketName }));
+      await observeS3Operation('create_bucket', () => client.send(new CreateBucketCommand({ Bucket: bucketName })));
     } else {
       // For other errors (like connection errors), throw them
       throw error;
@@ -74,7 +75,7 @@ export async function putObject(
     },
   });
 
-  const response = await client.send(command);
+  const response = await observeS3Operation('put_object', () => client.send(command));
   return {
     etag: response.ETag || '',
     sha256,
@@ -88,7 +89,7 @@ export async function putJson(bucket: string, key: string, data: any): Promise<{
 export async function getObject(bucket: string, key: string): Promise<Buffer> {
   const client = getS3Client();
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-  const response = await client.send(command);
+  const response = await observeS3Operation('get_object', () => client.send(command));
 
   if (!response.Body) {
     throw new Error('Empty response body');
@@ -104,12 +105,12 @@ export async function getObject(bucket: string, key: string): Promise<Buffer> {
 
 export async function deleteObject(bucket: string, key: string): Promise<void> {
   const client = getS3Client();
-  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  await observeS3Operation('delete_object', () => client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })));
 }
 
 export async function headObject(bucket: string, key: string): Promise<any> {
   const client = getS3Client();
-  return client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+  return observeS3Operation('head_object', () => client.send(new HeadObjectCommand({ Bucket: bucket, Key: key })));
 }
 
 export interface PresignedGetUrlOptions {
@@ -131,7 +132,7 @@ export async function getPresignedUrl(
     ResponseContentDisposition: options.responseContentDisposition,
     ResponseContentType: options.responseContentType,
   });
-  return getSignedUrl(client, command, { expiresIn: options.expiresIn ?? 3600 });
+  return observeS3Operation('presign_get', () => getSignedUrl(client, command, { expiresIn: options.expiresIn ?? 3600 }));
 }
 
 export async function getPresignedPutUrl(
@@ -141,7 +142,7 @@ export async function getPresignedPutUrl(
 ): Promise<string> {
   const client = getS3Client();
   const command = new PutObjectCommand({ Bucket: bucket, Key: key });
-  return getSignedUrl(client, command, { expiresIn });
+  return observeS3Operation('presign_put', () => getSignedUrl(client, command, { expiresIn }));
 }
 
 export function computeSha256(data: Buffer | string): string {

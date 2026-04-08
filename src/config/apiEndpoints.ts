@@ -246,6 +246,11 @@ export const apiEndpoints = {
   metrics: {
     overview: withBase('/metrics/overview'),
   },
+  observability: {
+    overview: withBase('/observability/overview'),
+    machines: withBase('/observability/machines'),
+    screen: withBase('/observability/screens/:id'),
+  },
   reports: {
     summary: withBase('/reports/summary'),
     schedules: withBase('/reports/schedules'),

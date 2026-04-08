@@ -183,6 +183,28 @@ All executable overrides resolve through `PATH` by default:
 
 Set `HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH` only when Chromium is installed outside the standard Playwright location.
 
+Observability-specific variables:
+
+- `OBSERVABILITY_DEPLOYMENT_MODE=development|qa|production`
+- `OBSERVABILITY_PROMETHEUS_BASE_URL=http://127.0.0.1:9090`
+- `OBSERVABILITY_PROMETHEUS_TIMEOUT_MS=1500`
+- `OBSERVABILITY_GRAFANA_ENABLED=true|false`
+- `OBSERVABILITY_GRAFANA_EMBED_ENABLED=true|false`
+- `OBSERVABILITY_GRAFANA_BASE_PATH=/grafana`
+
+The CMS-facing observability summary APIs are:
+
+- `GET /api/v1/observability/overview`
+- `GET /api/v1/observability/machines`
+- `GET /api/v1/observability/screens/:id`
+
+These endpoints stay product-shaped for the CMS and are separate from the Prometheus scrape endpoint at `GET /metrics`.
+
+Alert posture note:
+
+- backend summary APIs expose current alert posture for CMS cards
+- detailed alert routing, silencing, and acknowledgement remain in Alertmanager and Grafana
+
 ## Project Layout
 
 ```text

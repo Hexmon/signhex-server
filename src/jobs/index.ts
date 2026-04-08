@@ -24,6 +24,7 @@ import {
   processProofOfPlayTelemetry,
   processScreenshotTelemetry,
 } from '@/jobs/device-telemetry';
+import { observeJobProcessing, recordJobEnqueue } from '@/observability/metrics';
 
 const logger = createLogger('jobs');
 
@@ -431,16 +432,22 @@ async function sendJob<TPayload extends object>(
   options?: Record<string, unknown>
 ) {
   const jobs = getJobs();
-  await ensureQueueExists(jobs, queueName);
-  const jobId = options
-    ? await jobs.send(queueName, payload, options as any)
-    : await jobs.send(queueName, payload);
+  try {
+    await ensureQueueExists(jobs, queueName);
+    const jobId = options
+      ? await jobs.send(queueName, payload, options as any)
+      : await jobs.send(queueName, payload);
 
-  if (!jobId) {
-    throw new Error(`pg-boss did not return a job id for ${queueName}`);
+    if (!jobId) {
+      throw new Error(`pg-boss did not return a job id for ${queueName}`);
+    }
+
+    recordJobEnqueue(queueName, 'success');
+    return jobId;
+  } catch (error) {
+    recordJobEnqueue(queueName, 'error');
+    throw error;
   }
-
-  return jobId;
 }
 
 export async function queueFFmpegTranscode(job: FFmpegTranscodeJob, options?: any) {
@@ -612,31 +619,39 @@ export async function registerJobHandlers() {
     await ensureQueueExists(jobs, queueName);
   }
 
-  await jobs.work<HeartbeatTelemetryJob>('telemetry:heartbeat', async (jobBatch) => {
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+  const registerObservedWorker = async <TPayload extends object>(
+    queueName: string,
+    handler: (jobBatch: Array<{ data: TPayload }>) => Promise<void>
+  ) => {
+    await jobs.work<TPayload>(queueName, async (jobBatch) => {
+      const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+      await observeJobProcessing(queueName, async () => {
+        await handler(batch);
+      });
+    });
+  };
+
+  await registerObservedWorker<HeartbeatTelemetryJob>('telemetry:heartbeat', async (batch) => {
     for (const job of batch) {
       await processHeartbeatTelemetry(job.data);
     }
   });
 
-  await jobs.work<ProofOfPlayTelemetryJob>('telemetry:proof-of-play', async (jobBatch) => {
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+  await registerObservedWorker<ProofOfPlayTelemetryJob>('telemetry:proof-of-play', async (batch) => {
     for (const job of batch) {
       await processProofOfPlayTelemetry(job.data);
     }
   });
 
-  await jobs.work<ScreenshotTelemetryJob>('telemetry:screenshot', async (jobBatch) => {
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
+  await registerObservedWorker<ScreenshotTelemetryJob>('telemetry:screenshot', async (batch) => {
     for (const job of batch) {
       await processScreenshotTelemetry(job.data);
     }
   });
 
   // FFmpeg transcode handler
-  await jobs.work<FFmpegTranscodeJob>('ffmpeg:transcode', async (jobBatch) => {
+  await registerObservedWorker<FFmpegTranscodeJob>('ffmpeg:transcode', async (batch) => {
     const db = getDatabase();
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
 
     for (const job of batch) {
       const { mediaId, sourceObjectId, targetFormat, quality } = job.data;
@@ -777,9 +792,8 @@ export async function registerJobHandlers() {
   });
 
   // FFmpeg thumbnail handler
-  await jobs.work<FFmpegThumbnailJob>('ffmpeg:thumbnail', async (jobBatch) => {
+  await registerObservedWorker<FFmpegThumbnailJob>('ffmpeg:thumbnail', async (batch) => {
     const db = getDatabase();
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
 
     for (const job of batch) {
       const { mediaId, sourceObjectId, timestamp } = job.data;
@@ -856,9 +870,8 @@ export async function registerJobHandlers() {
     }
   });
 
-  await jobs.work<DocumentConvertJob>('document:convert', async (jobBatch) => {
+  await registerObservedWorker<DocumentConvertJob>('document:convert', async (batch) => {
     const db = getDatabase();
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
 
     for (const job of batch) {
       const { mediaId, sourceObjectId } = job.data;
@@ -937,9 +950,8 @@ export async function registerJobHandlers() {
     }
   });
 
-  await jobs.work<WebpageVerifyCaptureJob>('webpage:verify-capture', async (jobBatch) => {
+  await registerObservedWorker<WebpageVerifyCaptureJob>('webpage:verify-capture', async (batch) => {
     const db = getDatabase();
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
 
     for (const job of batch) {
       const { mediaId, sourceUrl } = job.data;
@@ -994,9 +1006,8 @@ export async function registerJobHandlers() {
   });
 
   // Archive handler
-  await jobs.work<ArchiveJob>('archive', async (jobBatch) => {
+  await registerObservedWorker<ArchiveJob>('archive', async (batch) => {
     const db = getDatabase();
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
     const sources = [
       { logType: 'audit', table: schema.auditLogs },
       { logType: 'system', table: schema.systemLogs },
@@ -1062,9 +1073,8 @@ export async function registerJobHandlers() {
   });
 
   // Cleanup handler
-  await jobs.work<CleanupJob>('cleanup', async (jobBatch) => {
+  await registerObservedWorker<CleanupJob>('cleanup', async (batch) => {
     const db = getDatabase();
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
 
     for (const job of batch) {
       const type = job.data.type;
@@ -1198,9 +1208,7 @@ export async function registerJobHandlers() {
     }
   });
 
-  await jobs.work<ChatMediaCleanupJob>('chat:media-cleanup', async (jobBatch) => {
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
-
+  await registerObservedWorker<ChatMediaCleanupJob>('chat:media-cleanup', async (batch) => {
     for (const job of batch) {
       await cleanupChatMediaAssets({
         mediaAssetIds: job.data.mediaAssetIds,
@@ -1211,16 +1219,14 @@ export async function registerJobHandlers() {
     }
   });
 
-  await jobs.work<BackupJob>('backup', async (jobBatch) => {
-    const batch = Array.isArray(jobBatch) ? jobBatch : [jobBatch];
-
+  await registerObservedWorker<BackupJob>('backup', async (batch) => {
     for (const job of batch) {
       logger.info({ runId: job.data.runId }, 'Processing backup job');
       await runFullBackup(job.data.runId);
     }
   });
 
-  await jobs.work<BackupCheckJob>('backup:check', async () => {
+  await registerObservedWorker<BackupCheckJob>('backup:check', async () => {
     const backupsSettings = getCachedSettings('org.backups');
     if (!backupsSettings.automatic_enabled) {
       return;

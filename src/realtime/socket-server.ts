@@ -1,14 +1,36 @@
 import { FastifyInstance } from 'fastify';
 import { Server as SocketIOServer } from 'socket.io';
 import { config as appConfig } from '@/config';
+import { setWebsocketConnections } from '@/observability/metrics';
 
 const DEFAULT_ORIGIN = 'http://localhost:8080';
 const SOCKET_SERVER_KEY = Symbol.for('signhex.socket.io.server');
+const SOCKET_OBSERVABILITY_KEY = Symbol.for('signhex.socket.io.observability');
 let socketServer: SocketIOServer | null = null;
 
 type HttpServerWithSocket = {
   [SOCKET_SERVER_KEY]?: SocketIOServer;
 };
+
+type SocketServerWithObservability = SocketIOServer & {
+  [SOCKET_OBSERVABILITY_KEY]?: boolean;
+};
+
+function attachSocketObservability(io: SocketIOServer) {
+  const instrumented = io as SocketServerWithObservability;
+  if (instrumented[SOCKET_OBSERVABILITY_KEY]) {
+    return;
+  }
+
+  instrumented[SOCKET_OBSERVABILITY_KEY] = true;
+  setWebsocketConnections(io.engine.clientsCount);
+  io.on('connection', (socket) => {
+    setWebsocketConnections(io.engine.clientsCount);
+    socket.on('disconnect', () => {
+      setWebsocketConnections(io.engine.clientsCount);
+    });
+  });
+}
 
 export function parseAllowedOrigins(value: string): string[] {
   return value
@@ -62,12 +84,14 @@ export function getOrCreateSocketServer(fastify: FastifyInstance): SocketIOServe
   if (existingOnServer) {
     (fastify as any).io = existingOnServer;
     socketServer = existingOnServer;
+    attachSocketObservability(existingOnServer);
     return existingOnServer;
   }
 
   const existing = (fastify as any).io as SocketIOServer | undefined;
   if (existing) {
     socketServer = existing;
+    attachSocketObservability(existing);
     return existing;
   }
 
@@ -86,6 +110,7 @@ export function getOrCreateSocketServer(fastify: FastifyInstance): SocketIOServe
   (fastify as any).io = io;
   httpServer[SOCKET_SERVER_KEY] = io;
   socketServer = io;
+  attachSocketObservability(io);
   return io;
 }
 

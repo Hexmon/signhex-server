@@ -28,6 +28,10 @@ export function getDatabase(): ReturnType<typeof drizzle> {
   return db;
 }
 
+export function getDatabasePool() {
+  return pool;
+}
+
 export { schema };
 
 export async function closeDatabase() {

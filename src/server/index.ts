@@ -37,6 +37,7 @@ import { scheduleRequestRoutes } from '@/routes/schedule-requests';
 import { scheduleReservationRoutes } from '@/routes/schedule-reservations';
 import { roleRoutes } from '@/routes/roles';
 import { permissionRoutes } from '@/routes/permissions';
+import { observabilityRoutes } from '@/routes/observability';
 import { chatRoutes } from '@/routes/chat';
 import { securityEventRoutes } from '@/routes/security-events';
 import csrfProtectionPlugin from '@/middleware/csrf';
@@ -49,6 +50,8 @@ import { extractTokenFromHeader, refreshAccessToken, verifyAccessToken } from '@
 import { getIdleTimeoutSeconds, getRuntimeLogLevelSetting, preloadSettingsCache } from '@/utils/settings';
 import { setRuntimeLogLevel } from '@/utils/logger';
 import { getHttpAllowedOrigins } from '@/realtime/socket-server';
+import { registerObservabilityHttp } from '@/observability/http';
+import { ensureObservabilityInitialized } from '@/observability/metrics';
 
 const REFRESHED_AUTH_KEY = Symbol.for('signhex.refreshedAuth');
 const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -113,6 +116,7 @@ export async function createServer() {
   await syncSystemRolePermissions();
   await preloadSettingsCache();
   setRuntimeLogLevel(getRuntimeLogLevelSetting());
+  ensureObservabilityInitialized();
 
   const fastify = Fastify({
     logger: {
@@ -136,6 +140,8 @@ export async function createServer() {
     reply.header('x-request-id', request.id);
     done();
   });
+
+  await registerObservabilityHttp(fastify);
 
   fastify.addHook('onRequest', async (request) => {
     const token = extractTokenFromHeader(request.headers.authorization);
@@ -327,6 +333,7 @@ export async function createServer() {
   await fastify.register(chatRoutes);
   await fastify.register(proofOfPlayRoutes);
   await fastify.register(metricsRoutes);
+  await fastify.register(observabilityRoutes);
   await fastify.register(reportsRoutes);
   await fastify.register(securityEventRoutes);
   await fastify.register(userInviteRoutes);

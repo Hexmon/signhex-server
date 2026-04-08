@@ -69,6 +69,21 @@ const envSchema = z.object({
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(200),
   STORAGE_QUOTA_BYTES: z.coerce.number().int().nonnegative().default(0),
   ENABLE_SWAGGER_UI: optionalBooleanString,
+  OBSERVABILITY_METRICS_ENABLED: optionalBooleanString,
+  OBSERVABILITY_METRICS_BEARER_TOKEN: optionalTrimmedString,
+  OBSERVABILITY_DEPLOYMENT_MODE: z.enum(['development', 'qa', 'production']).optional(),
+  OBSERVABILITY_PROMETHEUS_BASE_URL: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') return value;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    },
+    z.string().url().optional()
+  ),
+  OBSERVABILITY_PROMETHEUS_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
+  OBSERVABILITY_GRAFANA_ENABLED: optionalBooleanString,
+  OBSERVABILITY_GRAFANA_EMBED_ENABLED: optionalBooleanString,
+  OBSERVABILITY_GRAFANA_BASE_PATH: z.string().default('/grafana'),
 });
 const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -79,5 +94,11 @@ if (!parsed.success) {
 export const config = Object.freeze({
   ...parsed.data,
   ENABLE_SWAGGER_UI: parsed.data.ENABLE_SWAGGER_UI ?? parsed.data.NODE_ENV !== 'production',
+  OBSERVABILITY_METRICS_ENABLED: parsed.data.OBSERVABILITY_METRICS_ENABLED ?? true,
+  OBSERVABILITY_DEPLOYMENT_MODE:
+    parsed.data.OBSERVABILITY_DEPLOYMENT_MODE ??
+    (parsed.data.NODE_ENV === 'production' ? 'production' : 'development'),
+  OBSERVABILITY_GRAFANA_ENABLED: parsed.data.OBSERVABILITY_GRAFANA_ENABLED ?? true,
+  OBSERVABILITY_GRAFANA_EMBED_ENABLED: parsed.data.OBSERVABILITY_GRAFANA_EMBED_ENABLED ?? true,
 });
 export type Config = typeof config;
