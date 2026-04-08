@@ -9,23 +9,52 @@ import { closeTestServer, createTestServer, testUser } from '@/test/helpers';
 import { HTTP_STATUS } from '@/http-status-codes';
 import * as s3 from '@/s3';
 
-async function issueAdminToken() {
+type OverviewResponseBody = {
+  current_state_source: string;
+  fleet: {
+    total_players: number | null;
+  };
+  alerts: {
+    firing: number;
+  };
+  machines: Array<{
+    name: string;
+    scrape_status: {
+      reachable_targets: number;
+    };
+  }>;
+  grafana: {
+    links: {
+      players_fleet: string | null;
+    };
+  };
+};
+
+async function issueRoleToken(roleName: 'ADMIN' | 'OPERATOR') {
   const db = getDatabase();
-  const [adminRole] = await db.select().from(schema.roles).where(eq(schema.roles.name, 'ADMIN')).limit(1);
-  if (!adminRole) {
-    throw new Error('ADMIN role is required for observability route tests');
+  const [roleRecord] = await db
+    .select()
+    .from(schema.roles)
+    .where(eq(schema.roles.name, roleName))
+    .limit(1);
+  if (!roleRecord) {
+    throw new Error(`${roleName} role is required for observability route tests`);
   }
 
   const currentPermissions =
-    adminRole.permissions && typeof adminRole.permissions === 'object'
-      ? (adminRole.permissions as { grants?: Array<{ action: string; subject: string }> })
+    roleRecord.permissions && typeof roleRecord.permissions === 'object'
+      ? (roleRecord.permissions as { grants?: Array<{ action: string; subject: string }> })
       : {};
   const mergedGrants = [...(currentPermissions.grants || [])];
   for (const grant of [
     { action: 'read', subject: 'Dashboard' },
     { action: 'read', subject: 'Screen' },
   ]) {
-    if (!mergedGrants.some((current) => current.action === grant.action && current.subject === grant.subject)) {
+    if (
+      !mergedGrants.some(
+        (current) => current.action === grant.action && current.subject === grant.subject
+      )
+    ) {
       mergedGrants.push(grant);
     }
   }
@@ -33,9 +62,14 @@ async function issueAdminToken() {
   await db
     .update(schema.roles)
     .set({ permissions: { grants: mergedGrants } })
-    .where(eq(schema.roles.id, adminRole.id));
+    .where(eq(schema.roles.id, roleRecord.id));
 
-  const token = await generateAccessToken(testUser.id, testUser.email, adminRole.id, adminRole.name);
+  const token = await generateAccessToken(
+    testUser.id,
+    testUser.email,
+    roleRecord.id,
+    roleRecord.name
+  );
   await createSessionRepository().create({
     user_id: testUser.id,
     access_jti: token.jti,
@@ -65,10 +99,12 @@ function createPrometheusResponse(
 describe('Observability CMS summary routes', () => {
   let server: FastifyInstance;
   let adminToken: string;
+  let operatorToken: string;
 
   beforeAll(async () => {
     server = await createTestServer();
-    adminToken = await issueAdminToken();
+    adminToken = await issueRoleToken('ADMIN');
+    operatorToken = await issueRoleToken('OPERATOR');
   });
 
   afterAll(async () => {
@@ -119,7 +155,10 @@ describe('Observability CMS summary routes', () => {
         return new Response(
           JSON.stringify(
             createPrometheusResponse([
-              { metric: { __name__: 'up', machine: 'dev-local', job: 'signhex-server' }, value: '1' },
+              {
+                metric: { __name__: 'up', machine: 'dev-local', job: 'signhex-server' },
+                value: '1',
+              },
               { metric: { __name__: 'up', machine: 'dev-local', job: 'vm2-node' }, value: '1' },
             ])
           ),
@@ -129,21 +168,27 @@ describe('Observability CMS summary routes', () => {
 
       if (query.startsWith('100 * (1 - avg by(machine)')) {
         return new Response(
-          JSON.stringify(createPrometheusResponse([{ metric: { machine: 'dev-local' }, value: '21.3' }])),
+          JSON.stringify(
+            createPrometheusResponse([{ metric: { machine: 'dev-local' }, value: '21.3' }])
+          ),
           { status: 200, headers: { 'content-type': 'application/json' } }
         );
       }
 
       if (query.startsWith('100 * (1 - (node_memory_MemAvailable_bytes')) {
         return new Response(
-          JSON.stringify(createPrometheusResponse([{ metric: { machine: 'dev-local' }, value: '47.9' }])),
+          JSON.stringify(
+            createPrometheusResponse([{ metric: { machine: 'dev-local' }, value: '47.9' }])
+          ),
           { status: 200, headers: { 'content-type': 'application/json' } }
         );
       }
 
       if (query.startsWith('max by(machine) (100 * (1 - (node_filesystem_avail_bytes')) {
         return new Response(
-          JSON.stringify(createPrometheusResponse([{ metric: { machine: 'dev-local' }, value: '62.5' }])),
+          JSON.stringify(
+            createPrometheusResponse([{ metric: { machine: 'dev-local' }, value: '62.5' }])
+          ),
           { status: 200, headers: { 'content-type': 'application/json' } }
         );
       }
@@ -165,7 +210,7 @@ describe('Observability CMS summary routes', () => {
     });
 
     expect(response.statusCode).toBe(HTTP_STATUS.OK);
-    const body = JSON.parse(response.body) as any;
+    const body = JSON.parse(response.body) as OverviewResponseBody;
     expect(body.current_state_source).toBe('backend_and_prometheus');
     expect(body.fleet.total_players).toBe(6);
     expect(body.alerts.firing).toBe(2);
@@ -173,6 +218,38 @@ describe('Observability CMS summary routes', () => {
     expect(body.machines[0].name).toContain('Development');
     expect(body.machines[0].scrape_status.reachable_targets).toBe(2);
     expect(body.grafana.links.players_fleet).toContain('/grafana/d/signhex-players-fleet');
+  });
+
+  it('allows operators to read the observability overview route', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify(
+              createPrometheusResponse([
+                {
+                  metric: { __name__: 'signhex_fleet_players_total', state: 'ACTIVE' },
+                  value: '2',
+                },
+              ])
+            ),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+      )
+    );
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/v1/observability/overview',
+      headers: {
+        authorization: `Bearer ${operatorToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as OverviewResponseBody;
+    expect(body.current_state_source).toBe('backend_and_prometheus');
   });
 
   it('returns per-screen observability summary with backend telemetry and player scrape details', async () => {
@@ -214,35 +291,54 @@ describe('Observability CMS summary routes', () => {
       )
     );
 
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify(
-          createPrometheusResponse([
-            { metric: { __name__: 'up', job: 'players', device_id: screenId }, value: '1' },
-            {
-              metric: {
-                __name__: 'signhex_player_last_successful_heartbeat_unixtime',
-                device_id: screenId,
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify(
+            createPrometheusResponse([
+              { metric: { __name__: 'up', job: 'players', device_id: screenId }, value: '1' },
+              {
+                metric: {
+                  __name__: 'signhex_player_last_successful_heartbeat_unixtime',
+                  device_id: screenId,
+                },
+                value: String(Date.parse('2026-04-08T09:01:00.000Z') / 1000),
               },
-              value: String(Date.parse('2026-04-08T09:01:00.000Z') / 1000),
-            },
-            { metric: { __name__: 'signhex_player_system_cpu_usage_percent', device_id: screenId }, value: '12.5' },
-            {
-              metric: { __name__: 'signhex_player_system_memory_bytes', device_id: screenId, state: 'used' },
-              value: '1073741824',
-            },
-            {
-              metric: { __name__: 'signhex_player_system_memory_bytes', device_id: screenId, state: 'total' },
-              value: '4294967296',
-            },
-            {
-              metric: { __name__: 'signhex_player_request_queue_items', device_id: screenId, category: 'all' },
-              value: '3',
-            },
-          ])
-        ),
-        { status: 200, headers: { 'content-type': 'application/json' } }
-      )
+              {
+                metric: {
+                  __name__: 'signhex_player_system_cpu_usage_percent',
+                  device_id: screenId,
+                },
+                value: '12.5',
+              },
+              {
+                metric: {
+                  __name__: 'signhex_player_system_memory_bytes',
+                  device_id: screenId,
+                  state: 'used',
+                },
+                value: '1073741824',
+              },
+              {
+                metric: {
+                  __name__: 'signhex_player_system_memory_bytes',
+                  device_id: screenId,
+                  state: 'total',
+                },
+                value: '4294967296',
+              },
+              {
+                metric: {
+                  __name__: 'signhex_player_request_queue_items',
+                  device_id: screenId,
+                  category: 'all',
+                },
+                value: '3',
+              },
+            ])
+          ),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
     );
 
     vi.stubGlobal('fetch', fetchMock);
@@ -256,7 +352,20 @@ describe('Observability CMS summary routes', () => {
     });
 
     expect(response.statusCode).toBe(HTTP_STATUS.OK);
-    const body = JSON.parse(response.body) as any;
+    const body = JSON.parse(response.body) as {
+      player_scrape: {
+        status: string;
+      };
+      latest_player_metrics: {
+        request_queue_items: number | null;
+      };
+      latest_backend_telemetry: {
+        memory_used_mb?: number;
+      } | null;
+      grafana: {
+        links: Array<{ label: string }>;
+      };
+    };
     expect(body.screen.id).toBe(screenId);
     expect(body.player_scrape.status).toBe('up');
     expect(body.latest_player_metrics.cpu_percent).toBe(12.5);

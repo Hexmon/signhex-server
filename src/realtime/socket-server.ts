@@ -4,6 +4,7 @@ import { config as appConfig } from '@/config';
 import { setWebsocketConnections } from '@/observability/metrics';
 
 const DEFAULT_ORIGIN = 'http://localhost:8080';
+const DEVELOPMENT_LOCAL_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 const SOCKET_SERVER_KEY = Symbol.for('signhex.socket.io.server');
 const SOCKET_OBSERVABILITY_KEY = Symbol.for('signhex.socket.io.observability');
 let socketServer: SocketIOServer | null = null;
@@ -73,9 +74,25 @@ export function getSocketAllowedOrigins(): string[] {
   return dedupeOrigins([DEFAULT_ORIGIN, ...fromHttpOrigins]);
 }
 
-export function isAllowedOrigin(origin: string | undefined, allowlist = getSocketAllowedOrigins()): boolean {
+function isDevelopmentLocalOrigin(origin: string): boolean {
+  if (appConfig.NODE_ENV === 'production') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(origin);
+    return DEVELOPMENT_LOCAL_ORIGIN_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function isAllowedOrigin(
+  origin: string | undefined,
+  allowlist = getSocketAllowedOrigins()
+): boolean {
   if (!origin) return false;
-  return allowlist.includes(origin);
+  return allowlist.includes(origin) || isDevelopmentLocalOrigin(origin);
 }
 
 export function getOrCreateSocketServer(fastify: FastifyInstance): SocketIOServer {

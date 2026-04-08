@@ -29,10 +29,13 @@ describe('socket-server origin handling', () => {
     process.env.SOCKET_ALLOWED_ORIGINS = '';
     delete process.env.APP_PUBLIC_BASE_URL;
 
-    const { getHttpAllowedOrigins, getSocketAllowedOrigins } = await loadSocketServer();
+    const { getHttpAllowedOrigins, getSocketAllowedOrigins, isAllowedOrigin } =
+      await loadSocketServer();
 
     expect(getHttpAllowedOrigins()).toContain('http://localhost:8080');
     expect(getSocketAllowedOrigins()).toContain('http://localhost:8080');
+    expect(isAllowedOrigin('http://localhost:8081', getHttpAllowedOrigins())).toBe(true);
+    expect(isAllowedOrigin('http://127.0.0.1:5173', getHttpAllowedOrigins())).toBe(true);
   });
 
   it('uses only configured IP-based origins in production', async () => {

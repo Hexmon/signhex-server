@@ -47,9 +47,13 @@ import { AppError } from '@/utils/app-error';
 import { syncSystemRolePermissions } from '@/rbac/system-roles';
 import { createSessionRepository } from '@/db/repositories/session';
 import { extractTokenFromHeader, refreshAccessToken, verifyAccessToken } from '@/auth/jwt';
-import { getIdleTimeoutSeconds, getRuntimeLogLevelSetting, preloadSettingsCache } from '@/utils/settings';
+import {
+  getIdleTimeoutSeconds,
+  getRuntimeLogLevelSetting,
+  preloadSettingsCache,
+} from '@/utils/settings';
 import { setRuntimeLogLevel } from '@/utils/logger';
-import { getHttpAllowedOrigins } from '@/realtime/socket-server';
+import { getHttpAllowedOrigins, isAllowedOrigin } from '@/realtime/socket-server';
 import { registerObservabilityHttp } from '@/observability/http';
 import { ensureObservabilityInitialized } from '@/observability/metrics';
 
@@ -64,6 +68,26 @@ type RefreshedAuthState = {
 type RequestWithRefresh = FastifyRequest & {
   [REFRESHED_AUTH_KEY]?: RefreshedAuthState;
 };
+
+function hasObservabilityMetricsBearerAccess(request: FastifyRequest) {
+  const configuredToken = appConfig.OBSERVABILITY_METRICS_BEARER_TOKEN;
+  if (!configuredToken) {
+    return false;
+  }
+
+  const requestPath = request.url.split('?')[0];
+  if (requestPath !== '/metrics') {
+    return false;
+  }
+
+  const header = request.headers.authorization;
+  if (!header) {
+    return false;
+  }
+
+  const [scheme, token] = header.split(' ');
+  return scheme === 'Bearer' && token === configuredToken;
+}
 
 type BodySummary = {
   type: string;
@@ -124,7 +148,7 @@ export async function createServer() {
       transport: {
         target: 'pino-pretty',
         options: {
-          colorize: true, 
+          colorize: true,
         },
       },
     },
@@ -144,6 +168,10 @@ export async function createServer() {
   await registerObservabilityHttp(fastify);
 
   fastify.addHook('onRequest', async (request) => {
+    if (hasObservabilityMetricsBearerAccess(request)) {
+      return;
+    }
+
     const token = extractTokenFromHeader(request.headers.authorization);
     if (!token) return;
 
@@ -188,7 +216,10 @@ export async function createServer() {
   });
 
   fastify.setErrorHandler((error, request, reply) => {
-    const isBodyTooLarge = typeof error === 'object' && error !== null && (error as any).code === 'FST_ERR_CTP_BODY_TOO_LARGE';
+    const isBodyTooLarge =
+      typeof error === 'object' &&
+      error !== null &&
+      (error as any).code === 'FST_ERR_CTP_BODY_TOO_LARGE';
     const requestPath = request.url.split('?')[0];
     const appError = isBodyTooLarge
       ? requestPath === apiEndpoints.deviceTelemetry.screenshot
@@ -261,7 +292,7 @@ export async function createServer() {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (allowedOrigins.length === 0) return cb(new Error('CORS origin not allowed'), false);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
+      if (isAllowedOrigin(origin, allowedOrigins)) return cb(null, true);
       return cb(new Error('CORS origin not allowed'), false);
     },
     credentials: true,
