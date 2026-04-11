@@ -1551,4 +1551,4 @@ Important runtime header note:
 ## Related Docs
 
 - [`DEVICE_PAIRING_AND_DEVICE_RUNTIME_LIFECYCLE.md`](/Users/anuragkumar/Desktop/signhex/signhex-server/docs/DEVICE_PAIRING_AND_DEVICE_RUNTIME_LIFECYCLE.md)
-- [`DEVICE_PLAYER_GUIDE.md`](/Users/anuragkumar/Desktop/signhex/signhex-server/DEVICE_PLAYER_GUIDE.md)
+- `signhex-platform/docs/contracts/device-player-guide.md`

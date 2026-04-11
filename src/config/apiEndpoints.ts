@@ -136,6 +136,7 @@ export const apiEndpoints = {
   auditLogs: {
     list: withBase('/audit-logs'),
     get: withBase('/audit-logs/:id'),
+    export: withBase('/audit-logs/export'),
   },
   apiKeys: {
     create: withBase('/api-keys'),
@@ -147,6 +148,7 @@ export const apiEndpoints = {
     heartbeat: withBase('/device/heartbeat'),
     proofOfPlay: withBase('/device/proof-of-play'),
     screenshot: withBase('/device/screenshot'),
+    screenshotPolicy: withBase('/device/:deviceId/screenshot-policy'),
     commands: withBase('/device/:deviceId/commands'),
     ackCommand: withBase('/device/:deviceId/commands/:commandId/ack'),
     snapshot: withBase('/device/:deviceId/snapshot'),
@@ -195,6 +197,7 @@ export const apiEndpoints = {
     security: withBase('/settings/security'),
     appearance: withBase('/settings/appearance'),
     backups: withBase('/settings/backups'),
+    backupById: withBase('/settings/backups/:id'),
     backupRun: withBase('/settings/backups/run'),
     backupHistory: withBase('/settings/backups/history'),
     logs: withBase('/settings/logs'),
@@ -243,13 +246,23 @@ export const apiEndpoints = {
   metrics: {
     overview: withBase('/metrics/overview'),
   },
+  observability: {
+    overview: withBase('/observability/overview'),
+    machines: withBase('/observability/machines'),
+    screen: withBase('/observability/screens/:id'),
+  },
   reports: {
     summary: withBase('/reports/summary'),
+    schedules: withBase('/reports/schedules'),
     trends: withBase('/reports/trends'),
     requestsByDepartment: withBase('/reports/requests-by-department'),
     offlineScreens: withBase('/reports/offline-screens'),
     storage: withBase('/reports/storage'),
     systemHealth: withBase('/reports/system-health'),
+    export: withBase('/reports/export'),
+  },
+  security: {
+    clientEvents: withBase('/security/client-events'),
   },
   roles: {
     create: withBase('/roles'),

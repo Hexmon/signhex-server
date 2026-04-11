@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { sql, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import { config as appConfig } from '@/config';
 import { extractTokenFromHeader, verifyAccessToken } from '@/auth/jwt';
@@ -10,12 +10,300 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 import { isDepartmentScopedRole } from '@/rbac/policy';
+import { createEmergencyRepository } from '@/db/repositories/emergency';
+import { escapeHtml, renderPdfDocument } from '@/utils/pdf-render';
 
 const logger = createLogger('reports-routes');
 const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
 
+function formatDateTime(value?: Date | string | null) {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+function toIsoOrNull(value?: Date | string | null) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function formatCount(value: number | null | undefined) {
+  if (value === null || typeof value === 'undefined') return '—';
+  return new Intl.NumberFormat('en-US').format(value);
+}
+
+function buildPdfHtml(title: string, sectionsHtml: string) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #111827;
+        font-size: 12px;
+        margin: 0;
+      }
+      h1, h2, h3, p {
+        margin: 0;
+      }
+      .header {
+        margin-bottom: 20px;
+      }
+      .subtitle {
+        color: #6b7280;
+        margin-top: 4px;
+      }
+      .section {
+        margin-top: 20px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .card {
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .label {
+        color: #6b7280;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .value {
+        font-size: 20px;
+        font-weight: 700;
+        margin-top: 6px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+      }
+      th, td {
+        border: 1px solid #e5e7eb;
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: #f9fafb;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .muted {
+        color: #6b7280;
+      }
+      .pill {
+        display: inline-block;
+        border: 1px solid #d1d5db;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 10px;
+        margin-right: 6px;
+      }
+      .empty {
+        margin-top: 12px;
+        color: #6b7280;
+      }
+    </style>
+  </head>
+  <body>
+    ${sectionsHtml}
+  </body>
+</html>`;
+}
+
 export async function reportsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
+  const emergencyRepo = createEmergencyRepository();
+
+  fastify.get<{ Querystring: { days?: string } }>(
+    apiEndpoints.reports.schedules,
+    {
+      schema: {
+        description: 'Aggregated schedule activity report grouped by screen and screen group',
+        tags: ['Reports'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest<{ Querystring: { days?: string } }>, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Dashboard')) throw AppError.forbidden('Forbidden');
+
+        const parsedDays = Number(request.query.days ?? '7');
+        const days = Number.isFinite(parsedDays) ? Math.min(365, Math.max(1, Math.floor(parsedDays))) : 7;
+        const rangeEnd = new Date();
+        const rangeStart = new Date(rangeEnd.getTime() - days * 24 * 60 * 60 * 1000);
+
+        const schedules = await db
+          .select()
+          .from(schema.schedules)
+          .where(and(lte(schema.schedules.start_at, rangeEnd), gte(schema.schedules.end_at, rangeStart)))
+          .orderBy(desc(schema.schedules.start_at));
+
+        const scheduleIds = schedules.map((item) => item.id);
+        const publishes = scheduleIds.length
+          ? await db
+              .select()
+              .from(schema.publishes)
+              .where(inArray(schema.publishes.schedule_id, scheduleIds))
+              .orderBy(desc(schema.publishes.published_at))
+          : [];
+        const publishIds = publishes.map((item) => item.id);
+        const targets = publishIds.length
+          ? await db.select().from(schema.publishTargets).where(inArray(schema.publishTargets.publish_id, publishIds))
+          : [];
+
+        const screenIds = [...new Set(targets.map((item) => item.screen_id).filter((value): value is string => Boolean(value)))];
+        const groupIds = [...new Set(targets.map((item) => item.screen_group_id).filter((value): value is string => Boolean(value)))];
+
+        const screens = screenIds.length
+          ? await db
+              .select({ id: schema.screens.id, name: schema.screens.name })
+              .from(schema.screens)
+              .where(inArray(schema.screens.id, screenIds))
+          : [];
+        const screenGroups = groupIds.length
+          ? await db
+              .select({ id: schema.screenGroups.id, name: schema.screenGroups.name })
+              .from(schema.screenGroups)
+              .where(inArray(schema.screenGroups.id, groupIds))
+          : [];
+
+        const scheduleById = new Map(schedules.map((item) => [item.id, item]));
+        const targetsByPublishId = new Map<string, typeof targets>();
+        const screenNameById = new Map(screens.map((item) => [item.id, item.name]));
+        const groupNameById = new Map(screenGroups.map((item) => [item.id, item.name]));
+
+        for (const target of targets) {
+          const existing = targetsByPublishId.get(target.publish_id) || [];
+          existing.push(target);
+          targetsByPublishId.set(target.publish_id, existing);
+        }
+
+        const entries = publishes.flatMap((publish) => {
+          const schedule = scheduleById.get(publish.schedule_id);
+          if (!schedule) return [];
+
+          const publishStart = publish.published_at ?? schedule.start_at;
+          const publishEnd = publish.taken_down_at ?? schedule.end_at;
+          if (publishStart > rangeEnd || publishEnd < rangeStart) {
+            return [];
+          }
+
+          const lifecycleStatus = publish.taken_down_at
+            ? 'Taken down'
+            : schedule.end_at < rangeEnd
+              ? 'Completed'
+              : publish.status || 'Published';
+          const publishTargets = targetsByPublishId.get(publish.id) || [];
+
+          return publishTargets.map((target) => {
+            const targetType = target.screen_group_id && !target.screen_id ? 'group' : 'screen';
+            const targetId = target.screen_id || target.screen_group_id || target.id;
+            const targetName = target.screen_id
+              ? screenNameById.get(target.screen_id) || 'Unknown screen'
+              : target.screen_group_id
+                ? groupNameById.get(target.screen_group_id) || 'Unknown group'
+                : 'Unresolved target';
+
+            return {
+              publish_id: publish.id,
+              schedule_id: schedule.id,
+              schedule_name: schedule.name,
+              target_id: targetId,
+              target_name: targetName,
+              target_type: targetType,
+              published_at: toIsoOrNull(publish.published_at),
+              taken_down_at: toIsoOrNull(publish.taken_down_at),
+              schedule_start_at: toIsoOrNull(schedule.start_at),
+              schedule_end_at: toIsoOrNull(schedule.end_at),
+              lifecycle_status: lifecycleStatus,
+              target_status: target.status,
+              target_error: target.error ?? null,
+            };
+          });
+        });
+
+        const buildGroups = (targetType: 'screen' | 'group') => {
+          const grouped = new Map<
+            string,
+            {
+              target_id: string;
+              target_name: string;
+              target_type: 'screen' | 'group';
+              latest_activity_at: string | null;
+              entries: typeof entries;
+            }
+          >();
+
+          for (const entry of entries.filter((item) => item.target_type === targetType)) {
+            const activityAt = entry.taken_down_at || entry.published_at || entry.schedule_end_at;
+            const existing = grouped.get(entry.target_id);
+
+            if (!existing) {
+              grouped.set(entry.target_id, {
+                target_id: entry.target_id,
+                target_name: entry.target_name,
+                target_type: targetType,
+                latest_activity_at: activityAt,
+                entries: [entry],
+              });
+              continue;
+            }
+
+            existing.entries.push(entry);
+            if ((activityAt || '') > (existing.latest_activity_at || '')) {
+              existing.latest_activity_at = activityAt;
+            }
+          }
+
+          return [...grouped.values()]
+            .map((group) => ({
+              ...group,
+              entries: group.entries.sort((a, b) => (b.published_at || '').localeCompare(a.published_at || '')),
+            }))
+            .sort(
+              (a, b) =>
+                (b.latest_activity_at || '').localeCompare(a.latest_activity_at || '') ||
+                a.target_name.localeCompare(b.target_name),
+            );
+        };
+
+        return reply.send({
+          range_start: rangeStart.toISOString(),
+          range_end: rangeEnd.toISOString(),
+          summary: {
+            schedules: schedules.length,
+            target_events: entries.length,
+            successful_targets: entries.filter((entry) => entry.target_status === 'SUCCESS').length,
+            failed_targets: entries.filter((entry) => entry.target_status === 'FAILED').length,
+            screens: new Set(entries.filter((entry) => entry.target_type === 'screen').map((entry) => entry.target_id)).size,
+            groups: new Set(entries.filter((entry) => entry.target_type === 'group').map((entry) => entry.target_id)).size,
+          },
+          by_screen: buildGroups('screen'),
+          by_group: buildGroups('group'),
+        });
+      } catch (error) {
+        logger.error(error, 'Schedule reports error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
 
   fastify.get(
     apiEndpoints.reports.summary,
@@ -66,6 +354,205 @@ export async function reportsRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'Reports summary error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.reports.export,
+    {
+      schema: {
+        description: 'Export current reports snapshot as PDF',
+        tags: ['Reports'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) throw AppError.unauthorized('Missing authorization header');
+        const payload = await verifyAccessToken(token);
+        const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
+        if (!ability.can('read', 'Dashboard')) throw AppError.forbidden('Forbidden');
+
+        const [mediaCount] = await db.select({ count: sql<number>`count(*)` }).from(schema.media);
+        const [requestsOpen] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.requests)
+          .where(sql`${schema.requests.status} = 'OPEN'`);
+        const [screensActive] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.screens)
+          .where(sql`${schema.screens.status} = 'ACTIVE'`);
+        const [screensOffline] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.screens)
+          .where(sql`${schema.screens.status} = 'OFFLINE'`);
+        const [requestsCompleted] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.requests)
+          .where(sql`${schema.requests.status} = 'COMPLETED'`);
+        const notifications = await db
+          .select({
+            id: schema.notifications.id,
+            title: schema.notifications.title,
+            message: schema.notifications.message,
+            is_read: schema.notifications.is_read,
+            created_at: schema.notifications.created_at,
+          })
+          .from(schema.notifications)
+          .where(eq(schema.notifications.user_id, payload.sub))
+          .orderBy(desc(schema.notifications.created_at))
+          .limit(5);
+        const recentProofOfPlay = await db
+          .select({
+            id: schema.proofOfPlay.id,
+            created_at: schema.proofOfPlay.created_at,
+            started_at: schema.proofOfPlay.started_at,
+            ended_at: schema.proofOfPlay.ended_at,
+            screen_id: schema.proofOfPlay.screen_id,
+            media_id: schema.proofOfPlay.media_id,
+            screen_name: schema.screens.name,
+            media_name: schema.media.name,
+          })
+          .from(schema.proofOfPlay)
+          .leftJoin(schema.screens, eq(schema.screens.id, schema.proofOfPlay.screen_id))
+          .leftJoin(schema.media, eq(schema.media.id, schema.proofOfPlay.media_id))
+          .orderBy(desc(schema.proofOfPlay.created_at))
+          .limit(10);
+
+        const activeEmergencies = await emergencyRepo.listActive();
+        const primaryEmergency = activeEmergencies[0] ?? null;
+        const generatedAt = new Date();
+        const html = buildPdfHtml(
+          'Reports Snapshot',
+          `
+            <div class="header">
+              <h1>Reports Snapshot</h1>
+              <p class="subtitle">Generated ${escapeHtml(formatDateTime(generatedAt))}</p>
+            </div>
+            <div class="section">
+              <h2>Summary</h2>
+              <div class="grid">
+                <div class="card">
+                  <div class="label">Total Media</div>
+                  <div class="value">${escapeHtml(formatCount(Number(mediaCount?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Open Requests</div>
+                  <div class="value">${escapeHtml(formatCount(Number(requestsOpen?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Completed Requests</div>
+                  <div class="value">${escapeHtml(formatCount(Number(requestsCompleted?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Active Screens</div>
+                  <div class="value">${escapeHtml(formatCount(Number(screensActive?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Offline Screens</div>
+                  <div class="value">${escapeHtml(formatCount(Number(screensOffline?.count || 0)))}</div>
+                </div>
+                <div class="card">
+                  <div class="label">Report Owner</div>
+                  <div class="value" style="font-size: 14px;">${escapeHtml(payload.email)}</div>
+                </div>
+              </div>
+            </div>
+            <div class="section">
+              <h2>Emergency Status</h2>
+              ${
+                primaryEmergency
+                  ? `
+                    <p><span class="pill">ACTIVE</span><span class="pill">${escapeHtml(primaryEmergency.priority)}</span></p>
+                    <p class="subtitle" style="margin-top: 8px;">${escapeHtml(primaryEmergency.message)}</p>
+                    <p class="subtitle" style="margin-top: 4px;">Triggered ${escapeHtml(formatDateTime(primaryEmergency.created_at))}</p>
+                  `
+                  : `<p class="empty">No active emergency.</p>`
+              }
+            </div>
+            <div class="section">
+              <h2>Latest Notifications</h2>
+              ${
+                notifications.length
+                  ? `
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Title</th>
+                          <th>Message</th>
+                          <th>Status</th>
+                          <th>Created</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${notifications
+                          .map(
+                            (item) => `
+                              <tr>
+                                <td>${escapeHtml(item.title)}</td>
+                                <td>${escapeHtml(item.message)}</td>
+                                <td>${item.is_read ? 'Read' : 'New'}</td>
+                                <td>${escapeHtml(formatDateTime(item.created_at))}</td>
+                              </tr>
+                            `
+                          )
+                          .join('')}
+                      </tbody>
+                    </table>
+                  `
+                  : `<p class="empty">No notifications available.</p>`
+              }
+            </div>
+            <div class="section">
+              <h2>Recent Proof of Play</h2>
+              ${
+                recentProofOfPlay.length
+                  ? `
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Screen</th>
+                          <th>Media</th>
+                          <th>Started</th>
+                          <th>Ended</th>
+                          <th>Reported</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${recentProofOfPlay
+                          .map(
+                            (item) => `
+                              <tr>
+                                <td>${escapeHtml(item.screen_name || item.screen_id)}</td>
+                                <td>${escapeHtml(item.media_name || item.media_id)}</td>
+                                <td>${escapeHtml(formatDateTime(item.started_at))}</td>
+                                <td>${escapeHtml(formatDateTime(item.ended_at))}</td>
+                                <td>${escapeHtml(formatDateTime(item.created_at))}</td>
+                              </tr>
+                            `
+                          )
+                          .join('')}
+                      </tbody>
+                    </table>
+                  `
+                  : `<p class="empty">No proof-of-play events recorded yet.</p>`
+              }
+            </div>
+          `
+        );
+
+        const pdf = await renderPdfDocument(html);
+        reply.header('Content-Type', 'application/pdf');
+        reply.header(
+          'Content-Disposition',
+          `attachment; filename="reports-${generatedAt.toISOString().slice(0, 10)}.pdf"`
+        );
+        return reply.send(pdf);
+      } catch (error) {
+        logger.error(error, 'Report PDF export error');
         return respondWithError(reply, error);
       }
     }
@@ -299,7 +786,7 @@ export async function reportsRoutes(fastify: FastifyInstance) {
             pending: transcodeQueue,
           },
           publishes: {
-            last_published_at: lastPublish?.lastPublishedAt?.toISOString() ?? null,
+            last_published_at: toIsoOrNull(lastPublish?.lastPublishedAt),
           },
           jobs: {
             failed_last_24h: failedJobs24h,

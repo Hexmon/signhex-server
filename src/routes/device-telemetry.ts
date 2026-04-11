@@ -1,9 +1,10 @@
-import { and, eq, desc, inArray, isNull } from 'drizzle-orm';
+import { randomUUID } from 'crypto';
+import { and, eq } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { config as appConfig } from '@/config';
 import { getDatabase, schema } from '@/db';
 import { createLogger } from '@/utils/logger';
-import { putObject, getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
@@ -12,20 +13,32 @@ import { defineAbilityFor } from '@/rbac';
 import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { authenticateDeviceOrThrow } from '@/middleware/device-auth';
-import { buildContentDisposition } from '@/utils/object-key';
 import { serializeMediaRecord } from '@/utils/media';
+import { resolveMediaAccess } from '@/utils/media-access';
+import {
+  attachResolvedMediaToScheduleSnapshot,
+  buildResolvedMediaMap,
+} from '@/utils/resolved-media';
 import {
   buildScreenPlaybackStateById,
   getActiveEmergencyForScreen as getActiveEmergencyForRuntime,
   getLatestPublishForScreen,
 } from '@/screens/playback';
-import { emitScreenPreviewUpdate, emitScreenStateUpdate } from '@/realtime/screens-namespace';
+import { emitScreenStateUpdate } from '@/realtime/screens-namespace';
+import { queueHeartbeatTelemetry, queueProofOfPlayTelemetry, queueScreenshotTelemetry } from '@/jobs';
+import {
+  buildHeartbeatObjectKey,
+  buildProofOfPlayIdempotencyKey,
+  buildProofOfPlayObjectKey,
+  buildScreenshotObjectKey,
+  processHeartbeatTelemetry,
+  processProofOfPlayTelemetry,
+  processScreenshotTelemetry,
+} from '@/jobs/device-telemetry';
+import { recordTelemetryIngest } from '@/observability/metrics';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
-const HEARTBEAT_BUCKET = 'logs-heartbeats';
-const PROOF_OF_PLAY_BUCKET = 'logs-proof-of-play';
-const SCREENSHOT_BUCKET = 'device-screenshots';
 const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
 const heartbeatSchema = z.object({
@@ -123,6 +136,81 @@ const normalizeEtagToken = (value: string) =>
     .replace(/^"+|"+$/g, '')
     .trim();
 
+export function shouldPersistTelemetryInline(
+  nodeEnv: string = appConfig.NODE_ENV,
+  processRole: string | undefined = process.env.HEXMON_PROCESS_ROLE?.trim()
+) {
+  return nodeEnv === 'development' && processRole === 'api';
+}
+
+async function enqueueTelemetryWithFallback(params: {
+  telemetryType: 'heartbeat' | 'proof_of_play' | 'screenshot';
+  label: string;
+  enqueue: () => Promise<unknown>;
+  fallback: () => Promise<void>;
+  heartbeatStatus?: 'ONLINE' | 'OFFLINE' | 'ERROR';
+}) {
+  const startedAt = process.hrtime.bigint();
+  const processRole = process.env.HEXMON_PROCESS_ROLE?.trim();
+  if (shouldPersistTelemetryInline(appConfig.NODE_ENV, processRole)) {
+    try {
+      logger.info({ label: params.label, processRole, env: appConfig.NODE_ENV }, 'Persisting telemetry inline in api-only runtime');
+      await params.fallback();
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'inline',
+        result: 'success',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      return 'inline' as const;
+    } catch (error) {
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'inline',
+        result: 'error',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      throw error;
+    }
+  }
+
+  try {
+    await params.enqueue();
+    recordTelemetryIngest({
+      telemetryType: params.telemetryType,
+      persistMode: 'queue',
+      result: 'success',
+      heartbeatStatus: params.heartbeatStatus,
+      durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+    });
+    return 'queue' as const;
+  } catch (error) {
+    logger.warn({ error, label: params.label }, 'Telemetry queue unavailable; using inline fallback');
+    try {
+      await params.fallback();
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'fallback',
+        result: 'success',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      return 'fallback' as const;
+    } catch (fallbackError) {
+      recordTelemetryIngest({
+        telemetryType: params.telemetryType,
+        persistMode: 'fallback',
+        result: 'error',
+        heartbeatStatus: params.heartbeatStatus,
+        durationSeconds: Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+      });
+      throw fallbackError;
+    }
+  }
+}
+
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
@@ -132,68 +220,6 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       .from(schema.screenGroupMembers)
       .where(eq(schema.screenGroupMembers.screen_id, screenId));
     return rows.map((r) => r.group_id);
-  };
-
-  const resolveEmergencyMediaUrl = async (mediaId?: string | null) => {
-    if (!mediaId) return null;
-    const [media] = await db.select().from(schema.media).where(eq(schema.media.id, mediaId));
-    if (!media) return null;
-    try {
-      if ((media as any).ready_object_id) {
-        const [stor] = await db
-          .select()
-          .from(schema.storageObjects)
-          .where(eq(schema.storageObjects.id, (media as any).ready_object_id));
-        if (stor) return await getPresignedUrl((stor as any).bucket, (stor as any).object_key, 3600);
-      }
-      if ((media as any).source_bucket && (media as any).source_object_key) {
-        return await getPresignedUrl((media as any).source_bucket, (media as any).source_object_key, 3600);
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  };
-
-  const getActiveEmergencyForScreen = async (screenId: string, includeUrls: boolean) => {
-    const [emergency] = await db
-      .select()
-      .from(schema.emergencies)
-      .where(and(eq(schema.emergencies.is_active, true), isNull(schema.emergencies.cleared_at)))
-      .orderBy(desc(schema.emergencies.created_at))
-      .limit(1);
-    if (!emergency) return null;
-
-    const emergencyScreenIds = ((emergency as any).screen_ids || []) as string[];
-    const emergencyGroupIds = ((emergency as any).screen_group_ids || []) as string[];
-    const hasTargets = emergencyScreenIds.length > 0 || emergencyGroupIds.length > 0;
-    const targetAll = (emergency as any).target_all === true || !hasTargets;
-
-    if (!targetAll) {
-      if (emergencyScreenIds.includes(screenId)) {
-        // ok
-      } else {
-        const groupIds = await getGroupIdsForScreen(screenId);
-        const groupMatch = emergencyGroupIds.some((gid) => groupIds.includes(gid));
-        if (!groupMatch) return null;
-      }
-    }
-
-    const mediaUrl = includeUrls ? await resolveEmergencyMediaUrl((emergency as any).media_id) : null;
-    return {
-      id: emergency.id,
-      emergency_type_id: (emergency as any).emergency_type_id ?? null,
-      triggered_by: emergency.triggered_by,
-      message: emergency.message,
-      severity: emergency.priority,
-      media_id: (emergency as any).media_id ?? null,
-      media_url: mediaUrl,
-      screen_ids: emergencyScreenIds,
-      screen_group_ids: emergencyGroupIds,
-      target_all: (emergency as any).target_all ?? false,
-      created_at: emergency.created_at.toISOString?.() ?? emergency.created_at,
-      cleared_at: emergency.cleared_at?.toISOString?.() ?? emergency.cleared_at,
-    };
   };
 
   const filterItemsForScreen = (items: any[], screenId: string, groupIds: string[]) => {
@@ -207,24 +233,70 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     });
   };
 
-  const serializeResolvedDefaultMedia = (
+  const serializeResolvedDefaultMedia = async (
     resolvedDefaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>,
     includeUrls: boolean
-  ) => ({
-    default_media: resolvedDefaultMedia.media
-      ? {
-          media_id: resolvedDefaultMedia.media.id,
-          ...serializeMediaRecord(
-            resolvedDefaultMedia.media,
-            includeUrls ? resolvedDefaultMedia.media_url : null
-          ),
-        }
-      : null,
-    default_media_resolution: {
-      source: resolvedDefaultMedia.source,
-      aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+  ) => {
+    if (!resolvedDefaultMedia.media) {
+      return {
+        default_media: null,
+        default_media_resolution: {
+          source: resolvedDefaultMedia.source,
+          aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+        },
+      };
+    }
+
+    const mediaAccess = await resolveMediaAccess(resolvedDefaultMedia.media, db);
+    return {
+      default_media: {
+        media_id: resolvedDefaultMedia.media.id,
+        ...serializeMediaRecord(
+          resolvedDefaultMedia.media,
+          includeUrls ? mediaAccess.media_url : null,
+          {
+            content_type: mediaAccess.content_type,
+            source_content_type: mediaAccess.source_content_type,
+            size: mediaAccess.size,
+          }
+        ),
+      },
+      default_media_resolution: {
+        source: resolvedDefaultMedia.source,
+        aspect_ratio: resolvedDefaultMedia.aspect_ratio,
+      },
+    };
+  };
+
+  fastify.get<{ Params: { deviceId: string } }>(
+    apiEndpoints.deviceTelemetry.screenshotPolicy,
+    {
+      schema: {
+        description: 'Return screenshot capture policy for an authenticated device',
+        tags: ['Device Telemetry'],
+      },
     },
-  });
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const deviceId = (request.params as any).deviceId;
+        await authenticateDeviceOrThrow(request, deviceId, { allowUserToken: true });
+
+        const [screen] = await db.select().from(schema.screens).where(eq(schema.screens.id, deviceId)).limit(1);
+        if (!screen) {
+          throw AppError.notFound('Device not registered');
+        }
+
+        return reply.send({
+          enabled: screen.screenshot_enabled === true,
+          interval_seconds:
+            typeof screen.screenshot_interval_seconds === 'number' ? screen.screenshot_interval_seconds : null,
+        });
+      } catch (error) {
+        logger.error(error, 'Device screenshot policy error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
 
   fastify.get<{ Params: { deviceId: string } }>(
     apiEndpoints.deviceTelemetry.defaultMedia,
@@ -244,12 +316,23 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         }
 
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
+        const defaultMediaAccess = resolvedDefaultMedia.media
+          ? await resolveMediaAccess(resolvedDefaultMedia.media, db)
+          : null;
         return reply.send({
           source: resolvedDefaultMedia.source,
           aspect_ratio: resolvedDefaultMedia.aspect_ratio,
           media_id: resolvedDefaultMedia.media_id,
           media: resolvedDefaultMedia.media
-            ? serializeMediaRecord(resolvedDefaultMedia.media, resolvedDefaultMedia.media_url)
+            ? serializeMediaRecord(
+                resolvedDefaultMedia.media,
+                defaultMediaAccess?.media_url ?? null,
+                {
+                  content_type: defaultMediaAccess?.content_type,
+                  source_content_type: defaultMediaAccess?.source_content_type,
+                  size: defaultMediaAccess?.size,
+                }
+              )
             : null,
         });
       } catch (error) {
@@ -286,7 +369,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         const emergency = await getActiveEmergencyForRuntime(deviceId, { db, includeUrls });
         const resolvedDefaultMedia = await resolveDefaultMediaForScreen(screen, db);
-        const defaultMediaPayload = serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
+        const defaultMediaPayload = await serializeResolvedDefaultMedia(resolvedDefaultMedia, includeUrls);
 
         const latest = await getLatestPublishForScreen(deviceId, db);
 
@@ -313,7 +396,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const schedule = rawPayload.schedule || {};
         const groupIds = await getGroupIdsForScreen(deviceId);
         const filteredItems = filterItemsForScreen(schedule.items || [], deviceId, groupIds);
-        const filteredSnapshot = {
+        let filteredSnapshot = {
           ...rawPayload,
           schedule: { ...schedule, items: filteredItems },
         };
@@ -334,39 +417,12 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
           const ids = Array.from(mediaIds);
           if (ids.length > 0) {
-            const medias = await db.select().from(schema.media).where(inArray(schema.media.id, ids as any));
-            const readyIds = medias.map((m: any) => m.ready_object_id).filter(Boolean) as string[];
-            const storageRows = readyIds.length
-              ? await db.select().from(schema.storageObjects).where(inArray(schema.storageObjects.id, readyIds as any))
-              : [];
-            const storageMap = new Map(storageRows.map((s: any) => [s.id, s]));
-
+            const resolvedMediaMap = await buildResolvedMediaMap(ids, db);
+            filteredSnapshot = attachResolvedMediaToScheduleSnapshot(filteredSnapshot, resolvedMediaMap);
             mediaUrls = {};
-            for (const m of medias as any[]) {
-              const filename = (m as any).original_filename ?? m.name ?? 'file';
-              const contentDisposition = buildContentDisposition(filename, 'inline');
-              try {
-                if (m.ready_object_id) {
-                  const stor = storageMap.get(m.ready_object_id);
-                  if (stor) {
-                    mediaUrls[m.id] = await getPresignedUrl(stor.bucket, stor.object_key, {
-                      expiresIn: 3600,
-                      responseContentDisposition: contentDisposition,
-                    });
-                    continue;
-                  }
-                }
-                if (m.source_bucket && m.source_object_key) {
-                  mediaUrls[m.id] = await getPresignedUrl(m.source_bucket, m.source_object_key, {
-                    expiresIn: 3600,
-                    responseContentDisposition: contentDisposition,
-                  });
-                } else {
-                  mediaUrls[m.id] = null;
-                }
-              } catch {
-                mediaUrls[m.id] = null;
-              }
+            for (const [mediaId, media] of resolvedMediaMap.entries()) {
+              mediaUrls[mediaId] =
+                media.type === 'WEBPAGE' ? media.source_url ?? null : media.media_url ?? null;
             }
           }
         }
@@ -466,28 +522,17 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         }
 
         const receivedAt = new Date();
-        const objectKey = `heartbeats/${data.device_id}/${receivedAt.getTime()}.json`;
-        const payload = JSON.stringify({ ...data, received_at: receivedAt.toISOString() });
-
-        const upload = await putObject(HEARTBEAT_BUCKET, objectKey, payload, 'application/json');
-
-        const [storageObject] = await db
-          .insert(schema.storageObjects)
-          .values({
-            bucket: HEARTBEAT_BUCKET,
-            object_key: objectKey,
-            content_type: 'application/json',
-            size: Buffer.byteLength(payload),
-            sha256: upload.sha256,
-          })
-          .returning();
-
-        await db.insert(schema.heartbeats).values({
-          screen_id: data.device_id,
+        const receivedAtIso = receivedAt.toISOString();
+        const storageObjectId = randomUUID();
+        const objectKey = buildHeartbeatObjectKey(data.device_id, receivedAtIso, data as unknown as Record<string, unknown>);
+        const heartbeatJob = {
+          deviceId: data.device_id,
           status: data.status,
-          storage_object_id: storageObject?.id,
-          created_at: receivedAt,
-        });
+          payload: data as unknown as Record<string, unknown>,
+          receivedAt: receivedAtIso,
+          objectKey,
+          storageObjectId,
+        };
 
         const screenStatus =
           data.status === 'ONLINE' ? 'ACTIVE' : data.status === 'OFFLINE' ? 'OFFLINE' : 'INACTIVE';
@@ -507,6 +552,14 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         if (playbackState) {
           emitScreenStateUpdate(fastify, playbackState);
         }
+
+        await enqueueTelemetryWithFallback({
+          telemetryType: 'heartbeat',
+          label: 'heartbeat',
+          enqueue: () => queueHeartbeatTelemetry(heartbeatJob),
+          fallback: () => processHeartbeatTelemetry(heartbeatJob),
+          heartbeatStatus: data.status,
+        });
 
         logger.info(
           {
@@ -563,37 +616,34 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         await authenticateDeviceOrThrow(request, data.device_id);
 
         const receivedAt = new Date();
-        const startedAt = new Date(data.start_time);
-        const endedAt = new Date(data.end_time);
-        const objectKey = `proof-of-play/${data.device_id}/${receivedAt.getTime()}.json`;
-        const payload = JSON.stringify({ ...data, received_at: receivedAt.toISOString() });
-
-        const upload = await putObject(PROOF_OF_PLAY_BUCKET, objectKey, payload, 'application/json');
-
-        const [storageObject] = await db
-          .insert(schema.storageObjects)
-          .values({
-            bucket: PROOF_OF_PLAY_BUCKET,
-            object_key: objectKey,
-            content_type: 'application/json',
-            size: Buffer.byteLength(payload),
-            sha256: upload.sha256,
-          })
-          .returning();
-
-        await db.insert(schema.proofOfPlay).values({
-          screen_id: data.device_id,
-          media_id: data.media_id,
-          presentation_id: data.schedule_id,
-          started_at: startedAt,
-          ended_at: endedAt,
-          storage_object_id: storageObject?.id,
+        const idempotencyKey = buildProofOfPlayIdempotencyKey({
+          deviceId: data.device_id,
+          mediaId: data.media_id,
+          scheduleId: data.schedule_id,
+          startTime: data.start_time,
+          endTime: data.end_time,
+          duration: data.duration,
+          completed: data.completed,
         });
+        const proofOfPlayJob = {
+          deviceId: data.device_id,
+          mediaId: data.media_id,
+          scheduleId: data.schedule_id,
+          startTime: data.start_time,
+          endTime: data.end_time,
+          duration: data.duration,
+          completed: data.completed,
+          receivedAt: receivedAt.toISOString(),
+          idempotencyKey,
+          objectKey: buildProofOfPlayObjectKey(data.device_id, idempotencyKey),
+        };
 
-        const playbackState = await buildScreenPlaybackStateById(data.device_id, { db });
-        if (playbackState) {
-          emitScreenStateUpdate(fastify, playbackState);
-        }
+        await enqueueTelemetryWithFallback({
+          telemetryType: 'proof_of_play',
+          label: 'proof-of-play',
+          enqueue: () => queueProofOfPlayTelemetry(proofOfPlayJob),
+          fallback: () => processProofOfPlayTelemetry(proofOfPlayJob),
+        });
 
         logger.info(
           {
@@ -630,58 +680,28 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
       try {
         const data = screenshotSchema.parse(request.body);
         await authenticateDeviceOrThrow(request, data.device_id);
+        const storageObjectId = randomUUID();
+        const objectKey = buildScreenshotObjectKey(data.device_id, data.timestamp, storageObjectId);
+        const screenshotJob = {
+          deviceId: data.device_id,
+          timestamp: data.timestamp,
+          imageData: data.image_data,
+          objectKey,
+          storageObjectId,
+        };
 
-        // Decode base64 image
-        const imageBuffer = Buffer.from(data.image_data, 'base64');
-
-        // Upload to MinIO
-        const objectKey = `device-screenshots/${data.device_id}/${Date.now()}.png`;
-        const upload = await putObject(SCREENSHOT_BUCKET, objectKey, imageBuffer, 'image/png');
-        const [storageObject] = await db
-          .insert(schema.storageObjects)
-          .values({
-            bucket: SCREENSHOT_BUCKET,
-            object_key: objectKey,
-            content_type: 'image/png',
-            size: imageBuffer.length,
-            sha256: upload.sha256,
-          })
-          .returning({
-            id: schema.storageObjects.id,
-            bucket: schema.storageObjects.bucket,
-            object_key: schema.storageObjects.object_key,
-          });
-
-        if (!storageObject) {
-          throw new Error('Failed to persist screenshot storage reference');
-        }
-
-        await db.insert(schema.screenshots).values({
-          screen_id: data.device_id,
-          storage_object_id: storageObject.id,
-          created_at: new Date(data.timestamp),
-        });
-
-        let screenshotUrl: string | null = null;
-        try {
-          screenshotUrl = await getPresignedUrl(storageObject.bucket, storageObject.object_key, 3600);
-        } catch {
-          screenshotUrl = null;
-        }
-
-        emitScreenPreviewUpdate(fastify, {
-          screenId: data.device_id,
-          captured_at: data.timestamp,
-          screenshot_url: screenshotUrl,
-          stale: false,
-          storage_object_id: storageObject.id,
+        await enqueueTelemetryWithFallback({
+          telemetryType: 'screenshot',
+          label: 'screenshot',
+          enqueue: () => queueScreenshotTelemetry(screenshotJob),
+          fallback: () => processScreenshotTelemetry(screenshotJob),
         });
 
         logger.info(
           {
             deviceId: data.device_id,
             objectKey,
-            size: imageBuffer.length,
+            size: Buffer.byteLength(data.image_data, 'base64'),
           },
           'Device screenshot uploaded'
         );
@@ -689,7 +709,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         return reply.status(CREATED).send({
           success: true,
           object_key: objectKey,
-          storage_object_id: storageObject.id,
+          storage_object_id: storageObjectId,
           timestamp: data.timestamp,
         });
       } catch (error) {

@@ -1,5 +1,7 @@
 # Hexmon Signage Backend - Quick Start Guide
 
+> Support note: for current on-prem bundle deployments, start with `signhex-platform/docs/runbooks/onprem-qa-setup.md` for QA or `signhex-platform/docs/runbooks/onprem-production-setup.md` for production. This quick-start is not the primary deployment runbook.
+
 **⚡ Get up and running in 5 minutes!**
 
 This is a condensed version of the full [SETUP_GUIDE.md](./SETUP_GUIDE.md). For detailed instructions, troubleshooting, and production deployment, please refer to the complete guide.
@@ -8,7 +10,7 @@ This is a condensed version of the full [SETUP_GUIDE.md](./SETUP_GUIDE.md). For 
 
 ## Prerequisites
 
-- ✅ Node.js 18+ installed
+- ✅ Node.js 20 LTS installed
 - ✅ Docker Desktop installed (recommended)
 - ✅ Git installed
 

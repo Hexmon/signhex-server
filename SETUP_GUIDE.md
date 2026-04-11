@@ -1,5 +1,7 @@
 # Hexmon Signage Backend - Complete Setup & Deployment Guide
 
+> Support note: for current on-prem bundle deployments, start with `signhex-platform/docs/runbooks/onprem-qa-setup.md` for QA or `signhex-platform/docs/runbooks/onprem-production-setup.md` for production. This older guide still contains legacy examples and is not the primary supported bundle path.
+
 **Version:** 1.0.0  
 **Last Updated:** 2025-11-05
 
@@ -24,7 +26,7 @@ This comprehensive guide will walk you through setting up the Hexmon Signage Bac
 ### 1.1 Required Software
 
 #### Node.js (Required)
-- **Version:** Node.js 18.x or higher (20.x recommended)
+- **Version:** Node.js 20.x LTS
 - **Download:** https://nodejs.org/
 - **Verify Installation:**
   ```bash
@@ -253,9 +255,9 @@ LOG_LEVEL=info
 # ============================================
 
 # Path to FFmpeg binary
-# Linux/Mac: /usr/bin/ffmpeg
+# Linux/Mac: ffmpeg
 # Windows: C:/ffmpeg/bin/ffmpeg.exe
-FFMPEG_PATH=/usr/bin/ffmpeg
+FFMPEG_PATH=ffmpeg
 
 # ============================================
 # PG-BOSS CONFIGURATION
@@ -641,7 +643,7 @@ CA_CERT_PATH=/etc/ssl/certs/ca.crt
 LOG_LEVEL=warn
 
 # FFmpeg
-FFMPEG_PATH=/usr/bin/ffmpeg
+FFMPEG_PATH=ffmpeg
 
 # pg-boss
 PG_BOSS_SCHEMA=pgboss
@@ -832,69 +834,26 @@ docker build -t hexmon-signage-api:latest .
 
 #### Step 2: Run with Docker Compose
 
-Create `docker-compose.prod.yml`:
+Use the checked-in production-safe compose file:
 
-```yaml
-version: '3.8'
+```bash
+docker compose up -d postgres minio api
+```
 
-services:
-  api:
-    image: hexmon-signage-api:latest
-    container_name: hexmon-api-prod
-    restart: always
-    environment:
-      NODE_ENV: production
-    env_file:
-      - .env.production
-    ports:
-      - "3000:3000"
-      - "8443:8443"
-    volumes:
-      - ./logs:/app/logs
-    depends_on:
-      - postgres
-      - minio
+Use the checked-in development override only when you explicitly want bind mounts and `npm run dev` inside the container:
 
-  postgres:
-    image: postgres:15-alpine
-    container_name: hexmon-postgres-prod
-    restart: always
-    environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-
-  minio:
-    image: minio/minio:latest
-    container_name: hexmon-minio-prod
-    restart: always
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    command: server /data --console-address ":9001"
-
-volumes:
-  postgres_data:
-  minio_data:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres minio api
 ```
 
 #### Step 3: Start Production Stack
 
 ```bash
 # Start all services
-docker-compose -f docker-compose.prod.yml up -d
+docker compose up -d postgres minio api
 
 # View logs
-docker-compose -f docker-compose.prod.yml logs -f api
+docker compose logs -f api
 ```
 
 ### 4.8 Configure Reverse Proxy (Nginx)
@@ -1681,7 +1640,7 @@ docker exec -it hexmon-postgres psql -U postgres  # Access database
 | `ADMIN_EMAIL` | Yes | - | Default admin email |
 | `ADMIN_PASSWORD` | Yes | - | Default admin password |
 | `LOG_LEVEL` | No | info | Log level (trace/debug/info/warn/error/fatal) |
-| `FFMPEG_PATH` | No | /usr/bin/ffmpeg | Path to FFmpeg binary |
+| `FFMPEG_PATH` | No | ffmpeg | Path to FFmpeg binary |
 | `PG_BOSS_SCHEMA` | No | pgboss | pg-boss schema name |
 | `TLS_CERT_PATH` | No | - | TLS certificate path |
 | `TLS_KEY_PATH` | No | - | TLS private key path |

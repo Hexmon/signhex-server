@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon",
-    "dev:watch": "tsx watch src/index.ts",
+    "dev:watch": "HEXMON_PROCESS_ROLE=api tsx watch src/index.ts",
     "build": "tsc && tsc-alias",
     "start": "node dist/index.js",
+    "start:api": "node dist/index.js --role=api",
+    "start:worker": "node dist/index.js --role=worker",
     "test": "npx tsx scripts/api-test-report.ts",
     "lint": "eslint src --ext .ts",
     "lint:chat": "eslint src/chat src/realtime/chat-namespace.ts src/realtime/socket-server.ts src/auth/request-auth.ts src/routes/chat.ts src/routes/conversations.ts src/db/repositories/chat.ts src/db/repositories/conversation.ts src/db/repositories/notification.ts --ext .ts",
@@ -19,6 +21,7 @@
     "seed": "tsx scripts/seed.ts",
     "admin-cli": "tsx scripts/admin-cli.ts",
     "check": "tsx scripts/check-services.ts",
+    "doctor:runtime": "node --import tsx scripts/runtime-doctor.ts",
     "verify": "tsx scripts/verify-build.ts",
     "chat:backfill-legacy": "tsx scripts/chat-backfill-legacy.ts",
     "chat:dry-run": "tsx scripts/chat-dry-run.ts",
@@ -27,7 +30,8 @@
     "screens:dry-run": "tsx scripts/screens-realtime-dry-run.ts",
     "test:default-media": "vitest run src/routes/settings.test.ts && vitest run src/routes/screens.test.ts && vitest run src/routes/device-telemetry-auth.test.ts",
     "notifications:reconcile": "tsx scripts/notifications-reconcile.ts",
-    "jobs:repair-pgboss-queues": "tsx scripts/repair-pgboss-queues.ts"
+    "jobs:repair-pgboss-queues": "tsx scripts/repair-pgboss-queues.ts",
+    "reset:data": "bash scripts/reset-local-data.sh"
   },
   "keywords": [
     "signage",
@@ -59,6 +63,7 @@
     "pg-boss": "^10.0.1",
     "pino": "^8.17.2",
     "pino-http": "^8.6.1",
+    "playwright": "^1.58.2",
     "prom-client": "^15.0.0",
     "socket.io": "^4.7.2",
     "zod": "^3.22.4"
@@ -83,6 +88,6 @@
     "vitest": "^1.1.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20 <21"
   }
 }

@@ -33,22 +33,7 @@ export class AuditLogRepository {
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    const conditions = [];
-    if (options.user_id) {
-      conditions.push(eq(schema.auditLogs.user_id, options.user_id));
-    }
-    if (options.resource_type) {
-      conditions.push(eq(schema.auditLogs.entity_type, options.resource_type));
-    }
-    if (options.action) {
-      conditions.push(eq(schema.auditLogs.action, options.action));
-    }
-    if (options.startDate) {
-      conditions.push(gte(schema.auditLogs.created_at, options.startDate));
-    }
-    if (options.endDate) {
-      conditions.push(lte(schema.auditLogs.created_at, options.endDate));
-    }
+    const conditions = this.buildConditions(options);
 
     let query = db.select().from(schema.auditLogs);
     if (conditions.length > 0) {
@@ -81,9 +66,50 @@ export class AuditLogRepository {
       .where(eq(schema.auditLogs.id, id));
     return result[0] || null;
   }
+
+  async listAll(options: {
+    user_id?: string;
+    resource_type?: string;
+    action?: string;
+    startDate?: Date;
+    endDate?: Date;
+  }) {
+    const db = getDatabase();
+    const conditions = this.buildConditions(options);
+    return db
+      .select()
+      .from(schema.auditLogs)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(schema.auditLogs.created_at));
+  }
+
+  private buildConditions(options: {
+    user_id?: string;
+    resource_type?: string;
+    action?: string;
+    startDate?: Date;
+    endDate?: Date;
+  }) {
+    const conditions = [];
+    if (options.user_id) {
+      conditions.push(eq(schema.auditLogs.user_id, options.user_id));
+    }
+    if (options.resource_type) {
+      conditions.push(eq(schema.auditLogs.entity_type, options.resource_type));
+    }
+    if (options.action) {
+      conditions.push(eq(schema.auditLogs.action, options.action));
+    }
+    if (options.startDate) {
+      conditions.push(gte(schema.auditLogs.created_at, options.startDate));
+    }
+    if (options.endDate) {
+      conditions.push(lte(schema.auditLogs.created_at, options.endDate));
+    }
+    return conditions;
+  }
 }
 
 export function createAuditLogRepository(): AuditLogRepository {
   return new AuditLogRepository();
 }
-

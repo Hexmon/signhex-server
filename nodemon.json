@@ -5,8 +5,8 @@
   "exec": "tsx src/index.ts",
   "restartable": "rs",
   "env": {
-    "NODE_ENV": "development"
+    "NODE_ENV": "development",
+    "HEXMON_PROCESS_ROLE": "api"
   },
   "delay": 1000
 }
-

@@ -37,7 +37,9 @@ import { scheduleRequestRoutes } from '@/routes/schedule-requests';
 import { scheduleReservationRoutes } from '@/routes/schedule-reservations';
 import { roleRoutes } from '@/routes/roles';
 import { permissionRoutes } from '@/routes/permissions';
+import { observabilityRoutes } from '@/routes/observability';
 import { chatRoutes } from '@/routes/chat';
+import { securityEventRoutes } from '@/routes/security-events';
 import csrfProtectionPlugin from '@/middleware/csrf';
 import { formatErrorResponse } from '@/utils/app-error';
 import { toAppError } from '@/utils/errors';
@@ -45,8 +47,15 @@ import { AppError } from '@/utils/app-error';
 import { syncSystemRolePermissions } from '@/rbac/system-roles';
 import { createSessionRepository } from '@/db/repositories/session';
 import { extractTokenFromHeader, refreshAccessToken, verifyAccessToken } from '@/auth/jwt';
-import { getIdleTimeoutSeconds, getRuntimeLogLevelSetting, preloadSettingsCache } from '@/utils/settings';
+import {
+  getIdleTimeoutSeconds,
+  getRuntimeLogLevelSetting,
+  preloadSettingsCache,
+} from '@/utils/settings';
 import { setRuntimeLogLevel } from '@/utils/logger';
+import { getHttpAllowedOrigins, isAllowedOrigin } from '@/realtime/socket-server';
+import { registerObservabilityHttp } from '@/observability/http';
+import { ensureObservabilityInitialized } from '@/observability/metrics';
 
 const REFRESHED_AUTH_KEY = Symbol.for('signhex.refreshedAuth');
 const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
@@ -59,6 +68,26 @@ type RefreshedAuthState = {
 type RequestWithRefresh = FastifyRequest & {
   [REFRESHED_AUTH_KEY]?: RefreshedAuthState;
 };
+
+function hasObservabilityMetricsBearerAccess(request: FastifyRequest) {
+  const configuredToken = appConfig.OBSERVABILITY_METRICS_BEARER_TOKEN;
+  if (!configuredToken) {
+    return false;
+  }
+
+  const requestPath = request.url.split('?')[0];
+  if (requestPath !== '/metrics') {
+    return false;
+  }
+
+  const header = request.headers.authorization;
+  if (!header) {
+    return false;
+  }
+
+  const [scheme, token] = header.split(' ');
+  return scheme === 'Bearer' && token === configuredToken;
+}
 
 type BodySummary = {
   type: string;
@@ -111,6 +140,7 @@ export async function createServer() {
   await syncSystemRolePermissions();
   await preloadSettingsCache();
   setRuntimeLogLevel(getRuntimeLogLevelSetting());
+  ensureObservabilityInitialized();
 
   const fastify = Fastify({
     logger: {
@@ -118,7 +148,7 @@ export async function createServer() {
       transport: {
         target: 'pino-pretty',
         options: {
-          colorize: true, 
+          colorize: true,
         },
       },
     },
@@ -135,7 +165,13 @@ export async function createServer() {
     done();
   });
 
+  await registerObservabilityHttp(fastify);
+
   fastify.addHook('onRequest', async (request) => {
+    if (hasObservabilityMetricsBearerAccess(request)) {
+      return;
+    }
+
     const token = extractTokenFromHeader(request.headers.authorization);
     if (!token) return;
 
@@ -180,7 +216,10 @@ export async function createServer() {
   });
 
   fastify.setErrorHandler((error, request, reply) => {
-    const isBodyTooLarge = typeof error === 'object' && error !== null && (error as any).code === 'FST_ERR_CTP_BODY_TOO_LARGE';
+    const isBodyTooLarge =
+      typeof error === 'object' &&
+      error !== null &&
+      (error as any).code === 'FST_ERR_CTP_BODY_TOO_LARGE';
     const requestPath = request.url.split('?')[0];
     const appError = isBodyTooLarge
       ? requestPath === apiEndpoints.deviceTelemetry.screenshot
@@ -246,17 +285,14 @@ export async function createServer() {
     hook: 'onRequest',
   });
 
-  const allowedOrigins = [
-    'http://localhost:8080',
-    ...appConfig.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean),
-  ];
+  const allowedOrigins = getHttpAllowedOrigins();
 
   // CORS
   await fastify.register(cors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (allowedOrigins.length === 0) return cb(new Error('CORS origin not allowed'), false);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
+      if (isAllowedOrigin(origin, allowedOrigins)) return cb(null, true);
       return cb(new Error('CORS origin not allowed'), false);
     },
     credentials: true,
@@ -272,33 +308,34 @@ export async function createServer() {
     });
   }
 
-  // Swagger
-  await fastify.register(swagger, {
-    swagger: {
-      info: {
-        title: 'Hexmon Signage API',
-        description: 'Production-ready digital signage CMS backend',
-        version: '1.0.0',
-      },
-      host: `localhost:${appConfig.PORT}`,
-      schemes: ['http', 'https'],
-      consumes: ['application/json'],
-      produces: ['application/json'],
-      securityDefinitions: {
-        bearerAuth: {
-          type: 'apiKey',
-          name: 'Authorization',
-          in: 'header',
-          description: 'Use: Bearer <JWT>',
+  if (appConfig.ENABLE_SWAGGER_UI) {
+    await fastify.register(swagger, {
+      swagger: {
+        info: {
+          title: 'Hexmon Signage API',
+          description: 'Production-ready digital signage CMS backend',
+          version: '1.0.0',
         },
+        host: `localhost:${appConfig.PORT}`,
+        schemes: ['http', 'https'],
+        consumes: ['application/json'],
+        produces: ['application/json'],
+        securityDefinitions: {
+          bearerAuth: {
+            type: 'apiKey',
+            name: 'Authorization',
+            in: 'header',
+            description: 'Use: Bearer <JWT>',
+          },
+        },
+        security: [{ bearerAuth: [] }],
       },
-      security: [{ bearerAuth: [] }],
-    },
-  });
+    });
 
-  await fastify.register(swaggerUi, {
-    routePrefix: '/docs',
-  });
+    await fastify.register(swaggerUi, {
+      routePrefix: '/docs',
+    });
+  }
 
   // Health check
   fastify.get('/api/v1/health', async () => {
@@ -327,7 +364,9 @@ export async function createServer() {
   await fastify.register(chatRoutes);
   await fastify.register(proofOfPlayRoutes);
   await fastify.register(metricsRoutes);
+  await fastify.register(observabilityRoutes);
   await fastify.register(reportsRoutes);
+  await fastify.register(securityEventRoutes);
   await fastify.register(userInviteRoutes);
   await fastify.register(userActivateRoutes);
   await fastify.register(layoutRoutes);

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FastifyInstance } from 'fastify';
+import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { closeTestServer, createTestServer, testUser } from '@/test/helpers';
 import { createSessionRepository } from '@/db/repositories/session';
@@ -37,7 +38,7 @@ describe('Proof of play export', () => {
 
     const response = await server.inject({
       method: 'GET',
-      url: '/api/v1/proof-of-play/export',
+      url: `/api/v1/proof-of-play/export?screen_id=${randomUUID()}`,
       headers: {
         authorization: `Bearer ${adminToken}`,
       },

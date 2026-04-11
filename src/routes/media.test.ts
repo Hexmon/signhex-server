@@ -484,6 +484,47 @@ describe('Media Routes - delete ownership and usage protection', () => {
     expect(listed).toBeUndefined();
   });
 
+  it('treats an empty type query as no type filter and returns all matching media', async () => {
+    const db = getDatabase();
+    const imageId = randomUUID();
+    const videoId = randomUUID();
+
+    await db.insert(schema.media).values([
+      {
+        id: imageId,
+        name: `image-${Date.now()}`,
+        type: 'IMAGE',
+        status: 'READY',
+        created_by: ownerUserId,
+        source_bucket: 'media-source',
+        source_object_key: `images/${imageId}.png`,
+      },
+      {
+        id: videoId,
+        name: `video-${Date.now()}`,
+        type: 'VIDEO',
+        status: 'READY',
+        created_by: ownerUserId,
+        source_bucket: 'media-source',
+        source_object_key: `videos/${videoId}.mp4`,
+      },
+    ]);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/media?page=1&limit=20&status=READY&type=`,
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body);
+    const returnedIds = new Set(body.items.map((item: { id: string }) => item.id));
+    expect(returnedIds.has(imageId)).toBe(true);
+    expect(returnedIds.has(videoId)).toBe(true);
+  });
+
   it('downgrades READY to FAILED in unfiltered list response when media object is missing', async () => {
     const media = await insertMedia(ownerUserId);
 

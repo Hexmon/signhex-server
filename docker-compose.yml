@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: ${POSTGRES_CONTAINER_NAME:-hexmon-postgres}
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -19,6 +20,7 @@ services:
   minio:
     image: minio/minio:latest
     container_name: ${MINIO_CONTAINER_NAME:-hexmon-minio}
+    restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
@@ -39,24 +41,37 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: ${API_CONTAINER_NAME:-hexmon-api}
+    restart: unless-stopped
     env_file:
       - .env
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
+      HEXMON_RUNTIME_CONTAINER: 'true'
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     ports:
       - '${API_HOST_PORT:-3000}:3000'
-      - '${DEVICE_HOST_PORT:-8443}:8443'
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
     volumes:
-      - .:/app
-      - /app/node_modules
-    command: npm run dev
+      - ./certs:/app/certs:ro
+    command: npm start
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/api/v1/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
 volumes:
   postgres_data:

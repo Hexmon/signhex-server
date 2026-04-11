@@ -1,8 +1,8 @@
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
-import { resolveDefaultMediaForScreen, resolveMediaUrl } from '@/utils/default-media';
+import { resolveDefaultMediaForScreen } from '@/utils/default-media';
 import { getPresignedUrl } from '@/s3';
-import { serializeMediaRecord } from '@/utils/media';
+import { buildResolvedMediaRecord } from '@/utils/resolved-media';
 import { createScheduleReservationRepository } from '@/db/repositories/schedule-reservation';
 
 type ScreenRecord = typeof schema.screens.$inferSelect;
@@ -20,6 +20,24 @@ export type ScreenScheduleTimelineItem = {
   end_at: string;
   priority: number;
   is_current: boolean;
+};
+
+export type ScreenPlaybackItemMediaSummary = {
+  id: string;
+  name: string | null;
+  type: string | null;
+  thumbnail_url: string | null;
+};
+
+export type ScreenPlaybackItemSummary = {
+  item_id: string;
+  start_at: string | null;
+  end_at: string | null;
+  presentation_id: string | null;
+  presentation_name: string | null;
+  layout_id: string | null;
+  layout_name: string | null;
+  media: ScreenPlaybackItemMediaSummary[];
 };
 
 type BuildScreenPlaybackStateOptions = {
@@ -115,6 +133,90 @@ function itemIncludesMediaId(item: any, mediaId: string): boolean {
   return matchesCollection(presentation.items) || matchesCollection(presentation.slots);
 }
 
+function normalizeMediaDisplayName(media: any): string | null {
+  if (typeof media?.display_name === 'string' && media.display_name.trim().length > 0) {
+    return media.display_name.trim();
+  }
+  if (typeof media?.name === 'string' && media.name.trim().length > 0) {
+    return media.name.trim();
+  }
+  if (typeof media?.filename === 'string' && media.filename.trim().length > 0) {
+    return media.filename.trim();
+  }
+  return null;
+}
+
+function buildScheduleItemMediaSummary(entry: any): ScreenPlaybackItemMediaSummary | null {
+  const media = entry?.media ?? entry ?? null;
+  const id =
+    typeof media?.id === 'string' && media.id
+      ? media.id
+      : typeof entry?.media_id === 'string' && entry.media_id
+        ? entry.media_id
+        : null;
+
+  if (!id) return null;
+
+  return {
+    id,
+    name: normalizeMediaDisplayName(media),
+    type: typeof media?.type === 'string' && media.type ? media.type : null,
+    thumbnail_url:
+      typeof media?.fallback_media_url === 'string' && media.fallback_media_url
+        ? media.fallback_media_url
+        : typeof media?.media_url === 'string' && media.media_url
+          ? media.media_url
+          : null,
+  };
+}
+
+function dedupeScheduleItemMedia(items: ScreenPlaybackItemMediaSummary[]): ScreenPlaybackItemMediaSummary[] {
+  const seen = new Set<string>();
+  const deduped: ScreenPlaybackItemMediaSummary[] = [];
+
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    deduped.push(item);
+  }
+
+  return deduped;
+}
+
+export function buildScheduleItemSummary(item: any): ScreenPlaybackItemSummary {
+  const presentation = item?.presentation ?? null;
+  const layout = presentation?.layout ?? null;
+  const itemMedia = Array.isArray(presentation?.items) ? presentation.items : [];
+  const slotMedia = Array.isArray(presentation?.slots) ? presentation.slots : [];
+  const media = dedupeScheduleItemMedia(
+    [...itemMedia, ...slotMedia]
+      .map((entry) => buildScheduleItemMediaSummary(entry))
+      .filter((entry): entry is ScreenPlaybackItemMediaSummary => Boolean(entry))
+  );
+
+  return {
+    item_id:
+      typeof item?.id === 'string' && item.id
+        ? item.id
+        : `${typeof item?.presentation_id === 'string' ? item.presentation_id : 'item'}:${item?.start_at ?? 'unknown'}`,
+    start_at: toIso(item?.start_at),
+    end_at: toIso(item?.end_at),
+    presentation_id: typeof item?.presentation_id === 'string' && item.presentation_id ? item.presentation_id : null,
+    presentation_name:
+      typeof presentation?.name === 'string' && presentation.name.trim().length > 0
+        ? presentation.name.trim()
+        : null,
+    layout_id: typeof layout?.id === 'string' && layout.id ? layout.id : null,
+    layout_name:
+      typeof layout?.name === 'string' && layout.name.trim().length > 0 ? layout.name.trim() : null,
+    media,
+  };
+}
+
+export function buildScheduleItemSummaries(items: any[]): ScreenPlaybackItemSummary[] {
+  return items.map((item) => buildScheduleItemSummary(item));
+}
+
 export async function getGroupIdsForScreen(
   screenId: string,
   db = getDatabase()
@@ -175,7 +277,13 @@ export async function getLatestPublishForScreen(
     .from(schema.publishTargets)
     .innerJoin(schema.publishes, eq(schema.publishTargets.publish_id, schema.publishes.id))
     .innerJoin(schema.scheduleSnapshots, eq(schema.publishes.snapshot_id, schema.scheduleSnapshots.id))
-    .where(eq(schema.publishTargets.screen_id, screenId))
+    .where(
+      and(
+        eq(schema.publishTargets.screen_id, screenId),
+        eq(schema.publishes.status, 'ACTIVE'),
+        isNull(schema.publishes.taken_down_at)
+      )
+    )
     .orderBy(desc(schema.publishes.published_at), desc(schema.publishes.id))
     .limit(1);
 
@@ -281,11 +389,10 @@ export async function getActiveEmergencyForScreen(
     ? ((emergency as any).screen_group_ids as string[])
     : [];
 
-  let mediaUrl: string | null = null;
-  if (options.includeUrls && (emergency as any).media_id) {
-    const emergencyMedia = await getMediaById((emergency as any).media_id, db);
-    mediaUrl = emergencyMedia ? await resolveMediaUrl(emergencyMedia, db) : null;
-  }
+  const resolvedEmergencyMedia =
+    options.includeUrls && (emergency as any).media_id
+      ? await buildResolvedMediaRecord((emergency as any).media_id, db)
+      : null;
 
   return {
     id: emergency.id,
@@ -294,7 +401,17 @@ export async function getActiveEmergencyForScreen(
     message: emergency.message,
     severity: emergency.priority,
     media_id: (emergency as any).media_id ?? null,
-    media_url: mediaUrl,
+    media_url: resolvedEmergencyMedia?.media_url ?? null,
+    fallback_url: resolvedEmergencyMedia?.fallback_url ?? null,
+    source_url: resolvedEmergencyMedia?.source_url ?? null,
+    url: resolvedEmergencyMedia?.url ?? null,
+    media_type: resolvedEmergencyMedia?.media_type ?? null,
+    type:
+      resolvedEmergencyMedia?.type === 'WEBPAGE'
+        ? 'url'
+        : resolvedEmergencyMedia?.type ?? null,
+    content_type: resolvedEmergencyMedia?.content_type ?? null,
+    source_content_type: resolvedEmergencyMedia?.source_content_type ?? null,
     screen_ids: emergencyScreenIds,
     screen_group_ids: emergencyGroupIds,
     target_all: (emergency as any).target_all ?? false,
@@ -312,12 +429,10 @@ async function getMediaById(id: string, db = getDatabase()) {
 }
 
 async function getMediaSummary(id: string, db = getDatabase()) {
-  const media = await getMediaById(id, db);
-  if (!media) return null;
-  return serializeMediaRecord(media);
+  return await buildResolvedMediaRecord(id, db);
 }
 
-async function getLatestScreenshotPreview(
+export async function getLatestScreenshotPreview(
   screenId: string,
   options: { db?: ReturnType<typeof getDatabase>; now?: Date } = {}
 ) {
@@ -515,6 +630,7 @@ function derivePlaybackState(params: {
   emergency: Awaited<ReturnType<typeof getActiveEmergencyForScreen>> | null;
   defaultMedia: Awaited<ReturnType<typeof resolveDefaultMediaForScreen>>;
   currentMediaId?: string | null;
+  reportedHeartbeatMediaId?: string | null;
   lastProofOfPlayAt?: string | null;
   includeMedia?: boolean;
   currentMedia?: Record<string, unknown> | null;
@@ -530,22 +646,30 @@ function derivePlaybackState(params: {
 
   const resolvedCurrentMediaId =
     params.emergency?.media_id ??
-    params.currentMediaId ??
+    params.reportedHeartbeatMediaId ??
     fallbackMediaIdFromItem ??
     params.defaultMedia?.media_id ??
     null;
 
+  const reportedHeartbeatScheduleId = params.screen.current_schedule_id ?? null;
   let source: PlaybackSource = 'UNKNOWN';
   if (params.emergency?.media_id) source = 'EMERGENCY';
-  else if (params.currentMediaId) source = 'HEARTBEAT';
+  else if (params.reportedHeartbeatMediaId || reportedHeartbeatScheduleId) source = 'HEARTBEAT';
   else if (fallbackItem) source = 'SCHEDULE';
   else if (params.defaultMedia?.media_id) source = 'DEFAULT';
+
+  let playbackScheduleId: string | null = null;
+  if (source === 'HEARTBEAT') {
+    playbackScheduleId = reportedHeartbeatScheduleId ?? params.latest?.schedule_id ?? null;
+  } else if (source === 'SCHEDULE') {
+    playbackScheduleId = params.latest?.schedule_id ?? null;
+  }
 
   const playback: Record<string, unknown> = {
     source,
     is_live: Boolean(resolvedCurrentMediaId || fallbackItem || params.emergency || params.defaultMedia?.media_id),
     current_media_id: resolvedCurrentMediaId,
-    current_schedule_id: params.screen.current_schedule_id ?? params.latest?.schedule_id ?? null,
+    current_schedule_id: playbackScheduleId,
     current_item_id: fallbackItem?.id ?? null,
     started_at: toIso(fallbackItem?.start_at),
     ends_at: toIso(fallbackItem?.end_at),
@@ -583,6 +707,7 @@ export async function buildScreenPlaybackState(
     pickPrimaryMediaIdFromPresentation(activeItems[0]?.presentation) ??
     defaultMedia?.media_id ??
     null;
+  const reportedHeartbeatMediaId = emergency?.media_id ?? screen.current_media_id ?? null;
   const currentMedia =
     options.includeMedia && currentMediaId ? await getMediaSummary(currentMediaId, db) : null;
   const preview = options.includePreview ? await getLatestScreenshotPreview(screen.id, { db, now }) : null;
@@ -614,6 +739,15 @@ export async function buildScreenPlaybackState(
     active_items: activeItems,
     upcoming_items: upcomingItems,
     booked_until: bookedUntil,
+    current_schedule: latest
+      ? {
+          id: latest.schedule_id ?? schedulePayload?.id ?? null,
+          name:
+            typeof schedulePayload?.name === 'string' && schedulePayload.name.trim().length > 0
+              ? schedulePayload.name.trim()
+              : null,
+        }
+      : null,
     publish: latest
       ? {
           publish_id: latest.publish_id,
@@ -624,6 +758,10 @@ export async function buildScreenPlaybackState(
           selection_reason: (latest as any).selection_reason ?? null,
           schedule_start_at: schedulePayload?.start_at ?? null,
           schedule_end_at: schedulePayload?.end_at ?? null,
+          schedule_name:
+            typeof schedulePayload?.name === 'string' && schedulePayload.name.trim().length > 0
+              ? schedulePayload.name.trim()
+              : null,
         }
       : null,
     playback: derivePlaybackState({
@@ -633,6 +771,7 @@ export async function buildScreenPlaybackState(
       emergency,
       defaultMedia,
       currentMediaId,
+      reportedHeartbeatMediaId,
       lastProofOfPlayAt: options.lastProofOfPlayAt ?? null,
       includeMedia: options.includeMedia,
       currentMedia,

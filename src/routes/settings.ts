@@ -15,10 +15,10 @@ import {
   getDefaultMedia,
   getDefaultMediaTargetAssignments,
   getDefaultMediaVariants,
-  resolveMediaUrl,
 } from '@/utils/default-media';
 import { AppError } from '@/utils/app-error';
 import { serializeMediaRecord } from '@/utils/media';
+import { resolveMediaAccess } from '@/utils/media-access';
 import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
 import {
   APPEARANCE_SETTINGS_KEY,
@@ -40,7 +40,7 @@ import {
   type GeneralSettings,
   type SecuritySettings,
 } from '@/utils/settings';
-import { createBackupRun, listBackupRuns } from '@/utils/backup-runs';
+import { createBackupRun, deleteBackupRun, listBackupRuns } from '@/utils/backup-runs';
 import { queueBackup } from '@/jobs';
 import { resolveAspectRatio } from '@/utils/aspect-ratio';
 
@@ -218,49 +218,42 @@ async function validateDefaultMediaTargets(
 export async function settingsRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
-  const serializeMedia = (media: any, media_url: string | null) => ({
-    id: media.id,
-    name: media.name,
-    type: media.type,
-    status: media.status,
-    source_bucket: media.source_bucket,
-    source_object_key: media.source_object_key,
-    source_content_type: media.source_content_type,
-    source_size: media.source_size,
-    ready_object_id: media.ready_object_id,
-    thumbnail_object_id: media.thumbnail_object_id,
-    duration_seconds: media.duration_seconds,
-    width: media.width,
-    height: media.height,
-    created_by: media.created_by,
-    created_at: media.created_at.toISOString?.() ?? media.created_at,
-    updated_at: media.updated_at.toISOString?.() ?? media.updated_at,
-    media_url,
-  });
+  const serializeMedia = async (media: any) => {
+    const mediaAccess = await resolveMediaAccess(media, db);
+    return serializeMediaRecord(media, mediaAccess.media_url, {
+      content_type: mediaAccess.content_type,
+      source_content_type: mediaAccess.source_content_type,
+      size: mediaAccess.size,
+    });
+  };
 
   const serializeDefaultMediaVariants = async () => {
     const data = await getDefaultMediaVariants(db);
     return {
       global_media_id: data.global_media_id,
-      global_media: data.global_media ? serializeMedia(data.global_media, data.global_media_url) : null,
-      variants: data.variants.map((variant) => ({
-        aspect_ratio: variant.aspect_ratio,
-        media_id: variant.media_id,
-        media: variant.media ? serializeMedia(variant.media, variant.media_url) : null,
-      })),
+      global_media: data.global_media ? await serializeMedia(data.global_media) : null,
+      variants: await Promise.all(
+        data.variants.map(async (variant) => ({
+          aspect_ratio: variant.aspect_ratio,
+          media_id: variant.media_id,
+          media: variant.media ? await serializeMedia(variant.media) : null,
+        }))
+      ),
     };
   };
 
   const serializeDefaultMediaTargets = async () => {
     const data = await getDefaultMediaTargetAssignments(db);
     return {
-      assignments: data.map((assignment) => ({
-        target_type: assignment.target_type,
-        target_id: assignment.target_id,
-        aspect_ratio: assignment.aspect_ratio,
-        media_id: assignment.media_id,
-        media: assignment.media ? serializeMedia(assignment.media, assignment.media_url) : null,
-      })),
+      assignments: await Promise.all(
+        data.map(async (assignment) => ({
+          target_type: assignment.target_type,
+          target_id: assignment.target_id,
+          aspect_ratio: assignment.aspect_ratio,
+          media_id: assignment.media_id,
+          media: assignment.media ? await serializeMedia(assignment.media) : null,
+        }))
+      ),
     };
   };
 
@@ -337,6 +330,303 @@ export async function settingsRoutes(fastify: FastifyInstance) {
   );
 
   fastify.get(
+    apiEndpoints.settings.general,
+    {
+      schema: {
+        description: 'Get general organization settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(GENERAL_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get general settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: GeneralSettings }>(
+    apiEndpoints.settings.general,
+    {
+      schema: {
+        description: 'Update general organization settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = generalSettingsSchema.parse(request.body);
+        return reply.status(OK).send(await saveSettingsSection(GENERAL_SETTINGS_KEY, data));
+      } catch (error) {
+        logger.error(error, 'Update general settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.branding,
+    {
+      schema: {
+        description: 'Get branding settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'BrandingSettings');
+        return reply.send(await serializeBranding(await getSettingsSection(BRANDING_SETTINGS_KEY)));
+      } catch (error) {
+        logger.error(error, 'Get branding settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: BrandingSettings }>(
+    apiEndpoints.settings.branding,
+    {
+      schema: {
+        description: 'Update branding settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'BrandingSettings');
+        const data = brandingSettingsSchema.parse(request.body);
+        await ensureMediaIdsExist([data.logo_media_id, data.icon_media_id, data.favicon_media_id]);
+        const saved = await saveSettingsSection(BRANDING_SETTINGS_KEY, data);
+        return reply.status(OK).send(await serializeBranding(saved));
+      } catch (error) {
+        logger.error(error, 'Update branding settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.security,
+    {
+      schema: {
+        description: 'Get security settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(SECURITY_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get security settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: SecuritySettings }>(
+    apiEndpoints.settings.security,
+    {
+      schema: {
+        description: 'Update security settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = securitySettingsSchema.parse(request.body);
+        return reply.status(OK).send(await saveSettingsSection(SECURITY_SETTINGS_KEY, data));
+      } catch (error) {
+        logger.error(error, 'Update security settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.appearance,
+    {
+      schema: {
+        description: 'Get appearance settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(APPEARANCE_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get appearance settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: AppearanceSettings }>(
+    apiEndpoints.settings.appearance,
+    {
+      schema: {
+        description: 'Update appearance settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = appearanceSettingsSchema.parse(request.body);
+        return reply.status(OK).send(await saveSettingsSection(APPEARANCE_SETTINGS_KEY, data));
+      } catch (error) {
+        logger.error(error, 'Update appearance settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.backups,
+    {
+      schema: {
+        description: 'Get backups settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send(await getSettingsSection(BACKUPS_SETTINGS_KEY));
+      } catch (error) {
+        logger.error(error, 'Get backups settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.put<{ Body: BackupsSettings }>(
+    apiEndpoints.settings.backups,
+    {
+      schema: {
+        description: 'Update backups settings',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const data = backupsSettingsSchema.parse(request.body);
+        const saved = await saveSettingsSection(BACKUPS_SETTINGS_KEY, data);
+        setRuntimeLogLevel(saved.log_level);
+        return reply.status(OK).send(saved);
+      } catch (error) {
+        logger.error(error, 'Update backups settings error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.post(
+    apiEndpoints.settings.backupRun,
+    {
+      schema: {
+        description: 'Queue a manual backup run',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const payload = await requireAccess(request, 'update', 'OrgSettings');
+        const run = await createBackupRun('MANUAL', payload.sub);
+        await queueBackup({ runId: run.id });
+        return reply.status(CREATED).send({
+          id: run.id,
+          status: run.status,
+          trigger_type: run.trigger_type,
+        });
+      } catch (error) {
+        logger.error(error, 'Run backup error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.delete<{ Params: { id: string } }>(
+    apiEndpoints.settings.backupById,
+    {
+      schema: {
+        description: 'Delete a completed or failed backup run and its archive files',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'update', 'OrgSettings');
+        const result = await deleteBackupRun(request.params.id);
+        return reply.status(OK).send(result);
+      } catch (error) {
+        logger.error(error, 'Delete backup run error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.settings.backupHistory,
+    {
+      schema: {
+        description: 'List recent backup runs',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        return reply.send({ items: await listBackupRuns() });
+      } catch (error) {
+        logger.error(error, 'List backup history error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get<{ Querystring: typeof logsQuerySchema._type }>(
+    apiEndpoints.settings.logs,
+    {
+      schema: {
+        description: 'List recent application logs',
+        tags: ['Settings'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        await requireAccess(request, 'read', 'OrgSettings');
+        const query = logsQuerySchema.parse(request.query);
+        return reply.send({ items: getRecentLogs(query) });
+      } catch (error) {
+        logger.error(error, 'List recent logs error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
     apiEndpoints.settings.defaultMedia,
     {
       schema: {
@@ -356,7 +646,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 
         return reply.send({
           media_id: defaultMedia.media_id,
-          media: serializeMedia(defaultMedia.media, defaultMedia.media_url),
+          media: await serializeMedia(defaultMedia.media),
         });
       } catch (error) {
         logger.error(error, 'Get default media setting error');
@@ -407,10 +697,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
           createdBy: payload.sub,
         });
 
-        const media_url = await resolveMediaUrl(media, db);
         return reply.status(OK).send({
           media_id: media.id,
-          media: serializeMedia(media, media_url),
+          media: await serializeMedia(media),
         });
       } catch (error) {
         logger.error(error, 'Update default media setting error');

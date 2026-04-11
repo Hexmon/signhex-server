@@ -1,6 +1,27 @@
 import { z } from 'zod';
 import 'dotenv/config'; 
 
+const optionalTrimmedString = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  },
+  z.string().optional()
+);
+
+const optionalBooleanString = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed.length === 0) return undefined;
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+    return value;
+  },
+  z.boolean().optional()
+);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -21,7 +42,11 @@ const envSchema = z.object({
   TLS_KEY_PATH: z.string().default('./certs/server.key'),
   CA_CERT_PATH: z.string().default('./certs/ca.crt'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-  FFMPEG_PATH: z.string().default('/usr/bin/ffmpeg'),
+  FFMPEG_PATH: z.string().default('ffmpeg'),
+  LIBREOFFICE_PATH: z.string().default('soffice'),
+  PG_DUMP_PATH: z.string().default('pg_dump'),
+  TAR_PATH: z.string().default('tar'),
+  HEXMON_WEBPAGE_CAPTURE_EXECUTABLE_PATH: optionalTrimmedString,
   PG_BOSS_SCHEMA: z.string().default('pgboss'),
   RATE_LIMIT_ENABLED: z.enum(['true', 'false']).transform((v) => v === 'true').default('true'),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(1000),
@@ -43,6 +68,22 @@ const envSchema = z.object({
   LOGIN_LOCKOUT_WINDOW_SECONDS: z.coerce.number().int().positive().default(15 * 60),
   MAX_UPLOAD_MB: z.coerce.number().int().positive().default(200),
   STORAGE_QUOTA_BYTES: z.coerce.number().int().nonnegative().default(0),
+  ENABLE_SWAGGER_UI: optionalBooleanString,
+  OBSERVABILITY_METRICS_ENABLED: optionalBooleanString,
+  OBSERVABILITY_METRICS_BEARER_TOKEN: optionalTrimmedString,
+  OBSERVABILITY_DEPLOYMENT_MODE: z.enum(['development', 'qa', 'production']).optional(),
+  OBSERVABILITY_PROMETHEUS_BASE_URL: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') return value;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    },
+    z.string().url().optional()
+  ),
+  OBSERVABILITY_PROMETHEUS_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
+  OBSERVABILITY_GRAFANA_ENABLED: optionalBooleanString,
+  OBSERVABILITY_GRAFANA_EMBED_ENABLED: optionalBooleanString,
+  OBSERVABILITY_GRAFANA_BASE_PATH: z.string().default('/grafana'),
 });
 const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -50,5 +91,14 @@ if (!parsed.success) {
   throw new Error('Invalid environment variables');
 }
 
-export const config = Object.freeze(parsed.data);
+export const config = Object.freeze({
+  ...parsed.data,
+  ENABLE_SWAGGER_UI: parsed.data.ENABLE_SWAGGER_UI ?? parsed.data.NODE_ENV !== 'production',
+  OBSERVABILITY_METRICS_ENABLED: parsed.data.OBSERVABILITY_METRICS_ENABLED ?? true,
+  OBSERVABILITY_DEPLOYMENT_MODE:
+    parsed.data.OBSERVABILITY_DEPLOYMENT_MODE ??
+    (parsed.data.NODE_ENV === 'production' ? 'production' : 'development'),
+  OBSERVABILITY_GRAFANA_ENABLED: parsed.data.OBSERVABILITY_GRAFANA_ENABLED ?? true,
+  OBSERVABILITY_GRAFANA_EMBED_ENABLED: parsed.data.OBSERVABILITY_GRAFANA_EMBED_ENABLED ?? true,
+});
 export type Config = typeof config;

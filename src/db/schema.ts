@@ -41,7 +41,7 @@ export const scheduleReservationStateEnum = pgEnum('schedule_reservation_state',
   'CANCELLED',
 ]);
 export const publishStatusEnum = pgEnum('publish_status', ['ACTIVE', 'TAKEN_DOWN']);
-export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT']);
+export const mediaTypeEnum = pgEnum('media_type', ['IMAGE', 'VIDEO', 'DOCUMENT', 'WEBPAGE']);
 export const mediaStatusEnum = pgEnum('media_status', ['PENDING', 'PROCESSING', 'READY', 'FAILED']);
 export const screenStatusEnum = pgEnum('screen_status', ['ACTIVE', 'INACTIVE', 'OFFLINE']);
 export const commandTypeEnum = pgEnum('command_type', ['REBOOT', 'REFRESH', 'TEST_PATTERN', 'TAKE_SCREENSHOT', 'SET_SCREENSHOT_INTERVAL']);
@@ -150,8 +150,10 @@ export const media = pgTable(
     source_object_key: varchar('source_object_key', { length: 1024 }),
     source_content_type: varchar('source_content_type', { length: 255 }),
     source_size: integer('source_size'),
+    source_url: text('source_url'),
     ready_object_id: uuid('ready_object_id'),
     thumbnail_object_id: uuid('thumbnail_object_id'),
+    status_reason: varchar('status_reason', { length: 120 }),
     duration_seconds: integer('duration_seconds'),
     width: integer('width'),
     height: integer('height'),
@@ -488,6 +490,7 @@ export const heartbeats = pgTable(
   (table) => ({
     screenIdIdx: index('heartbeats_screen_id_idx').on(table.screen_id),
     createdAtIdx: index('heartbeats_created_at_idx').on(table.created_at),
+    storageObjectIdx: uniqueIndex('heartbeats_storage_object_id_idx').on(table.storage_object_id),
   })
 );
 
@@ -502,11 +505,13 @@ export const proofOfPlay = pgTable(
     started_at: timestamp('started_at').notNull(),
     ended_at: timestamp('ended_at'),
     storage_object_id: uuid('storage_object_id'),
+    idempotency_key: varchar('idempotency_key', { length: 64 }).notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => ({
     screenIdIdx: index('proof_of_play_screen_id_idx').on(table.screen_id),
     createdAtIdx: index('proof_of_play_created_at_idx').on(table.created_at),
+    idempotencyIdx: uniqueIndex('proof_of_play_idempotency_key_idx').on(table.idempotency_key),
   })
 );
 
@@ -521,6 +526,7 @@ export const screenshots = pgTable(
   },
   (table) => ({
     screenIdIdx: index('screenshots_screen_id_idx').on(table.screen_id),
+    storageObjectIdx: uniqueIndex('screenshots_storage_object_id_idx').on(table.storage_object_id),
   })
 );
 

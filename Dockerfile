@@ -1,9 +1,19 @@
-FROM node:20-alpine
+FROM node:20-bookworm
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apk add --no-cache ffmpeg
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV HEXMON_RUNTIME_CONTAINER=true
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  ffmpeg \
+  libreoffice \
+  postgresql-client \
+  tar \
+  && rm -rf /var/lib/apt/lists/*
 
 # Copy package files
 COPY package*.json ./
@@ -11,6 +21,7 @@ COPY tsconfig.json ./
 
 # Install dependencies
 RUN npm install
+RUN npx playwright install --with-deps chromium
 
 # Copy source code
 COPY src ./src
@@ -21,8 +32,7 @@ COPY scripts ./scripts
 RUN npm run build
 
 # Expose ports
-EXPOSE 3000 8443
+EXPOSE 3000
 
 # Start application
 CMD ["npm", "start"]
-

@@ -8,7 +8,7 @@
 
 ### Prerequisites
 
-- ✅ Node.js 18+ installed
+- ✅ Node.js 20 LTS installed
 - ✅ PostgreSQL running (port 5432)
 - ✅ MinIO running (port 9000)
 
@@ -356,7 +356,7 @@ TLS_KEY_PATH=./certs/server.key
 CA_CERT_PATH=./certs/ca.crt
 
 # FFmpeg
-FFMPEG_PATH=/usr/bin/ffmpeg
+FFMPEG_PATH=ffmpeg
 
 # pg-boss
 PG_BOSS_SCHEMA=pgboss

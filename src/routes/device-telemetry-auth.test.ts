@@ -7,6 +7,7 @@ import { createTestServer, closeTestServer, testUser } from '@/test/helpers';
 import { getDatabase, schema } from '@/db';
 import { HTTP_STATUS } from '@/http-status-codes';
 import * as s3 from '@/s3';
+import * as jobs from '@/jobs';
 
 describe('Device telemetry auth runtime validation', () => {
   let server: FastifyInstance;
@@ -166,6 +167,41 @@ describe('Device telemetry auth runtime validation', () => {
         media_id: mediaId,
       })
     );
+  });
+
+  it('returns screenshot policy for an authenticated device', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Policy Device',
+      status: 'OFFLINE',
+      screenshot_enabled: true,
+      screenshot_interval_seconds: 45,
+    } as any);
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/device/${deviceId}/screenshot-policy`,
+      headers: {
+        'x-device-serial': serial,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    expect(JSON.parse(response.body)).toEqual({
+      enabled: true,
+      interval_seconds: 45,
+    });
   });
 
   it('returns aspect-ratio and global default media for authenticated devices when no target assignment exists', async () => {
@@ -823,6 +859,57 @@ describe('Device telemetry auth runtime validation', () => {
 
     putObjectSpy.mockRestore();
     presignedSpy.mockRestore();
+  });
+
+  it('falls back to inline screenshot persistence when queueing is unavailable', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const queueSpy = vi.spyOn(jobs, 'queueScreenshotTelemetry').mockRejectedValueOnce(new Error('pg-boss down'));
+    const putObjectSpy = vi.spyOn(s3, 'putObject').mockResolvedValue({ etag: 'etag-inline', sha256: 'sha-inline' });
+
+    await db.insert(schema.screens).values({
+      id: deviceId,
+      name: 'Inline Fallback Screenshot Device',
+      status: 'ACTIVE',
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: deviceId,
+      serial,
+      certificate_pem: 'dummy-cert',
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const timestamp = new Date().toISOString();
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/device/screenshot',
+      headers: {
+        'x-device-serial': serial,
+      },
+      payload: {
+        device_id: deviceId,
+        timestamp,
+        image_data: Buffer.from('inline-fallback-png').toString('base64'),
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.CREATED);
+    expect(queueSpy).toHaveBeenCalledOnce();
+    expect(putObjectSpy).toHaveBeenCalledOnce();
+
+    const body = JSON.parse(response.body);
+    const [screenshot] = await db
+      .select()
+      .from(schema.screenshots)
+      .where(eq(schema.screenshots.storage_object_id, body.storage_object_id))
+      .limit(1);
+
+    expect(screenshot).toBeTruthy();
+
+    queueSpy.mockRestore();
+    putObjectSpy.mockRestore();
   });
 
   it('accepts screenshot uploads above the default Fastify body limit', async () => {

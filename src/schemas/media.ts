@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { config as appConfig } from '@/config';
 
-export const createMediaSchema = z.object({
+const sharedMediaCreateSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
   display_name: z
     .string()
@@ -9,8 +9,17 @@ export const createMediaSchema = z.object({
     .min(1, 'Display name is required')
     .max(255)
     .optional(),
-  type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']),
 });
+
+export const createMediaSchema = z.union([
+  sharedMediaCreateSchema.extend({
+    type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']),
+  }),
+  sharedMediaCreateSchema.extend({
+    type: z.literal('WEBPAGE'),
+    source_url: z.string().url('A valid webpage URL is required'),
+  }),
+]);
 
 export type CreateMediaRequest = z.infer<typeof createMediaSchema>;
 
@@ -26,6 +35,8 @@ const allowedContentTypes = [
   'text/csv',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ] as const;
 
 export const presignUploadSchema = z.object({
@@ -53,6 +64,16 @@ export const presignUploadResponseSchema = z.object({
 
 export type PresignUploadResponse = z.infer<typeof presignUploadResponseSchema>;
 
+export const completeUploadSchema = z.object({
+  content_type: z.string().optional(),
+  size: z.number().int().nonnegative().optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  duration_seconds: z.number().int().positive().optional(),
+});
+
+export type CompleteUploadRequest = z.infer<typeof completeUploadSchema>;
+
 export const processMediaSchema = z.object({
   quality: z.enum(['low', 'medium', 'high']).optional().default('medium'),
 });
@@ -62,7 +83,7 @@ export type ProcessMediaRequest = z.infer<typeof processMediaSchema>;
 export const mediaResponseSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
-  type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']),
+  type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT', 'WEBPAGE']),
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']),
   duration_seconds: z.number().optional(),
   width: z.number().optional(),
@@ -77,7 +98,10 @@ export type MediaResponse = z.infer<typeof mediaResponseSchema>;
 export const listMediaQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
-  type: z.enum(['IMAGE', 'VIDEO', 'DOCUMENT']).optional(),
+  type: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.enum(['IMAGE', 'VIDEO', 'DOCUMENT', 'WEBPAGE']).optional()
+  ),
   status: z.enum(['PENDING', 'PROCESSING', 'READY', 'FAILED']).optional(),
 });
 

@@ -5,8 +5,8 @@ This flow is derived from code (routes + utils) and the existing player guides. 
 - /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/device-telemetry.ts
 - /Users/anuragkumar/Desktop/signhex/signhex-server/src/routes/screens.ts
 - /Users/anuragkumar/Desktop/signhex/signhex-server/src/utils/default-media.ts
-- /Users/anuragkumar/Desktop/signhex/signhex-server/DEVICE_PLAYER_GUIDE.md
-- /Users/anuragkumar/Desktop/signhex/signhex-server/PLAYER_FLOW.md
+- signhex-platform/docs/contracts/device-player-guide.md
+- signhex-platform/docs/contracts/player-flow.md
 
 ## 0) Auth + transport (what code actually enforces)
 - Device snapshot endpoint allows either:
@@ -74,16 +74,16 @@ This flow is derived from code (routes + utils) and the existing player guides. 
   - Cache by `media_id` (primary key).
   - If `media_urls[media_id]` is null, skip item and log.
   - If download fails due to URL expiry, refetch snapshot for fresh URLs.
-  - Persist last successful snapshot on disk for offline fallback (DEVICE_PLAYER_GUIDE.md).
+  - Persist last successful snapshot on disk for offline fallback (`signhex-platform/docs/contracts/device-player-guide.md`).
 
 ## 5) Polling + refresh strategy (recommended)
 
-- Snapshot refresh: every 30-60s (DEVICE_PLAYER_GUIDE.md suggests 60s). Use `publish.published_at` to detect changes.
-- Commands refresh: every ~15s (DEVICE_PLAYER_GUIDE.md suggests 15s) OR piggyback on heartbeat response.
+- Snapshot refresh: every 30-60s (`signhex-platform/docs/contracts/device-player-guide.md` suggests 60s). Use `publish.published_at` to detect changes.
+- Commands refresh: every ~15s (`signhex-platform/docs/contracts/device-player-guide.md` suggests 15s) OR piggyback on heartbeat response.
 - Offline behavior:
   - If snapshot fetch fails, keep playing cached timelines until the last item expires.
   - If no valid items remain, show default/idle screen.
-- Ref: /Users/anuragkumar/Desktop/signhex/signhex-server/DEVICE_PLAYER_GUIDE.md
+- Ref: signhex-platform/docs/contracts/device-player-guide.md
 
 ## 6) Telemetry loop
 

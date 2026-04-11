@@ -34,12 +34,20 @@ const updateRequestSchema = z.object({
   notes: z.string().optional(),
 });
 
+const scheduleRequestFilterQuerySchema = z.object({
+  q: z.string().trim().optional(),
+  date_field: z.enum(['created_at', 'schedule_window']).optional(),
+  date_from: z.string().datetime().optional(),
+  date_to: z.string().datetime().optional(),
+  sort_direction: z.enum(['asc', 'desc']).optional(),
+});
+
 const listRequestQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
   status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'PUBLISHED', 'TAKEN_DOWN', 'EXPIRED']).optional(),
   include: z.string().optional(),
-});
+}).merge(scheduleRequestFilterQuerySchema);
 
 const getRequestQuerySchema = z.object({
   include: z.string().optional(),
@@ -596,7 +604,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
   );
 
   // Status summary
-  fastify.get(
+  fastify.get<{ Querystring: typeof scheduleRequestFilterQuerySchema._type }>(
     apiEndpoints.scheduleRequests.statusSummary,
     {
       schema: {
@@ -605,7 +613,7 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request: FastifyRequest<{ Querystring: typeof scheduleRequestFilterQuerySchema._type }>, reply: FastifyReply) => {
       try {
         const token = extractTokenFromHeader(request.headers.authorization);
         if (!token) throw AppError.unauthorized('Missing authorization header');
@@ -613,15 +621,33 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
         const ability = await defineAbilityFor(payload.role_id, payload.sub, payload.department_id);
         if (!ability.can('read', 'ScheduleRequest')) throw AppError.forbidden('Forbidden');
 
+        const query = scheduleRequestFilterQuerySchema.parse(request.query);
         const requestedByIds =
           isDepartmentScopedRole(payload.role) && !isAdminLike(payload.role)
             ? await getDepartmentUserIds(payload.department_id)
             : undefined;
         const filter = ability.can('manage', 'all')
-          ? {}
+          ? {
+              q: query.q,
+              date_field: query.date_field,
+              date_from: query.date_from ? new Date(query.date_from) : undefined,
+              date_to: query.date_to ? new Date(query.date_to) : undefined,
+            }
           : requestedByIds
-            ? { requested_by_ids: requestedByIds }
-            : { requested_by: payload.sub };
+            ? {
+                requested_by_ids: requestedByIds,
+                q: query.q,
+                date_field: query.date_field,
+                date_from: query.date_from ? new Date(query.date_from) : undefined,
+                date_to: query.date_to ? new Date(query.date_to) : undefined,
+              }
+            : {
+                requested_by: payload.sub,
+                q: query.q,
+                date_field: query.date_field,
+                date_from: query.date_from ? new Date(query.date_from) : undefined,
+                date_to: query.date_to ? new Date(query.date_to) : undefined,
+              };
         const counts = await repo.countSummary(filter);
         return reply.send({ counts });
       } catch (error) {
@@ -659,6 +685,11 @@ export async function scheduleRequestRoutes(fastify: FastifyInstance) {
           page: query.page,
           limit: query.limit,
           status: query.status,
+          q: query.q,
+          date_field: query.date_field,
+          date_from: query.date_from ? new Date(query.date_from) : undefined,
+          date_to: query.date_to ? new Date(query.date_to) : undefined,
+          sort_direction: query.sort_direction,
           requested_by: ability.can('manage', 'all') || requestedByIds ? undefined : payload.sub,
           requested_by_ids: ability.can('manage', 'all') ? undefined : requestedByIds,
         };
