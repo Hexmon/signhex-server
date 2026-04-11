@@ -1,6 +1,12 @@
 import { eq, and, desc, asc, or, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
+type DbExecutor = any;
+
+function resolveDb(executor?: DbExecutor) {
+  return executor ?? getDatabase();
+}
+
 export class ScreenRepository {
   async create(data: {
     id?: string;
@@ -11,14 +17,14 @@ export class ScreenRepository {
     height?: number | null;
     orientation?: string | null;
     device_info?: Record<string, any> | null;
-  }) {
-    const db = getDatabase();
+  }, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db.insert(schema.screens).values(data).returning();
     return result[0];
   }
 
-  async findById(id: string) {
-    const db = getDatabase();
+  async findById(id: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db.select().from(schema.screens).where(eq(schema.screens.id, id));
     return result[0] || null;
   }
@@ -27,6 +33,7 @@ export class ScreenRepository {
     page?: number;
     limit?: number;
     status?: string;
+    q?: string;
   }) {
     const db = getDatabase();
     const page = options.page || 1;
@@ -37,14 +44,24 @@ export class ScreenRepository {
     if (options.status) {
       conditions.push(eq(schema.screens.status, options.status as any));
     }
+    if (options.q?.trim()) {
+      const term = `%${options.q.trim()}%`;
+      conditions.push(
+        or(
+          sql`${schema.screens.id}::text ILIKE ${term}`,
+          sql`${schema.screens.name} ILIKE ${term}`,
+          sql`${schema.screens.location} ILIKE ${term}`
+        )
+      );
+    }
 
     let query = db.select().from(schema.screens);
     if (conditions.length > 0) {
       query = query.where(and(...conditions)) as any;
     }
 
-    const total = await db
-      .select()
+    const [total] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.screens)
       .where(conditions.length > 0 ? and(...conditions) : undefined);
 
@@ -55,7 +72,7 @@ export class ScreenRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(total?.count ?? 0),
       page,
       limit,
     };
@@ -91,8 +108,8 @@ export class ScreenRepository {
     return query.orderBy(asc(schema.screens.name));
   }
 
-  async update(id: string, data: Partial<typeof schema.screens.$inferInsert>) {
-    const db = getDatabase();
+  async update(id: string, data: Partial<typeof schema.screens.$inferInsert>, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .update(schema.screens)
       .set({ ...data, updated_at: new Date() })

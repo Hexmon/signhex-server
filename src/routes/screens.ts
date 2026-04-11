@@ -21,18 +21,22 @@ import {
 } from '@/utils/resolved-media';
 import { KNOWN_ASPECT_RATIOS, getAspectRatioName, resolveAspectRatio } from '@/utils/aspect-ratio';
 import {
+  buildScreenRecoveryStateMap,
   buildScheduleItemSummaries,
+  buildScreenPlaybackState,
   buildScreenPlaybackStateById,
+  buildScreensFleetSummary,
   buildScreenScheduleTimelinePayload,
   buildScreensOverviewPayload,
   filterItemsForScreen as filterPublishedItemsForScreen,
+  getLastProofOfPlayMap,
   getLatestScreenshotPreview,
   getLatestPublishForScreen,
 } from '@/screens/playback';
 import { emitScreensRefreshRequired, setupScreensNamespace } from '@/realtime/screens-namespace';
 
 const logger = createLogger('screen-routes');
-const { CREATED, OK } = HTTP_STATUS;
+const { OK } = HTTP_STATUS;
 
 const createScreenSchema = z.object({
   name: z.string().min(1).max(255),
@@ -43,6 +47,10 @@ const listScreensQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
   status: z.enum(['ACTIVE', 'INACTIVE', 'OFFLINE']).optional(),
+  q: z.string().trim().optional(),
+  include_summary: z.enum(['true', 'false']).optional(),
+  include_media: z.enum(['true', 'false']).optional(),
+  include_preview: z.enum(['true', 'false']).optional(),
 });
 
 const aspectRatiosQuerySchema = z.object({
@@ -289,7 +297,42 @@ export async function screenRoutes(fastify: FastifyInstance) {
           page: query.page,
           limit: query.limit,
           status: query.status,
+          q: query.q,
         });
+
+        if (query.include_summary?.toLowerCase() === 'true') {
+          const serverTime = new Date();
+          const includeMedia = query.include_media?.toLowerCase() === 'true';
+          const includePreview = query.include_preview?.toLowerCase() === 'true';
+          const recoveryStateMap = await buildScreenRecoveryStateMap(
+            result.items.map((screen) => screen.id),
+            db,
+            serverTime
+          );
+          const proofOfPlayMap = await getLastProofOfPlayMap(result.items.map((screen) => screen.id), db);
+          const items = await Promise.all(
+            result.items.map((screen) =>
+              buildScreenPlaybackState(screen, {
+                db,
+                now: serverTime,
+                includeMedia,
+                includePreview,
+                recoveryState: recoveryStateMap.get(screen.id),
+                lastProofOfPlayAt: proofOfPlayMap.get(screen.id) ?? null,
+              })
+            )
+          );
+
+          return reply.send({
+            server_time: serverTime.toISOString(),
+            items: items.filter(Boolean),
+            pagination: {
+              page: result.page,
+              limit: result.limit,
+              total: result.total,
+            },
+          });
+        }
 
         return reply.send({
           items: result.items.map((s) => ({
@@ -316,6 +359,31 @@ export async function screenRoutes(fastify: FastifyInstance) {
         });
       } catch (error) {
         logger.error(error, 'List screens error');
+        return respondWithError(reply, error);
+      }
+    }
+  );
+
+  fastify.get(
+    apiEndpoints.screens.summary,
+    {
+      schema: {
+        description: 'Get fleet-level screen health counts without loading full overview payloads',
+        tags: ['Screens'],
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const token = extractTokenFromHeader(request.headers.authorization);
+        if (!token) {
+          throw AppError.unauthorized('Missing authorization header');
+        }
+
+        await verifyAccessToken(token);
+        return reply.send(await buildScreensFleetSummary({ db }));
+      } catch (error) {
+        logger.error(error, 'Get screens summary error');
         return respondWithError(reply, error);
       }
     }

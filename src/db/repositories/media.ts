@@ -1,4 +1,4 @@
-import { eq, and, desc, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 import {
   DEFAULT_MEDIA_SETTING_KEY,
@@ -73,15 +73,17 @@ export class MediaRepository {
       conditions.push(inArray(schema.media.created_by, options.created_by_ids as any));
     }
 
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
     let query = db.select().from(schema.media);
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
+    if (whereClause) {
+      query = query.where(whereClause) as any;
     }
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.media)
-      .where(conditions.length > 0 ? and(...conditions) : undefined);
+      .where(whereClause);
 
     const items = await query
       .orderBy(desc(schema.media.created_at))
@@ -90,7 +92,7 @@ export class MediaRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };

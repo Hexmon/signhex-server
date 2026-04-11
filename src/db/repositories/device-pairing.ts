@@ -1,5 +1,11 @@
-import { eq, and, desc, gt } from 'drizzle-orm';
+import { eq, and, desc, gt, lte, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
+
+type DbExecutor = any;
+
+function resolveDb(executor?: DbExecutor) {
+  return executor ?? getDatabase();
+}
 
 export class DevicePairingRepository {
   async create(data: {
@@ -13,14 +19,14 @@ export class DevicePairingRepository {
     model?: string | null;
     codecs?: string[] | null;
     device_info?: Record<string, any> | null;
-  }) {
-    const db = getDatabase();
+  }, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db.insert(schema.devicePairings).values(data).returning();
     return result[0];
   }
 
-  async findByCode(code: string) {
-    const db = getDatabase();
+  async findByCode(code: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.devicePairings)
@@ -34,8 +40,24 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
-  async findAnyByCode(code: string) {
-    const db = getDatabase();
+  async findActiveById(id: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
+    const result = await db
+      .select()
+      .from(schema.devicePairings)
+      .where(
+        and(
+          eq(schema.devicePairings.id, id),
+          eq(schema.devicePairings.used, false),
+          gt(schema.devicePairings.expires_at, new Date())
+        )
+      )
+      .limit(1);
+    return result[0] || null;
+  }
+
+  async findAnyByCode(code: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.devicePairings)
@@ -45,8 +67,8 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
-  async findByDeviceId(deviceId: string) {
-    const db = getDatabase();
+  async findByDeviceId(deviceId: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.devicePairings)
@@ -55,8 +77,8 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
-  async findActiveByDeviceId(deviceId: string) {
-    const db = getDatabase();
+  async findActiveByDeviceId(deviceId: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.devicePairings)
@@ -71,8 +93,8 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
-  async markAsUsed(id: string) {
-    const db = getDatabase();
+  async markAsUsed(id: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .update(schema.devicePairings)
       .set({ used: true, used_at: new Date() })
@@ -81,8 +103,43 @@ export class DevicePairingRepository {
     return result[0] || null;
   }
 
-  async retireActiveByDeviceId(deviceId: string, exceptId?: string | null) {
-    const db = getDatabase();
+  async markAsUsedIfActive(id: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
+    const now = new Date();
+    const result = await db
+      .update(schema.devicePairings)
+      .set({ used: true, used_at: now })
+      .where(
+        and(
+          eq(schema.devicePairings.id, id),
+          eq(schema.devicePairings.used, false),
+          gt(schema.devicePairings.expires_at, now)
+        )
+      )
+      .returning();
+    return result[0] || null;
+  }
+
+  async retireExpired(executor?: DbExecutor) {
+    const db = resolveDb(executor);
+    const now = new Date();
+    return await db
+      .update(schema.devicePairings)
+      .set({
+        used: true,
+        used_at: now,
+      })
+      .where(
+        and(
+          eq(schema.devicePairings.used, false),
+          lte(schema.devicePairings.expires_at, now)
+        )
+      )
+      .returning();
+  }
+
+  async retireActiveByDeviceId(deviceId: string, exceptId?: string | null, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const activePairings = await db
       .select({ id: schema.devicePairings.id })
       .from(schema.devicePairings)
@@ -95,18 +152,19 @@ export class DevicePairingRepository {
       );
 
     const retireIds = activePairings
-      .map((row) => row.id)
-      .filter((id) => !exceptId || id !== exceptId);
+      .map((row: { id: string }) => row.id)
+      .filter((id: string) => !exceptId || id !== exceptId);
 
     if (retireIds.length === 0) {
       return [];
     }
 
     const retired: typeof schema.devicePairings.$inferSelect[] = [];
+    const usedAt = new Date();
     for (const id of retireIds) {
       const [row] = await db
         .update(schema.devicePairings)
-        .set({ used: true, used_at: new Date() })
+        .set({ used: true, used_at: usedAt })
         .where(eq(schema.devicePairings.id, id))
         .returning();
       if (row) {
@@ -117,8 +175,8 @@ export class DevicePairingRepository {
     return retired;
   }
 
-  async updateDeviceInfo(id: string, device_info: Record<string, any> | null) {
-    const db = getDatabase();
+  async updateDeviceInfo(id: string, device_info: Record<string, any> | null, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .update(schema.devicePairings)
       .set({ device_info })
@@ -136,7 +194,7 @@ export class DevicePairingRepository {
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    const total = await db.select().from(schema.devicePairings);
+    const [total] = await db.select({ count: sql<number>`count(*)` }).from(schema.devicePairings);
 
     const items = await db
       .select()
@@ -147,14 +205,14 @@ export class DevicePairingRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(total?.count ?? 0),
       page,
       limit,
     };
   }
 
-  async findById(id: string) {
-    const db = getDatabase();
+  async findById(id: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.devicePairings)

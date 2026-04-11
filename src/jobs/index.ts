@@ -25,6 +25,10 @@ import {
   processScreenshotTelemetry,
 } from '@/jobs/device-telemetry';
 import { observeJobProcessing, recordJobEnqueue } from '@/observability/metrics';
+import {
+  createPlaybackRefreshCommands,
+  type PlaybackRefreshCommandBatch,
+} from '@/services/playback-refresh-commands';
 
 const logger = createLogger('jobs');
 
@@ -228,6 +232,7 @@ type PgBossError = Error & {
 
 const RECURRING_QUEUE_NAMES = ['cleanup', 'archive', 'chat:media-cleanup', 'backup', 'backup:check'] as const;
 const WORK_QUEUE_NAMES = [
+  'playback:refresh-dispatch',
   'telemetry:heartbeat',
   'telemetry:proof-of-play',
   'telemetry:screenshot',
@@ -339,6 +344,10 @@ export function getJobs(): PgBoss {
   return boss;
 }
 
+export function isJobsInitialized() {
+  return boss !== null;
+}
+
 export async function stopJobs(): Promise<void> {
   if (boss) {
     await boss.stop();
@@ -397,6 +406,16 @@ export interface BackupJob {
 
 export interface BackupCheckJob {
   trigger: 'scheduled-check';
+}
+
+export interface PlaybackRefreshDispatchJob extends PlaybackRefreshCommandBatch {}
+
+export async function queuePlaybackRefreshDispatch(job: PlaybackRefreshDispatchJob, options?: any) {
+  return sendJob('playback:refresh-dispatch', job, {
+    retryLimit: 3,
+    retryDelay: 15,
+    ...options,
+  });
 }
 
 export async function queueHeartbeatTelemetry(job: HeartbeatTelemetryJob, options?: any) {
@@ -634,6 +653,12 @@ export async function registerJobHandlers() {
   await registerObservedWorker<HeartbeatTelemetryJob>('telemetry:heartbeat', async (batch) => {
     for (const job of batch) {
       await processHeartbeatTelemetry(job.data);
+    }
+  });
+
+  await registerObservedWorker<PlaybackRefreshDispatchJob>('playback:refresh-dispatch', async (batch) => {
+    for (const job of batch) {
+      await createPlaybackRefreshCommands(job.data);
     }
   });
 

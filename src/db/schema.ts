@@ -446,6 +446,8 @@ export const deviceCertificates = pgTable(
     screen_id: uuid('screen_id').notNull(),
     serial: varchar('serial', { length: 255 }).notNull().unique(),
     certificate_pem: text('certificate_pem').notNull(),
+    public_key_pem: text('public_key_pem'),
+    auth_version: varchar('auth_version', { length: 32 }).notNull().default('legacy'),
     is_revoked: boolean('is_revoked').notNull().default(false),
     expires_at: timestamp('expires_at').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
@@ -1110,22 +1112,30 @@ export const publishTargets = pgTable(
 );
 
 // Device pairings (for backward compatibility with repositories)
-export const devicePairings = pgTable('device_pairings', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  device_id: uuid('device_id'),
-  pairing_code: varchar('pairing_code', { length: 255 }).notNull(),
-  used: boolean('used').notNull().default(false),
-  used_at: timestamp('used_at'),
-  expires_at: timestamp('expires_at').notNull(),
-  width: integer('width'),
-  height: integer('height'),
-  aspect_ratio: varchar('aspect_ratio', { length: 50 }),
-  orientation: varchar('orientation', { length: 50 }),
-  model: varchar('model', { length: 255 }),
-  codecs: varchar('codecs', { length: 255 }).array(),
-  device_info: jsonb('device_info'),
-  created_at: timestamp('created_at').notNull().defaultNow(),
-});
+export const devicePairings = pgTable(
+  'device_pairings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    device_id: uuid('device_id'),
+    pairing_code: varchar('pairing_code', { length: 255 }).notNull(),
+    used: boolean('used').notNull().default(false),
+    used_at: timestamp('used_at'),
+    expires_at: timestamp('expires_at').notNull(),
+    width: integer('width'),
+    height: integer('height'),
+    aspect_ratio: varchar('aspect_ratio', { length: 50 }),
+    orientation: varchar('orientation', { length: 50 }),
+    model: varchar('model', { length: 255 }),
+    codecs: varchar('codecs', { length: 255 }).array(),
+    device_info: jsonb('device_info'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    activeCodeIdx: uniqueIndex('device_pairings_active_code_idx')
+      .on(table.pairing_code)
+      .where(sql`${table.used} = false`),
+  })
+);
 
 // Emergencies (for backward compatibility with repositories)
 export const emergencies = pgTable('emergencies', {

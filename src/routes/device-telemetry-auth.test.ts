@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { FastifyInstance } from 'fastify';
-import { randomUUID } from 'crypto';
+import { createSign, generateKeyPairSync, randomUUID } from 'crypto';
 import { AddressInfo } from 'net';
 import { eq } from 'drizzle-orm';
 import { createTestServer, closeTestServer, testUser } from '@/test/helpers';
@@ -8,6 +8,43 @@ import { getDatabase, schema } from '@/db';
 import { HTTP_STATUS } from '@/http-status-codes';
 import * as s3 from '@/s3';
 import * as jobs from '@/jobs';
+import { buildDeviceRequestSignaturePayload } from '@/utils/device-request-auth';
+
+function createSignedDeviceHeaders(params: {
+  method: string;
+  url: string;
+  deviceId: string;
+}) {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+
+  const serial = `serial-${randomUUID()}`;
+  const timestamp = Date.now().toString();
+  const signer = createSign('RSA-SHA256');
+  signer.update(
+    buildDeviceRequestSignaturePayload({
+      method: params.method,
+      url: params.url,
+      deviceId: params.deviceId,
+      timestamp,
+    })
+  );
+  signer.end();
+
+  return {
+    serial,
+    publicKeyPem: publicKey,
+    headers: {
+      'x-device-serial': serial,
+      'x-device-auth-version': 'v1',
+      'x-device-timestamp': timestamp,
+      'x-device-signature': signer.sign(privateKey, 'base64'),
+    },
+  };
+}
 
 describe('Device telemetry auth runtime validation', () => {
   let server: FastifyInstance;
@@ -22,6 +59,106 @@ describe('Device telemetry auth runtime validation', () => {
 
   afterAll(async () => {
     await closeTestServer(server);
+  });
+
+  it('accepts heartbeat in signature mode when the request signature is valid', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const signed = createSignedDeviceHeaders({
+      method: 'POST',
+      url: '/api/v1/device/heartbeat',
+      deviceId,
+    });
+    const previousMode = process.env.HEXMON_DEVICE_AUTH_MODE;
+    const queueHeartbeatSpy = vi.spyOn(jobs, 'queueHeartbeatTelemetry').mockResolvedValueOnce('job-1');
+
+    process.env.HEXMON_DEVICE_AUTH_MODE = 'signature';
+    try {
+      await db.insert(schema.screens).values({
+        id: deviceId,
+        name: 'Signed Heartbeat Screen',
+        status: 'OFFLINE',
+      });
+
+      await db.insert(schema.deviceCertificates).values({
+        screen_id: deviceId,
+        serial: signed.serial,
+        certificate_pem: 'dummy-cert',
+        public_key_pem: signed.publicKeyPem,
+        auth_version: 'signature_v1',
+        expires_at: new Date(Date.now() + 60_000),
+      });
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/device/heartbeat',
+        headers: signed.headers,
+        payload: {
+          device_id: deviceId,
+          status: 'ONLINE',
+          uptime: 100,
+          memory_usage: 10,
+          cpu_usage: 5,
+        },
+      });
+
+      expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    } finally {
+      queueHeartbeatSpy.mockRestore();
+      if (previousMode == null) {
+        delete process.env.HEXMON_DEVICE_AUTH_MODE;
+      } else {
+        process.env.HEXMON_DEVICE_AUTH_MODE = previousMode;
+      }
+    }
+  });
+
+  it('rejects heartbeat in signature mode when the request signature is missing', async () => {
+    const db = getDatabase();
+    const deviceId = randomUUID();
+    const serial = `serial-${randomUUID()}`;
+    const previousMode = process.env.HEXMON_DEVICE_AUTH_MODE;
+
+    process.env.HEXMON_DEVICE_AUTH_MODE = 'signature';
+    try {
+      await db.insert(schema.screens).values({
+        id: deviceId,
+        name: 'Missing Signature Screen',
+        status: 'OFFLINE',
+      });
+
+      await db.insert(schema.deviceCertificates).values({
+        screen_id: deviceId,
+        serial,
+        certificate_pem: 'dummy-cert',
+        expires_at: new Date(Date.now() + 60_000),
+      });
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/device/heartbeat',
+        headers: {
+          'x-device-serial': serial,
+        },
+        payload: {
+          device_id: deviceId,
+          status: 'ONLINE',
+          uptime: 100,
+          memory_usage: 10,
+          cpu_usage: 5,
+        },
+      });
+
+      expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+      const body = JSON.parse(response.body);
+      expect(body.error.message).toBe('Missing device request signature');
+    } finally {
+      if (previousMode == null) {
+        delete process.env.HEXMON_DEVICE_AUTH_MODE;
+      } else {
+        process.env.HEXMON_DEVICE_AUTH_MODE = previousMode;
+      }
+    }
   });
 
   it('rejects heartbeat when device credentials are expired', async () => {

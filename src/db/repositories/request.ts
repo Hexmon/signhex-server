@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class RequestRepository {
@@ -50,15 +50,17 @@ export class RequestRepository {
       conditions.push(eq(schema.requests.created_by, options.created_by));
     }
 
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
     let query = db.select().from(schema.requests);
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
+    if (whereClause) {
+      query = query.where(whereClause) as any;
     }
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.requests)
-      .where(conditions.length > 0 ? and(...conditions) : undefined);
+      .where(whereClause);
 
     const items = await query
       .orderBy(desc(schema.requests.created_at))
@@ -67,7 +69,7 @@ export class RequestRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };
@@ -92,4 +94,3 @@ export class RequestRepository {
 export function createRequestRepository(): RequestRepository {
   return new RequestRepository();
 }
-

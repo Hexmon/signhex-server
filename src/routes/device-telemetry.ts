@@ -20,11 +20,9 @@ import {
   buildResolvedMediaMap,
 } from '@/utils/resolved-media';
 import {
-  buildScreenPlaybackStateById,
   getActiveEmergencyForScreen as getActiveEmergencyForRuntime,
   getLatestPublishForScreen,
 } from '@/screens/playback';
-import { emitScreenStateUpdate } from '@/realtime/screens-namespace';
 import { queueHeartbeatTelemetry, queueProofOfPlayTelemetry, queueScreenshotTelemetry } from '@/jobs';
 import {
   buildHeartbeatObjectKey,
@@ -35,7 +33,8 @@ import {
   processProofOfPlayTelemetry,
   processScreenshotTelemetry,
 } from '@/jobs/device-telemetry';
-import { recordTelemetryIngest } from '@/observability/metrics';
+import { recordDeviceCommandClaim, recordTelemetryIngest } from '@/observability/metrics';
+import { queueScreenStateRefresh } from '@/services/screen-state-refresh';
 
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
@@ -213,6 +212,24 @@ async function enqueueTelemetryWithFallback(params: {
 
 export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
+
+  const claimPendingCommands = async (deviceId: string) => {
+    const claimedAt = new Date();
+    const commands = await db
+      .update(schema.deviceCommands)
+      .set({ status: 'SENT', updated_at: claimedAt })
+      .where(and(eq(schema.deviceCommands.screen_id, deviceId), eq(schema.deviceCommands.status, 'PENDING')))
+      .returning({
+        id: schema.deviceCommands.id,
+        type: schema.deviceCommands.type,
+        payload: schema.deviceCommands.payload,
+        createdAt: schema.deviceCommands.created_at,
+      });
+
+    return commands.sort(
+      (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
+    );
+  };
 
   const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
     const rows = await db
@@ -548,10 +565,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           })
           .where(eq(schema.screens.id, data.device_id));
 
-        const playbackState = await buildScreenPlaybackStateById(data.device_id, { db });
-        if (playbackState) {
-          emitScreenStateUpdate(fastify, playbackState);
-        }
+        queueScreenStateRefresh(data.device_id);
 
         await enqueueTelemetryWithFallback({
           telemetryType: 'heartbeat',
@@ -571,18 +585,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           'Device heartbeat received'
         );
 
-        const pendingCommands = await db
-          .select({
-            id: schema.deviceCommands.id,
-            type: schema.deviceCommands.type,
-            payload: schema.deviceCommands.payload,
-            createdAt: schema.deviceCommands.created_at,
-          })
-          .from(schema.deviceCommands)
-          .where(
-            and(eq(schema.deviceCommands.screen_id, data.device_id), eq(schema.deviceCommands.status, 'PENDING'))
-          )
-          .orderBy(schema.deviceCommands.created_at);
+        const pendingCommands = await claimPendingCommands(data.device_id);
+        recordDeviceCommandClaim('heartbeat', pendingCommands.length);
 
         return reply.send({
           success: true,
@@ -733,27 +737,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const deviceId = (request.params as any).deviceId;
         await authenticateDeviceOrThrow(request, deviceId);
 
-        const pendingCommands = await db.transaction(async (tx) => {
-          const commands = await tx
-            .select({
-              id: schema.deviceCommands.id,
-              type: schema.deviceCommands.type,
-              payload: schema.deviceCommands.payload,
-              createdAt: schema.deviceCommands.created_at,
-            })
-            .from(schema.deviceCommands)
-            .where(and(eq(schema.deviceCommands.screen_id, deviceId), eq(schema.deviceCommands.status, 'PENDING')))
-            .orderBy(schema.deviceCommands.created_at);
-
-          if (commands.length > 0) {
-            await tx
-              .update(schema.deviceCommands)
-              .set({ status: 'SENT', updated_at: new Date() })
-              .where(and(eq(schema.deviceCommands.screen_id, deviceId), eq(schema.deviceCommands.status, 'PENDING')));
-          }
-
-          return commands;
-        });
+        const pendingCommands = await claimPendingCommands(deviceId);
+        recordDeviceCommandClaim('poll', pendingCommands.length);
 
         logger.info({ deviceId }, 'Fetching pending commands');
 

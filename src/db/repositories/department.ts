@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class DepartmentRepository {
@@ -29,7 +29,9 @@ export class DepartmentRepository {
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    const total = await db.select().from(schema.departments);
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.departments);
 
     const items = await db
       .select()
@@ -40,7 +42,7 @@ export class DepartmentRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };
@@ -65,4 +67,3 @@ export class DepartmentRepository {
 export function createDepartmentRepository(): DepartmentRepository {
   return new DepartmentRepository();
 }
-

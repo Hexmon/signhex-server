@@ -1,4 +1,4 @@
-import { eq, and, desc, gte, lte } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class AuditLogRepository {
@@ -35,15 +35,17 @@ export class AuditLogRepository {
 
     const conditions = this.buildConditions(options);
 
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
     let query = db.select().from(schema.auditLogs);
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
+    if (whereClause) {
+      query = query.where(whereClause) as any;
     }
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.auditLogs)
-      .where(conditions.length > 0 ? and(...conditions) : undefined);
+      .where(whereClause);
 
     const items = await query
       .orderBy(desc(schema.auditLogs.created_at))
@@ -52,7 +54,7 @@ export class AuditLogRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };

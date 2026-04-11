@@ -127,6 +127,139 @@ describe('Screens routes realtime playback bootstrap', () => {
     expect(body.error.message).toContain('device completes pairing');
   });
 
+  it('returns paginated screen summaries from the list endpoint with server-side search', async () => {
+    const db = getDatabase();
+    const screenId = randomUUID();
+    const now = new Date();
+    const searchToken = `paged-${randomUUID().slice(0, 8)}`;
+
+    await db.insert(schema.screens).values({
+      id: screenId,
+      name: `Paged Summary Screen ${searchToken}`,
+      location: `North Lobby ${searchToken}`,
+      status: 'ACTIVE',
+      last_heartbeat_at: now,
+    });
+
+    await db.insert(schema.deviceCertificates).values({
+      screen_id: screenId,
+      serial: `serial-${screenId}`,
+      certificate_pem: 'paged-summary-cert',
+      expires_at: new Date(now.getTime() + 60_000),
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/v1/screens?include_summary=true&q=${encodeURIComponent(searchToken)}&limit=5`,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(HTTP_STATUS.OK);
+    const body = JSON.parse(response.body) as any;
+    expect(typeof body.server_time).toBe('string');
+    expect(body.pagination).toEqual({
+      page: 1,
+      limit: 5,
+      total: 1,
+    });
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toEqual(
+      expect.objectContaining({
+        id: screenId,
+        name: `Paged Summary Screen ${searchToken}`,
+        location: `North Lobby ${searchToken}`,
+        health_state: 'ONLINE',
+      }),
+    );
+  });
+
+  it('returns fleet-level screen health counts from the summary endpoint', async () => {
+    const db = getDatabase();
+    const beforeResponse = await server.inject({
+      method: 'GET',
+      url: '/api/v1/screens/summary',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(beforeResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const before = JSON.parse(beforeResponse.body) as any;
+
+    const onlineScreenId = randomUUID();
+    const staleScreenId = randomUUID();
+    const offlineScreenId = randomUUID();
+    const recoveryScreenId = randomUUID();
+    const now = new Date();
+
+    await db.insert(schema.screens).values([
+      {
+        id: onlineScreenId,
+        name: 'Summary Online Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: now,
+      },
+      {
+        id: staleScreenId,
+        name: 'Summary Stale Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: new Date(now.getTime() - 10 * 60 * 1000),
+      },
+      {
+        id: offlineScreenId,
+        name: 'Summary Offline Screen',
+        status: 'OFFLINE',
+        last_heartbeat_at: now,
+      },
+      {
+        id: recoveryScreenId,
+        name: 'Summary Recovery Screen',
+        status: 'ACTIVE',
+        last_heartbeat_at: now,
+      },
+    ]);
+
+    await db.insert(schema.deviceCertificates).values([
+      {
+        screen_id: onlineScreenId,
+        serial: `serial-${onlineScreenId}`,
+        certificate_pem: 'summary-online-cert',
+        expires_at: new Date(now.getTime() + 60_000),
+      },
+      {
+        screen_id: staleScreenId,
+        serial: `serial-${staleScreenId}`,
+        certificate_pem: 'summary-stale-cert',
+        expires_at: new Date(now.getTime() + 60_000),
+      },
+      {
+        screen_id: offlineScreenId,
+        serial: `serial-${offlineScreenId}`,
+        certificate_pem: 'summary-offline-cert',
+        expires_at: new Date(now.getTime() + 60_000),
+      },
+    ]);
+
+    const afterResponse = await server.inject({
+      method: 'GET',
+      url: '/api/v1/screens/summary',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+      },
+    });
+
+    expect(afterResponse.statusCode).toBe(HTTP_STATUS.OK);
+    const after = JSON.parse(afterResponse.body) as any;
+    expect(typeof after.server_time).toBe('string');
+    expect(after.total - before.total).toBe(4);
+    expect(after.online - before.online).toBe(1);
+    expect(after.stale - before.stale).toBe(1);
+    expect(after.offline - before.offline).toBe(1);
+    expect(after.recovery - before.recovery).toBe(1);
+  });
+
   it('returns server_time and playback in screens overview while preserving existing fields', async () => {
     const db = getDatabase();
     const screenId = randomUUID();
@@ -199,6 +332,7 @@ describe('Screens routes realtime playback bootstrap', () => {
       presentation_id: scheduleId,
       started_at: new Date(startAt),
       ended_at: new Date(endAt),
+      idempotency_key: `overview-${randomUUID().replace(/-/g, "")}`,
     });
 
     const response = await server.inject({
@@ -1058,6 +1192,7 @@ describe('Screens routes realtime playback bootstrap', () => {
       screen_id: screenId,
       storage_object_id: popStorageId,
       started_at: new Date(),
+      idempotency_key: `delete-${randomUUID().replace(/-/g, "")}`,
     });
     await db.insert(schema.screenshots).values({
       screen_id: screenId,

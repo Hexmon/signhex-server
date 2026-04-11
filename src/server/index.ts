@@ -249,6 +249,9 @@ export async function createServer() {
     if (appError.code === 'CA_CERT_MISSING') {
       request.log.warn({ path: appConfig.CA_CERT_PATH }, 'CA certificate missing');
     }
+    if (appError.code === 'CA_KEY_MISSING') {
+      request.log.warn({ path: appConfig.CA_KEY_PATH }, 'CA private key missing');
+    }
 
     let clientError = appError;
     if (appConfig.NODE_ENV === 'development' && appError.code === 'INTERNAL_ERROR') {

@@ -12,6 +12,12 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getPresignedUrl } from '@/s3';
 import { AppError } from '@/utils/app-error';
 import { dispatchPlaybackRefresh } from '@/services/playback-refresh-dispatch';
+import {
+  buildScreenPlaybackState,
+  buildScreenRecoveryStateMap,
+  getLastProofOfPlayMap,
+  summarizeGroupPlayback,
+} from '@/screens/playback';
 
 const logger = createLogger('screen-group-routes');
 const { CREATED } = HTTP_STATUS;
@@ -25,6 +31,8 @@ const screenGroupSchema = z.object({
 const listGroupsQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20),
+  q: z.string().trim().optional(),
+  include_summary: z.enum(['true', 'false']).optional(),
 });
 
 const screenshotSettingsSchema = z.object({
@@ -588,22 +596,66 @@ export async function screenGroupRoutes(fastify: FastifyInstance) {
         if (!ability.can('read', 'ScreenGroup')) throw AppError.forbidden('Forbidden');
 
         const query = listGroupsQuerySchema.parse(request.query);
-        const result = await repo.list({ page: query.page, limit: query.limit });
+        const result = await repo.list({ page: query.page, limit: query.limit, q: query.q });
+        const groupIds = result.items.map((group) => group.id);
+        const memberRows = groupIds.length
+          ? await db
+              .select({
+                group_id: schema.screenGroupMembers.group_id,
+                screen_id: schema.screenGroupMembers.screen_id,
+              })
+              .from(schema.screenGroupMembers)
+              .where(inArray(schema.screenGroupMembers.group_id, groupIds as any))
+          : [];
+        const memberIdsByGroup = memberRows.reduce((acc, row) => {
+          const list = acc.get(row.group_id) || [];
+          list.push(row.screen_id);
+          acc.set(row.group_id, list);
+          return acc;
+        }, new Map<string, string[]>());
+
+        if (query.include_summary?.toLowerCase() === 'true') {
+          const serverTime = new Date();
+          const uniqueScreenIds = Array.from(new Set(memberRows.map((row) => row.screen_id)));
+          const screens = uniqueScreenIds.length
+            ? await db.select().from(schema.screens).where(inArray(schema.screens.id, uniqueScreenIds as any))
+            : [];
+          const recoveryStateMap = await buildScreenRecoveryStateMap(uniqueScreenIds, db, serverTime);
+          const proofOfPlayMap = await getLastProofOfPlayMap(uniqueScreenIds, db);
+          const screenSummaries = await Promise.all(
+            screens.map((screen) =>
+              buildScreenPlaybackState(screen, {
+                db,
+                now: serverTime,
+                lastProofOfPlayAt: proofOfPlayMap.get(screen.id) ?? null,
+                recoveryState: recoveryStateMap.get(screen.id),
+              })
+            )
+          );
+          const screenSummaryMap = new Map(screenSummaries.map((summary) => [summary.id, summary]));
+
+          return reply.send({
+            server_time: serverTime.toISOString(),
+            items: result.items.map((group) =>
+              summarizeGroupPlayback(group, memberIdsByGroup.get(group.id) || [], screenSummaryMap)
+            ),
+            pagination: {
+              page: result.page,
+              limit: result.limit,
+              total: result.total,
+            },
+          });
+        }
 
         return reply.send({
-          items: await Promise.all(
-            result.items.map(async (g: any) => {
-              const members = await repo.members(g.id);
-              return {
-                id: g.id,
-                name: g.name,
-                description: g.description,
-                screen_ids: members.map((m: any) => m.screen_id),
-                created_at: g.created_at.toISOString(),
-                updated_at: g.updated_at.toISOString(),
-              };
-            })
-          ),
+          items: result.items.map((g: any) => ({
+            id: g.id,
+            name: g.name,
+            description: g.description,
+            screen_ids: memberIdsByGroup.get(g.id) || [],
+            created_at: g.created_at.toISOString(),
+            updated_at: g.updated_at.toISOString(),
+          })),
           pagination: {
             page: result.page,
             limit: result.limit,

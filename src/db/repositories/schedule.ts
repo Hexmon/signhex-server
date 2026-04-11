@@ -43,15 +43,17 @@ export class ScheduleRepository {
       conditions.push(inArray(schema.schedules.created_by, options.created_by_ids as any));
     }
 
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
     let query = db.select().from(schema.schedules);
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
+    if (whereClause) {
+      query = query.where(whereClause) as any;
     }
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.schedules)
-      .where(conditions.length > 0 ? and(...conditions) : undefined);
+      .where(whereClause);
 
     const items = await query
       .orderBy(desc(schema.schedules.created_at))
@@ -60,7 +62,7 @@ export class ScheduleRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };

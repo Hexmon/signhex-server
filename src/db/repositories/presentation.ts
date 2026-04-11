@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class PresentationRepository {
@@ -36,15 +36,17 @@ export class PresentationRepository {
       conditions.push(eq(schema.presentations.created_by, options.created_by));
     }
 
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
     let query = db.select().from(schema.presentations);
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions)) as any;
+    if (whereClause) {
+      query = query.where(whereClause) as any;
     }
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.presentations)
-      .where(conditions.length > 0 ? and(...conditions) : undefined);
+      .where(whereClause);
 
     const items = await query
       .orderBy(desc(schema.presentations.created_at))
@@ -53,7 +55,7 @@ export class PresentationRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };
@@ -78,4 +80,3 @@ export class PresentationRepository {
 export function createPresentationRepository(): PresentationRepository {
   return new PresentationRepository();
 }
-

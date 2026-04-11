@@ -48,6 +48,34 @@ type BuildScreenPlaybackStateOptions = {
   includeUrls?: boolean;
   groupIds?: string[];
   lastProofOfPlayAt?: string | null;
+  recoveryState?: ScreenRecoveryState;
+};
+
+export type ScreenRecoveryState = {
+  active_pairing: {
+    id?: string;
+    created_at?: string | null;
+    expires_at?: string | null;
+    confirmed?: boolean;
+    mode?: string | null;
+  } | null;
+  auth_diagnostics: {
+    state: 'VALID' | 'MISSING_CERTIFICATE' | 'EXPIRED_CERTIFICATE' | 'REVOKED_CERTIFICATE';
+    reason: string;
+    latest_certificate_expires_at: string | null;
+    latest_certificate_revoked_at: string | null;
+    latest_certificate_serial: string | null;
+  };
+};
+
+export type ScreenFleetSummary = {
+  server_time: string;
+  total: number;
+  online: number;
+  recovery: number;
+  stale: number;
+  offline: number;
+  error: number;
 };
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -423,11 +451,6 @@ export async function getActiveEmergencyForScreen(
   };
 }
 
-async function getMediaById(id: string, db = getDatabase()) {
-  const [media] = await db.select().from(schema.media).where(eq(schema.media.id, id)).limit(1);
-  return media || null;
-}
-
 async function getMediaSummary(id: string, db = getDatabase()) {
   return await buildResolvedMediaRecord(id, db);
 }
@@ -472,39 +495,27 @@ export async function getLatestScreenshotPreview(
   };
 }
 
-async function getScreenRecoveryState(screenId: string, db = getDatabase()) {
-  const [activePairing] = await db
-    .select({
-      id: schema.devicePairings.id,
-      created_at: schema.devicePairings.created_at,
-      expires_at: schema.devicePairings.expires_at,
-      device_info: schema.devicePairings.device_info,
-    })
-    .from(schema.devicePairings)
-    .where(
-      and(
-        eq(schema.devicePairings.device_id, screenId),
-        eq(schema.devicePairings.used, false),
-        gt(schema.devicePairings.expires_at, new Date())
-      )
-    )
-    .orderBy(desc(schema.devicePairings.created_at))
-    .limit(1);
-
-  const [latestCertificate] = await db
-    .select({
-      id: schema.deviceCertificates.id,
-      serial: schema.deviceCertificates.serial,
-      expires_at: schema.deviceCertificates.expires_at,
-      revoked_at: schema.deviceCertificates.revoked_at,
-      is_revoked: schema.deviceCertificates.is_revoked,
-      created_at: schema.deviceCertificates.created_at,
-    })
-    .from(schema.deviceCertificates)
-    .where(eq(schema.deviceCertificates.screen_id, screenId))
-    .orderBy(desc(schema.deviceCertificates.created_at))
-    .limit(1);
-
+function buildScreenRecoveryState(
+  activePairing:
+    | {
+        id: string;
+        created_at: Date;
+        expires_at: Date;
+        device_info: unknown;
+      }
+    | null
+    | undefined,
+  latestCertificate:
+    | {
+        serial: string;
+        expires_at: Date;
+        revoked_at: Date | null;
+        is_revoked: boolean;
+      }
+    | null
+    | undefined,
+  now = new Date()
+): ScreenRecoveryState {
   const pairingInfo = ((activePairing?.device_info as Record<string, unknown> | null) || {}) as Record<string, any>;
   const pairingMeta = (pairingInfo?.pairing || {}) as Record<string, any>;
   const activePairingMode =
@@ -529,7 +540,7 @@ async function getScreenRecoveryState(screenId: string, db = getDatabase()) {
   } else if (latestCertificate.is_revoked || latestCertificate.revoked_at) {
     authState = 'REVOKED_CERTIFICATE';
     authReason = 'The latest device certificate has been revoked.';
-  } else if (latestCertificate.expires_at && latestCertificate.expires_at.getTime() <= Date.now()) {
+  } else if (latestCertificate.expires_at && latestCertificate.expires_at.getTime() <= now.getTime()) {
     authState = 'EXPIRED_CERTIFICATE';
     authReason = 'The latest device certificate has expired.';
   }
@@ -544,6 +555,86 @@ async function getScreenRecoveryState(screenId: string, db = getDatabase()) {
       latest_certificate_serial: latestCertificate?.serial ?? null,
     },
   };
+}
+
+export async function buildScreenRecoveryStateMap(
+  screenIds: string[],
+  db = getDatabase(),
+  now = new Date()
+): Promise<Map<string, ScreenRecoveryState>> {
+  if (screenIds.length === 0) {
+    return new Map();
+  }
+
+  const activePairings = await db
+    .select({
+      id: schema.devicePairings.id,
+      device_id: schema.devicePairings.device_id,
+      created_at: schema.devicePairings.created_at,
+      expires_at: schema.devicePairings.expires_at,
+      device_info: schema.devicePairings.device_info,
+    })
+    .from(schema.devicePairings)
+    .where(
+      and(
+        inArray(schema.devicePairings.device_id, screenIds as any),
+        eq(schema.devicePairings.used, false),
+        gt(schema.devicePairings.expires_at, now)
+      )
+    )
+    .orderBy(desc(schema.devicePairings.created_at));
+
+  const latestCertificates = await db
+    .select({
+      screen_id: schema.deviceCertificates.screen_id,
+      serial: schema.deviceCertificates.serial,
+      expires_at: schema.deviceCertificates.expires_at,
+      revoked_at: schema.deviceCertificates.revoked_at,
+      is_revoked: schema.deviceCertificates.is_revoked,
+      created_at: schema.deviceCertificates.created_at,
+    })
+    .from(schema.deviceCertificates)
+    .where(inArray(schema.deviceCertificates.screen_id, screenIds as any))
+    .orderBy(desc(schema.deviceCertificates.created_at));
+
+  const activePairingByScreenId = new Map<string, (typeof activePairings)[number]>();
+  for (const pairing of activePairings) {
+    if (!pairing.device_id || activePairingByScreenId.has(pairing.device_id)) continue;
+    activePairingByScreenId.set(pairing.device_id, pairing);
+  }
+
+  const latestCertificateByScreenId = new Map<string, (typeof latestCertificates)[number]>();
+  for (const certificate of latestCertificates) {
+    if (latestCertificateByScreenId.has(certificate.screen_id)) continue;
+    latestCertificateByScreenId.set(certificate.screen_id, certificate);
+  }
+
+  return new Map(
+    screenIds.map((screenId) => [
+      screenId,
+      buildScreenRecoveryState(
+        activePairingByScreenId.get(screenId),
+        latestCertificateByScreenId.get(screenId),
+        now
+      ),
+    ])
+  );
+}
+
+async function getScreenRecoveryState(screenId: string, db = getDatabase(), now = new Date()) {
+  const recoveryStateMap = await buildScreenRecoveryStateMap([screenId], db, now);
+  return (
+    recoveryStateMap.get(screenId) ?? {
+      active_pairing: null,
+      auth_diagnostics: {
+        state: 'MISSING_CERTIFICATE',
+        reason: 'No device certificate exists for this screen.',
+        latest_certificate_expires_at: null,
+        latest_certificate_revoked_at: null,
+        latest_certificate_serial: null,
+      },
+    }
+  );
 }
 
 function deriveHealthState(params: {
@@ -711,7 +802,7 @@ export async function buildScreenPlaybackState(
   const currentMedia =
     options.includeMedia && currentMediaId ? await getMediaSummary(currentMediaId, db) : null;
   const preview = options.includePreview ? await getLatestScreenshotPreview(screen.id, { db, now }) : null;
-  const recoveryState = await getScreenRecoveryState(screen.id, db);
+  const recoveryState = options.recoveryState ?? (await getScreenRecoveryState(screen.id, db, now));
   const health = deriveHealthState({
     screen,
     authDiagnostics: recoveryState.auth_diagnostics,
@@ -797,7 +888,7 @@ function dedupeItems(items: any[]) {
   return result.sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
 }
 
-function summarizeGroupPlayback(
+export function summarizeGroupPlayback(
   group: ScreenGroupRecord,
   memberIds: string[],
   screenSummaries: Map<string, Awaited<ReturnType<typeof buildScreenPlaybackState>>>
@@ -885,6 +976,69 @@ export async function buildScreensOverviewPayload(options: {
     screens: screenSummaries,
     groups: await groupSummaries,
   };
+}
+
+export async function buildScreensFleetSummary(options: {
+  db?: ReturnType<typeof getDatabase>;
+  now?: Date;
+} = {}): Promise<ScreenFleetSummary> {
+  const db = options.db ?? getDatabase();
+  const now = options.now ?? new Date();
+  const screens = await db.select().from(schema.screens);
+  const recoveryStateMap = await buildScreenRecoveryStateMap(
+    screens.map((screen) => screen.id),
+    db,
+    now
+  );
+
+  const summary: ScreenFleetSummary = {
+    server_time: now.toISOString(),
+    total: screens.length,
+    online: 0,
+    recovery: 0,
+    stale: 0,
+    offline: 0,
+    error: 0,
+  };
+
+  for (const screen of screens) {
+    const recoveryState = recoveryStateMap.get(screen.id);
+    const health = deriveHealthState({
+      screen,
+      authDiagnostics:
+        recoveryState?.auth_diagnostics ?? {
+          state: 'MISSING_CERTIFICATE',
+          reason: 'No device certificate exists for this screen.',
+          latest_certificate_expires_at: null,
+          latest_certificate_revoked_at: null,
+          latest_certificate_serial: null,
+        },
+      activePairing: recoveryState?.active_pairing ?? null,
+      now,
+    });
+
+    switch (health.health_state) {
+      case 'ONLINE':
+        summary.online += 1;
+        break;
+      case 'RECOVERY_REQUIRED':
+        summary.recovery += 1;
+        break;
+      case 'STALE':
+        summary.stale += 1;
+        break;
+      case 'OFFLINE':
+        summary.offline += 1;
+        break;
+      case 'ERROR':
+        summary.error += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return summary;
 }
 
 export async function buildScreenPlaybackStateById(

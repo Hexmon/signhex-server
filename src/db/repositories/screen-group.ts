@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, or, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class ScreenGroupRepository {
@@ -19,21 +19,40 @@ export class ScreenGroupRepository {
     return group || null;
   }
 
-  async list(options: { page?: number; limit?: number }) {
+  async list(options: { page?: number; limit?: number; q?: string }) {
     const db = getDatabase();
     const page = options.page || 1;
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    const total = await db.select().from(schema.screenGroups);
-    const items = await db
-      .select()
+    const conditions = [];
+    if (options.q?.trim()) {
+      const term = `%${options.q.trim()}%`;
+      conditions.push(
+        or(
+          sql`${schema.screenGroups.id}::text ILIKE ${term}`,
+          sql`${schema.screenGroups.name} ILIKE ${term}`,
+          sql`${schema.screenGroups.description} ILIKE ${term}`
+        )
+      );
+    }
+
+    let query = db.select().from(schema.screenGroups);
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+
+    const [total] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.screenGroups)
+      .where(conditions.length > 0 ? and(...conditions) : undefined);
+
+    const items = await query
       .orderBy(desc(schema.screenGroups.created_at))
       .limit(limit)
       .offset(offset);
 
-    return { items, total: total.length, page, limit };
+    return { items, total: Number(total?.count ?? 0), page, limit };
   }
 
   async members(groupId: string) {

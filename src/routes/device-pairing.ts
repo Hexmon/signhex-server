@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { randomBytes, createHash, createHmac, randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { config } from '@/config';
 import { createDevicePairingRepository } from '@/db/repositories/device-pairing';
@@ -13,12 +13,57 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
+import { getDatabase, schema } from '@/db';
+import { extractDeviceAuthPublicKeyFromCsr, issueDeviceCertificateFromCsr } from '@/utils/device-request-auth';
+import { recordPairingCodeAllocation, recordPairingCsrValidation } from '@/observability/metrics';
 
 const logger = createLogger('device-pairing-routes');
-const { BAD_REQUEST, CONFLICT, CREATED, FORBIDDEN, NOT_FOUND, OK, UNAUTHORIZED } = HTTP_STATUS;
+const { CREATED, OK } = HTTP_STATUS;
+const ACTIVE_PAIRING_CODE_MAX_ATTEMPTS = 8;
+
+type PairingCreateInput = {
+  device_id?: string | null;
+  expires_at: Date;
+  width?: number | null;
+  height?: number | null;
+  aspect_ratio?: string | null;
+  orientation?: string | null;
+  model?: string | null;
+  codecs?: string[] | null;
+  device_info?: Record<string, any> | null;
+};
 
 function looksBase64(value: string) {
   return /^[A-Za-z0-9+/=\\r\\n]+$/.test(value);
+}
+
+function isActivePairingCodeConflict(error: unknown) {
+  if (!error || typeof error !== 'object') return false;
+  const pgError = error as { code?: string; constraint?: string };
+  return pgError.code === '23505' && pgError.constraint === 'device_pairings_active_code_idx';
+}
+
+function classifyPairingCsrValidationFailure(error: unknown) {
+  if (!(error instanceof AppError)) {
+    return 'unknown' as const;
+  }
+
+  switch (error.message) {
+    case 'Invalid CSR format':
+      return 'invalid_format' as const;
+    case 'CSR verification failed':
+      return 'verification_failed' as const;
+    case 'CSR is missing a public key':
+      return 'missing_public_key' as const;
+    case 'CSR subject commonName is required':
+      return 'missing_common_name' as const;
+    case 'CSR RSA public key must be at least 2048 bits':
+      return 'weak_rsa_key' as const;
+    case 'CSR deviceId does not match pairing deviceId':
+      return 'device_mismatch' as const;
+    default:
+      return 'unknown' as const;
+  }
 }
 
 const generatePairingCodeSchema = z.object({
@@ -54,9 +99,125 @@ const confirmPairingSchema = z.object({
 });
 
 export async function devicePairingRoutes(fastify: FastifyInstance) {
+  const db = getDatabase();
   const pairingRepo = createDevicePairingRepository();
   const certificateRepo = createDeviceCertificateRepository();
   const screenRepo = createScreenRepository();
+
+  const createPairingWithRetries = async (
+    data: PairingCreateInput,
+    codeFactory: () => string,
+    context: { mode: 'device_request' | 'recovery'; deviceId?: string | null }
+  ) => {
+    await pairingRepo.retireExpired();
+
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= ACTIVE_PAIRING_CODE_MAX_ATTEMPTS; attempt += 1) {
+      const pairingCode = codeFactory();
+      try {
+        const pairing = await pairingRepo.create({
+          ...data,
+          pairing_code: pairingCode,
+        });
+        recordPairingCodeAllocation(context.mode, 'success');
+        return { pairing, pairingCode };
+      } catch (error) {
+        if (!isActivePairingCodeConflict(error)) {
+          throw error;
+        }
+
+        lastError = error;
+        recordPairingCodeAllocation(context.mode, 'collision_retry');
+        logger.warn(
+          {
+            pairingCode,
+            attempt,
+            mode: context.mode,
+            deviceId: context.deviceId ?? null,
+          },
+          'Pairing code collision detected; retrying'
+        );
+        await pairingRepo.retireExpired();
+      }
+    }
+
+    logger.error(
+      {
+        mode: context.mode,
+        deviceId: context.deviceId ?? null,
+        attempts: ACTIVE_PAIRING_CODE_MAX_ATTEMPTS,
+        error: lastError,
+      },
+      'Failed to allocate a unique active pairing code'
+    );
+    recordPairingCodeAllocation(context.mode, 'exhausted');
+    throw AppError.conflict('Unable to generate a fresh pairing code. Please try again.');
+  };
+
+  const buildScreenDeviceInfo = (
+    pairing: typeof schema.devicePairings.$inferSelect,
+    pairingInfo: Record<string, any>
+  ) => {
+    const screenDeviceInfo: Record<string, any> = { ...(pairingInfo || {}) };
+    delete screenDeviceInfo.pairing;
+    if (pairing.model && screenDeviceInfo.model == null) screenDeviceInfo.model = pairing.model;
+    if (pairing.codecs && screenDeviceInfo.codecs == null) screenDeviceInfo.codecs = pairing.codecs;
+    return Object.keys(screenDeviceInfo).length > 0 ? screenDeviceInfo : null;
+  };
+
+  const validateConfirmedPairing = (pairing: typeof schema.devicePairings.$inferSelect) => {
+    if (!pairing.device_id) {
+      throw AppError.badRequest('Pairing is missing a device id');
+    }
+
+    const pairingInfo = (pairing.device_info || {}) as Record<string, any>;
+    const pairingMeta = (pairingInfo?.pairing || {}) as Record<string, any>;
+    const confirmed = pairingMeta.confirmed === true;
+    const screenName =
+      typeof pairingMeta.screen_name === 'string' && pairingMeta.screen_name.trim()
+        ? pairingMeta.screen_name.trim()
+        : null;
+    const screenLocation =
+      typeof pairingMeta.screen_location === 'string' && pairingMeta.screen_location.trim()
+        ? pairingMeta.screen_location.trim()
+        : null;
+
+    if (!confirmed || !screenName) {
+      throw AppError.conflict('Pairing not confirmed');
+    }
+
+    return {
+      deviceId: pairing.device_id,
+      pairingInfo,
+      screenName,
+      screenLocation,
+    };
+  };
+
+  const findConfirmablePairing = async (pairingCode: string) => {
+    const activePairing = await pairingRepo.findByCode(pairingCode);
+    if (activePairing) {
+      return activePairing;
+    }
+
+    const historicalPairing = await pairingRepo.findAnyByCode(pairingCode);
+    if (!historicalPairing) {
+      throw AppError.notFound('Invalid or expired pairing code');
+    }
+    if (!historicalPairing.device_id) {
+      throw AppError.badRequest('Pairing missing device reference');
+    }
+
+    const latestActivePairing = await pairingRepo.findActiveByDeviceId(historicalPairing.device_id);
+    if (latestActivePairing && latestActivePairing.id !== historicalPairing.id) {
+      throw AppError.conflict('This recovery code has been superseded. Generate or use the latest recovery code.');
+    }
+    if (historicalPairing.used) {
+      throw AppError.conflict('This pairing code is no longer active. Generate a fresh recovery code and try again.');
+    }
+
+    throw AppError.notFound('Invalid or expired pairing code');
+  };
 
   const buildPairingState = (pairing: any | null) => {
     if (!pairing) return null;
@@ -160,16 +321,22 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
   const issuePairingCode = async (deviceId: string, expiresIn: number) => {
     const existingScreen = await screenRepo.findById(deviceId);
+    await pairingRepo.retireExpired();
     const retiredPairings = await pairingRepo.retireActiveByDeviceId(deviceId);
-    const pairingCode = randomBytes(3).toString('hex').toUpperCase();
     const expiresAt = new Date();
     expiresAt.setSeconds(expiresAt.getSeconds() + expiresIn);
 
-    const pairing = await pairingRepo.create({
-      device_id: deviceId,
-      pairing_code: pairingCode,
-      expires_at: expiresAt,
-    });
+    const { pairing, pairingCode } = await createPairingWithRetries(
+      {
+        device_id: deviceId,
+        expires_at: expiresAt,
+      },
+      () => randomBytes(3).toString('hex').toUpperCase(),
+      {
+        mode: 'recovery',
+        deviceId,
+      }
+    );
 
     return {
       pairing,
@@ -280,22 +447,26 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         // Reaching this endpoint over LAN implies connectivity; record observed IP for debugging
         const data = requestPairingSchema.parse(request.body);
         const deviceId = randomUUID();
-
-        const pairingCode = (Math.floor(Math.random() * 900000) + 100000).toString(); // 6-digit numeric
         const expiresAt = new Date(Date.now() + data.expires_in * 1000);
 
-        const pairing = await pairingRepo.create({
-          device_id: deviceId,
-          pairing_code: pairingCode,
-          expires_at: expiresAt,
-          width: data.width,
-          height: data.height,
-          aspect_ratio: data.aspect_ratio,
-          orientation: data.orientation,
-          model: data.model,
-          codecs: data.codecs,
-          device_info: data.device_info,
-        });
+        const { pairing, pairingCode } = await createPairingWithRetries(
+          {
+            device_id: deviceId,
+            expires_at: expiresAt,
+            width: data.width,
+            height: data.height,
+            aspect_ratio: data.aspect_ratio,
+            orientation: data.orientation,
+            model: data.model,
+            codecs: data.codecs,
+            device_info: data.device_info,
+          },
+          () => (Math.floor(Math.random() * 900000) + 100000).toString(),
+          {
+            mode: 'device_request',
+            deviceId,
+          }
+        );
 
         logger.info(
           { deviceId, pairingCode, expiresAt, ip: request.ip, label: data.device_label },
@@ -357,51 +528,26 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
         if (!pairing) {
           throw AppError.notFound('Invalid or expired pairing code');
         }
-        if (!pairing.device_id) {
-          throw AppError.badRequest('Pairing is missing a device id');
-        }
-        const deviceId = pairing.device_id;
-        const pairingInfo = (pairing.device_info || {}) as Record<string, any>;
-        const pairingMeta = (pairingInfo?.pairing || {}) as Record<string, any>;
-        const confirmed = pairingMeta.confirmed === true;
-        const screenName =
-          typeof pairingMeta.screen_name === 'string' && pairingMeta.screen_name.trim()
-            ? pairingMeta.screen_name.trim()
-            : null;
-        const screenLocation =
-          typeof pairingMeta.screen_location === 'string' && pairingMeta.screen_location.trim()
-            ? pairingMeta.screen_location.trim()
-            : null;
-
-        if (!confirmed || !screenName) {
-          throw AppError.conflict('Pairing not confirmed');
-        }
+        const { deviceId } = validateConfirmedPairing(pairing);
 
         const csr = data.csr.trim();
         if (!csr.startsWith('-----BEGIN CERTIFICATE REQUEST-----') || !csr.endsWith('-----END CERTIFICATE REQUEST-----')) {
           throw AppError.badRequest('Invalid CSR format');
         }
-        const csrBody = csr
-          .replace('-----BEGIN CERTIFICATE REQUEST-----', '')
-          .replace('-----END CERTIFICATE REQUEST-----', '')
-          .replace(/\\s+/g, '');
+        let csrDetails: ReturnType<typeof extractDeviceAuthPublicKeyFromCsr>;
         try {
-          const decoded = Buffer.from(csrBody, 'base64').toString('utf8');
-          const match = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-          if (match && match[0].toLowerCase() !== deviceId.toLowerCase()) {
+          csrDetails = extractDeviceAuthPublicKeyFromCsr(csr);
+          if (csrDetails.subjectCommonName.toLowerCase() !== deviceId.toLowerCase()) {
             throw AppError.conflict('CSR deviceId does not match pairing deviceId');
           }
-          if (config.NODE_ENV === 'development' && !decoded.includes(deviceId)) {
-            logger.warn({ deviceId }, 'CSR does not appear to include deviceId in subject');
-          }
-        } catch (err) {
-          if (err instanceof AppError) throw err;
-          if (config.NODE_ENV === 'development') {
-            logger.warn({ deviceId }, 'Failed to decode CSR for deviceId check');
-          }
+          recordPairingCsrValidation('accepted', 'valid');
+        } catch (error) {
+          recordPairingCsrValidation('rejected', classifyPairingCsrValidationFailure(error));
+          throw error;
         }
 
         let caCert: string;
+        let caKey: string;
         try {
           caCert = await readFile(config.CA_CERT_PATH, 'utf8');
         } catch (err: any) {
@@ -410,49 +556,96 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           }
           throw err;
         }
-        const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
-
-        const signature = createHmac('sha256', caCert).update(csr).digest('base64');
-        const certificateBody = Buffer.from(`${csr}\n${signature}`, 'utf8').toString('base64');
-        const certificatePem = `-----BEGIN CERTIFICATE-----\n${certificateBody}\n-----END CERTIFICATE-----`;
-        const fingerprint = createHash('sha256').update(certificatePem).digest('hex');
-
-        await certificateRepo.revokeByDeviceId(deviceId);
-
-        await certificateRepo.create({
-          device_id: deviceId,
-          certificate: certificatePem,
-          private_key: '',
-          fingerprint,
-          expires_at: expiresAt,
-        });
-
-        const existingScreen = await screenRepo.findById(deviceId);
-        if (!existingScreen) {
-          const { pairing: _pairingMeta, ...deviceInfoRest } = pairingInfo;
-          const screenDeviceInfo: Record<string, any> = { ...(deviceInfoRest || {}) };
-          if (pairing.model && screenDeviceInfo.model == null) screenDeviceInfo.model = pairing.model;
-          if (pairing.codecs && screenDeviceInfo.codecs == null) screenDeviceInfo.codecs = pairing.codecs;
-
-          await screenRepo.create({
-            id: deviceId,
-            name: screenName,
-            location: screenLocation ?? undefined,
-            aspect_ratio: (pairing as any).aspect_ratio ?? null,
-            width: (pairing as any).width ?? null,
-            height: (pairing as any).height ?? null,
-            orientation: (pairing as any).orientation ?? null,
-            device_info: Object.keys(screenDeviceInfo).length > 0 ? screenDeviceInfo : null,
-          });
+        try {
+          caKey = await readFile(config.CA_KEY_PATH, 'utf8');
+        } catch (err: any) {
+          if (err?.code === 'ENOENT') {
+            throw AppError.caKeyMissing(`CA private key not found at ${config.CA_KEY_PATH}`);
+          }
+          throw err;
         }
+        const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+        const issuedCertificate = issueDeviceCertificateFromCsr({
+          csrPem: csr,
+          caCertPem: caCert,
+          caKeyPem: caKey,
+          notAfter: expiresAt,
+        });
+        const certificatePem = issuedCertificate.certificatePem;
+        const deviceSerial = issuedCertificate.serialNumber;
 
-        await pairingRepo.markAsUsed(pairing.id);
+        await db.transaction(async (tx) => {
+          const currentPairing = await pairingRepo.findActiveById(pairing.id, tx);
+          if (!currentPairing) {
+            throw AppError.conflict('This pairing code is no longer active. Generate a fresh pairing code and try again.');
+          }
+
+          const { deviceId: currentDeviceId, pairingInfo, screenName, screenLocation } =
+            validateConfirmedPairing(currentPairing);
+
+          const consumedPairing = await pairingRepo.markAsUsedIfActive(currentPairing.id, tx);
+          if (!consumedPairing) {
+            throw AppError.conflict('This pairing code is no longer active. Generate a fresh pairing code and try again.');
+          }
+
+          await certificateRepo.revokeByDeviceId(currentDeviceId, tx);
+          await certificateRepo.create(
+            {
+              device_id: currentDeviceId,
+              certificate: certificatePem,
+              private_key: '',
+              serial: deviceSerial,
+              expires_at: expiresAt,
+              public_key_pem: csrDetails.publicKeyPem,
+              auth_version: 'signature_v1',
+            },
+            tx
+          );
+
+          const existingScreen = await screenRepo.findById(currentDeviceId, tx);
+          const screenDeviceInfo = buildScreenDeviceInfo(currentPairing, pairingInfo);
+          if (!existingScreen) {
+            await screenRepo.create(
+              {
+                id: currentDeviceId,
+                name: screenName,
+                location: screenLocation ?? undefined,
+                aspect_ratio: currentPairing.aspect_ratio ?? null,
+                width: currentPairing.width ?? null,
+                height: currentPairing.height ?? null,
+                orientation: currentPairing.orientation ?? null,
+                device_info: screenDeviceInfo,
+              },
+              tx
+            );
+          } else {
+            await screenRepo.update(
+              currentDeviceId,
+              {
+                name: screenName,
+                location: screenLocation ?? existingScreen.location ?? undefined,
+                aspect_ratio: currentPairing.aspect_ratio ?? existingScreen.aspect_ratio ?? null,
+                width: currentPairing.width ?? existingScreen.width ?? null,
+                height: currentPairing.height ?? existingScreen.height ?? null,
+                orientation: currentPairing.orientation ?? existingScreen.orientation ?? null,
+                device_info:
+                  screenDeviceInfo != null
+                    ? {
+                        ...((existingScreen.device_info as Record<string, any> | null) ?? {}),
+                        ...screenDeviceInfo,
+                      }
+                    : existingScreen.device_info ?? null,
+              },
+              tx
+            );
+          }
+        });
 
         logger.info(
           {
             deviceId,
             pairingId: pairing.id,
-            fingerprint,
+            serial: deviceSerial,
           },
           'Device pairing completed'
         );
@@ -463,7 +656,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
           device_id: deviceId,
           certificate: certificatePem,
           ca_certificate: caCert,
-          fingerprint,
+          fingerprint: deviceSerial,
           expires_at: expiresAt.toISOString(),
         });
       } catch (error) {
@@ -499,13 +692,7 @@ export async function devicePairingRoutes(fastify: FastifyInstance) {
 
         const data = confirmPairingSchema.parse(request.body);
 
-        const pairing = await pairingRepo.findAnyByCode(data.pairing_code);
-        if (!pairing) {
-          throw AppError.notFound('Invalid or expired pairing code');
-        }
-        if (pairing.expires_at && pairing.expires_at.getTime() <= Date.now()) {
-          throw AppError.notFound('Invalid or expired pairing code');
-        }
+        const pairing = await findConfirmablePairing(data.pairing_code);
         if (!pairing.device_id) {
           throw AppError.badRequest('Pairing missing device reference');
         }

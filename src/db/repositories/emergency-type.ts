@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class EmergencyTypeRepository {
@@ -29,7 +29,9 @@ export class EmergencyTypeRepository {
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    const total = await db.select().from(schema.emergencyTypes);
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.emergencyTypes);
     const items = await db
       .select()
       .from(schema.emergencyTypes)
@@ -37,7 +39,7 @@ export class EmergencyTypeRepository {
       .limit(limit)
       .offset(offset);
 
-    return { items, total: total.length, page, limit };
+    return { items, total: Number(totalRow?.count || 0), page, limit };
   }
 
   async findById(id: string) {

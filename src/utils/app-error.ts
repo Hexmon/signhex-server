@@ -68,6 +68,15 @@ export class AppError extends Error {
       details: null,
     });
   }
+
+  static caKeyMissing(message = 'CA private key is missing. Please configure CA_KEY_PATH correctly.') {
+    return new AppError({
+      statusCode: 500,
+      code: 'CA_KEY_MISSING',
+      message,
+      details: null,
+    });
+  }
 }
 
 export type ErrorResponse = {
