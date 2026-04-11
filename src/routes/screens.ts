@@ -927,6 +927,8 @@ export async function screenRoutes(fastify: FastifyInstance) {
           last_heartbeat_at: summary.last_heartbeat_at,
           current_schedule_id: summary.current_schedule_id,
           current_media_id: summary.current_media_id,
+          current_scene_id: (summary as any).current_scene_id ?? null,
+          active_slots: (summary as any).active_slots ?? [],
           current_schedule: (summary as any).current_schedule ?? null,
           publish: summary.publish,
           active_items: summary.active_items,

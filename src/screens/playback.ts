@@ -78,6 +78,16 @@ export type ScreenFleetSummary = {
   error: number;
 };
 
+export type ActiveSlotPlaybackState = {
+  scene_id: string;
+  slot_id: string;
+  item_id: string;
+  media_id: string | null;
+  schedule_id?: string | null;
+  playback_instance_id: string;
+  started_at: string;
+};
+
 function toIso(value: Date | string | null | undefined): string | null {
   if (!value) return null;
   if (value instanceof Date) return value.toISOString();
@@ -209,6 +219,42 @@ function dedupeScheduleItemMedia(items: ScreenPlaybackItemMediaSummary[]): Scree
   }
 
   return deduped;
+}
+
+function normalizeActiveSlots(value: unknown): ActiveSlotPlaybackState[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: ActiveSlotPlaybackState[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+
+    const slot = entry as Record<string, unknown>;
+    if (
+      typeof slot.scene_id !== 'string' ||
+      typeof slot.slot_id !== 'string' ||
+      typeof slot.item_id !== 'string' ||
+      typeof slot.playback_instance_id !== 'string' ||
+      typeof slot.started_at !== 'string'
+    ) {
+      continue;
+    }
+
+    normalized.push({
+      scene_id: slot.scene_id,
+      slot_id: slot.slot_id,
+      item_id: slot.item_id,
+      media_id: typeof slot.media_id === 'string' ? slot.media_id : null,
+      schedule_id: typeof slot.schedule_id === 'string' ? slot.schedule_id : null,
+      playback_instance_id: slot.playback_instance_id,
+      started_at: slot.started_at,
+    });
+  }
+
+  return normalized;
 }
 
 export function buildScheduleItemSummary(item: any): ScreenPlaybackItemSummary {
@@ -725,6 +771,7 @@ function derivePlaybackState(params: {
   lastProofOfPlayAt?: string | null;
   includeMedia?: boolean;
   currentMedia?: Record<string, unknown> | null;
+  activeSlots: ActiveSlotPlaybackState[];
 }): Record<string, unknown> {
   const fallbackItem =
     params.activeItems.find((item) => params.currentMediaId && itemIncludesMediaId(item, params.currentMediaId)) ??
@@ -737,32 +784,40 @@ function derivePlaybackState(params: {
 
   const resolvedCurrentMediaId =
     params.emergency?.media_id ??
+    params.activeSlots[0]?.media_id ??
     params.reportedHeartbeatMediaId ??
     fallbackMediaIdFromItem ??
     params.defaultMedia?.media_id ??
     null;
 
   const reportedHeartbeatScheduleId = params.screen.current_schedule_id ?? null;
+  const reportedHeartbeatSceneId =
+    params.activeSlots[0]?.scene_id ??
+    (typeof (params.screen as any).current_scene_id === 'string' ? String((params.screen as any).current_scene_id) : null);
   let source: PlaybackSource = 'UNKNOWN';
   if (params.emergency?.media_id) source = 'EMERGENCY';
-  else if (params.reportedHeartbeatMediaId || reportedHeartbeatScheduleId) source = 'HEARTBEAT';
+  else if (params.activeSlots.length > 0 || params.reportedHeartbeatMediaId || reportedHeartbeatScheduleId) source = 'HEARTBEAT';
   else if (fallbackItem) source = 'SCHEDULE';
   else if (params.defaultMedia?.media_id) source = 'DEFAULT';
 
   let playbackScheduleId: string | null = null;
   if (source === 'HEARTBEAT') {
-    playbackScheduleId = reportedHeartbeatScheduleId ?? params.latest?.schedule_id ?? null;
+    playbackScheduleId = params.activeSlots[0]?.schedule_id ?? reportedHeartbeatScheduleId ?? params.latest?.schedule_id ?? null;
   } else if (source === 'SCHEDULE') {
     playbackScheduleId = params.latest?.schedule_id ?? null;
   }
+
+  const primaryActiveSlot = params.activeSlots[0] ?? null;
 
   const playback: Record<string, unknown> = {
     source,
     is_live: Boolean(resolvedCurrentMediaId || fallbackItem || params.emergency || params.defaultMedia?.media_id),
     current_media_id: resolvedCurrentMediaId,
     current_schedule_id: playbackScheduleId,
-    current_item_id: fallbackItem?.id ?? null,
-    started_at: toIso(fallbackItem?.start_at),
+    current_scene_id: reportedHeartbeatSceneId,
+    active_slots: params.activeSlots,
+    current_item_id: primaryActiveSlot?.item_id ?? fallbackItem?.id ?? null,
+    started_at: primaryActiveSlot?.started_at ?? toIso(fallbackItem?.start_at),
     ends_at: toIso(fallbackItem?.end_at),
     heartbeat_received_at: toIso(params.screen.last_heartbeat_at),
     last_proof_of_play_at: params.lastProofOfPlayAt ?? null,
@@ -792,13 +847,15 @@ export async function buildScreenPlaybackState(
     includeUrls: options.includeUrls,
     groupIds,
   });
+  const activeSlots = normalizeActiveSlots((screen as any).active_slots);
   const currentMediaId =
     emergency?.media_id ??
+    activeSlots[0]?.media_id ??
     screen.current_media_id ??
     pickPrimaryMediaIdFromPresentation(activeItems[0]?.presentation) ??
     defaultMedia?.media_id ??
     null;
-  const reportedHeartbeatMediaId = emergency?.media_id ?? screen.current_media_id ?? null;
+  const reportedHeartbeatMediaId = emergency?.media_id ?? activeSlots[0]?.media_id ?? screen.current_media_id ?? null;
   const currentMedia =
     options.includeMedia && currentMediaId ? await getMediaSummary(currentMediaId, db) : null;
   const preview = options.includePreview ? await getLatestScreenshotPreview(screen.id, { db, now }) : null;
@@ -827,6 +884,8 @@ export async function buildScreenPlaybackState(
     last_heartbeat_at: toIso(screen.last_heartbeat_at),
     current_schedule_id: screen.current_schedule_id ?? null,
     current_media_id: screen.current_media_id ?? null,
+    current_scene_id: typeof (screen as any).current_scene_id === 'string' ? String((screen as any).current_scene_id) : null,
+    active_slots: activeSlots,
     active_items: activeItems,
     upcoming_items: upcomingItems,
     booked_until: bookedUntil,
@@ -866,6 +925,7 @@ export async function buildScreenPlaybackState(
       lastProofOfPlayAt: options.lastProofOfPlayAt ?? null,
       includeMedia: options.includeMedia,
       currentMedia,
+      activeSlots,
     }),
     emergency,
     preview,

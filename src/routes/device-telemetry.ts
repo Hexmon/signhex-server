@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { config as appConfig } from '@/config';
@@ -39,6 +39,17 @@ import { queueScreenStateRefresh } from '@/services/screen-state-refresh';
 const logger = createLogger('device-telemetry-routes');
 const { CREATED } = HTTP_STATUS;
 const DEVICE_SCREENSHOT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+const DEVICE_COMMAND_LEASE_MS = 60_000;
+
+const activeSlotSchema = z.object({
+  scene_id: z.string().min(1),
+  slot_id: z.string().min(1),
+  item_id: z.string().min(1),
+  media_id: z.string().nullable().optional(),
+  schedule_id: z.string().nullable().optional(),
+  playback_instance_id: z.string().uuid(),
+  started_at: z.string().datetime(),
+});
 
 const heartbeatSchema = z.object({
   device_id: z.string().min(1),
@@ -49,6 +60,8 @@ const heartbeatSchema = z.object({
   temperature: z.number().optional(),
   current_schedule_id: z.string().optional(),
   current_media_id: z.string().optional(),
+  current_scene_id: z.string().optional(),
+  active_slots: z.array(activeSlotSchema).optional(),
   memory_total_mb: z.number().nonnegative().optional(),
   memory_used_mb: z.number().nonnegative().optional(),
   memory_free_mb: z.number().nonnegative().optional(),
@@ -106,6 +119,10 @@ const proofOfPlaySchema = z.object({
   device_id: z.string().min(1),
   media_id: z.string().min(1),
   schedule_id: z.string().min(1),
+  playback_instance_id: z.string().uuid().optional(),
+  scene_id: z.string().optional(),
+  slot_id: z.string().optional(),
+  item_id: z.string().optional(),
   start_time: z.string().datetime(),
   end_time: z.string().datetime(),
   duration: z.number().int().positive(),
@@ -116,6 +133,7 @@ const screenshotSchema = z.object({
   device_id: z.string().min(1),
   timestamp: z.string().datetime(),
   image_data: z.string(), // base64 encoded
+  mime_type: z.string().optional(),
 });
 
 const createCommandSchema = z.object({
@@ -126,6 +144,10 @@ const createCommandSchema = z.object({
 const snapshotQuerySchema = z.object({
   include_urls: z.string().optional(),
 });
+
+const ackCommandSchema = z.object({
+  delivery_token: z.string().uuid().optional(),
+}).optional();
 
 const normalizeEtagToken = (value: string) =>
   value
@@ -214,21 +236,84 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   const db = getDatabase();
 
   const claimPendingCommands = async (deviceId: string) => {
-    const claimedAt = new Date();
-    const commands = await db
-      .update(schema.deviceCommands)
-      .set({ status: 'SENT', updated_at: claimedAt })
-      .where(and(eq(schema.deviceCommands.screen_id, deviceId), eq(schema.deviceCommands.status, 'PENDING')))
-      .returning({
-        id: schema.deviceCommands.id,
-        type: schema.deviceCommands.type,
-        payload: schema.deviceCommands.payload,
-        createdAt: schema.deviceCommands.created_at,
-      });
+    return await db.transaction(async (tx) => {
+      const claimedAt = new Date();
+      const reclaimBefore = new Date(claimedAt.getTime() - DEVICE_COMMAND_LEASE_MS);
+      const claimableResult = await tx.execute(sql`
+        SELECT id, created_at
+        FROM device_commands
+        WHERE screen_id = ${deviceId}
+          AND (
+            status = 'PENDING'
+            OR (
+              status = 'SENT'
+              AND acknowledged_at IS NULL
+              AND claimed_at <= ${reclaimBefore}
+            )
+          )
+        ORDER BY created_at ASC, id ASC
+        FOR UPDATE SKIP LOCKED
+      `);
 
-    return commands.sort(
-      (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
-    );
+      const claimable = (
+        claimableResult as unknown as {
+          rows?: Array<{
+            id: string;
+            created_at: Date | string;
+          }>;
+        }
+      ).rows ?? [];
+
+      const claimedCommands: Array<{
+        id: string;
+        type: string;
+        payload: unknown;
+        createdAt: Date;
+        deliveryToken: string | null;
+      }> = [];
+
+      for (const candidate of claimable) {
+        const deliveryToken = randomUUID();
+        const [claimed] = await tx
+          .update(schema.deviceCommands)
+          .set({
+            status: 'SENT',
+            delivery_token: deliveryToken,
+            claimed_at: claimedAt,
+            updated_at: claimedAt,
+            delivery_attempts: sql`${schema.deviceCommands.delivery_attempts} + 1`,
+          })
+          .where(
+            and(
+              eq(schema.deviceCommands.id, candidate.id),
+              eq(schema.deviceCommands.screen_id, deviceId),
+              or(
+                eq(schema.deviceCommands.status, 'PENDING'),
+                and(
+                  eq(schema.deviceCommands.status, 'SENT'),
+                  isNull(schema.deviceCommands.acknowledged_at),
+                  lte(schema.deviceCommands.claimed_at, reclaimBefore)
+                )
+              )
+            )
+          )
+          .returning({
+            id: schema.deviceCommands.id,
+            type: schema.deviceCommands.type,
+            payload: schema.deviceCommands.payload,
+            createdAt: schema.deviceCommands.created_at,
+            deliveryToken: schema.deviceCommands.delivery_token,
+          });
+
+        if (claimed) {
+          claimedCommands.push(claimed);
+        }
+      }
+
+      return claimedCommands.sort(
+        (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
+      );
+    });
   };
 
   const getGroupIdsForScreen = async (screenId: string): Promise<string[]> => {
@@ -401,6 +486,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         if (!latest) {
           return reply.send({
             device_id: deviceId,
+            content_state: defaultMediaPayload.default_media ? 'default' : 'empty',
+            server_time: new Date().toISOString(),
             publish: null,
             snapshot: null,
             media_urls: undefined,
@@ -417,6 +504,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           ...rawPayload,
           schedule: { ...schedule, items: filteredItems },
         };
+        const hasFilteredScheduledContent =
+          filteredItems.length > 0 || (Array.isArray(rawPayload.items) && rawPayload.items.length > 0);
 
         let mediaUrls: Record<string, string | null> | undefined;
         if (includeUrls) {
@@ -446,6 +535,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
 
         return reply.send({
           device_id: deviceId,
+          content_state: hasFilteredScheduledContent ? 'scheduled' : defaultMediaPayload.default_media ? 'default' : 'empty',
+          server_time: new Date().toISOString(),
             publish: {
               publish_id: latest.publish_id,
               schedule_id: latest.schedule_id,
@@ -561,6 +652,8 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
             last_heartbeat_at: receivedAt,
             current_schedule_id: data.current_schedule_id ?? null,
             current_media_id: data.current_media_id ?? null,
+            current_scene_id: data.current_scene_id ?? null,
+            active_slots: data.active_slots ?? [],
             updated_at: receivedAt,
           })
           .where(eq(schema.screens.id, data.device_id));
@@ -595,6 +688,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
             id: command.id,
             type: command.type,
             payload: command.payload,
+            delivery_token: command.deliveryToken,
             timestamp: new Date(command.createdAt).toISOString(),
           })),
         });
@@ -624,6 +718,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           deviceId: data.device_id,
           mediaId: data.media_id,
           scheduleId: data.schedule_id,
+          playbackInstanceId: data.playback_instance_id ?? null,
           startTime: data.start_time,
           endTime: data.end_time,
           duration: data.duration,
@@ -633,6 +728,10 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           deviceId: data.device_id,
           mediaId: data.media_id,
           scheduleId: data.schedule_id,
+          playbackInstanceId: data.playback_instance_id ?? randomUUID(),
+          sceneId: data.scene_id ?? null,
+          slotId: data.slot_id ?? null,
+          itemId: data.item_id ?? null,
           startTime: data.start_time,
           endTime: data.end_time,
           duration: data.duration,
@@ -685,11 +784,17 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
         const data = screenshotSchema.parse(request.body);
         await authenticateDeviceOrThrow(request, data.device_id);
         const storageObjectId = randomUUID();
-        const objectKey = buildScreenshotObjectKey(data.device_id, data.timestamp, storageObjectId);
+        const objectKey = buildScreenshotObjectKey(
+          data.device_id,
+          data.timestamp,
+          storageObjectId,
+          data.mime_type || 'image/png'
+        );
         const screenshotJob = {
           deviceId: data.device_id,
           timestamp: data.timestamp,
           imageData: data.image_data,
+          mimeType: data.mime_type || 'image/png',
           objectKey,
           storageObjectId,
         };
@@ -747,6 +852,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
             id: command.id,
             type: command.type,
             payload: command.payload,
+            delivery_token: command.deliveryToken,
             timestamp: new Date(command.createdAt).toISOString(),
           })),
         });
@@ -758,7 +864,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
   );
 
   // Acknowledge command (device auth required)
-  fastify.post<{ Params: { deviceId: string; commandId: string } }>(
+  fastify.post<{ Params: { deviceId: string; commandId: string }; Body: z.infer<typeof ackCommandSchema> }>(
     apiEndpoints.deviceTelemetry.ackCommand,
     {
       schema: {
@@ -769,6 +875,7 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { deviceId, commandId } = request.params as any;
+        const ackBody = ackCommandSchema.parse(request.body);
         await authenticateDeviceOrThrow(request, deviceId);
 
         const acknowledgedAt = new Date();
@@ -777,9 +884,20 @@ export async function deviceTelemetryRoutes(fastify: FastifyInstance) {
           .update(schema.deviceCommands)
           .set({
             status: 'ACKNOWLEDGED',
+            acknowledged_at: acknowledgedAt,
             updated_at: acknowledgedAt,
           })
-          .where(and(eq(schema.deviceCommands.id, commandId), eq(schema.deviceCommands.screen_id, deviceId)))
+          .where(
+            and(
+              eq(schema.deviceCommands.id, commandId),
+              eq(schema.deviceCommands.screen_id, deviceId),
+              eq(schema.deviceCommands.status, 'SENT'),
+              isNull(schema.deviceCommands.acknowledged_at),
+              ackBody?.delivery_token
+                ? eq(schema.deviceCommands.delivery_token, ackBody.delivery_token)
+                : isNull(schema.deviceCommands.delivery_token)
+            )
+          )
           .returning({ id: schema.deviceCommands.id });
 
         if (!updatedCommand) {

@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export type PlaybackRefreshReason = 'PUBLISH' | 'EMERGENCY' | 'GROUP_MEMBERSHIP' | 'TAKE_DOWN' | 'DEFAULT_MEDIA';
@@ -30,6 +30,7 @@ export async function createPlaybackRefreshCommands(params: PlaybackRefreshComma
       ? resolvedScreenIds
       : await (async () => {
           const dedupeCutoff = new Date(Date.now() - REFRESH_COMMAND_DEDUPE_MS);
+          const activeLeaseCutoff = new Date(Date.now() - REFRESH_COMMAND_DEDUPE_MS);
           const existingRefreshes = await db
             .select({
               screen_id: schema.deviceCommands.screen_id,
@@ -39,8 +40,17 @@ export async function createPlaybackRefreshCommands(params: PlaybackRefreshComma
               and(
                 inArray(schema.deviceCommands.screen_id, resolvedScreenIds as string[]),
                 eq(schema.deviceCommands.type, 'REFRESH'),
-                inArray(schema.deviceCommands.status, ['PENDING', 'SENT'] as const),
-                gte(schema.deviceCommands.created_at, dedupeCutoff)
+                or(
+                  and(
+                    eq(schema.deviceCommands.status, 'PENDING'),
+                    gte(schema.deviceCommands.created_at, dedupeCutoff)
+                  ),
+                  and(
+                    eq(schema.deviceCommands.status, 'SENT'),
+                    isNull(schema.deviceCommands.acknowledged_at),
+                    gte(schema.deviceCommands.claimed_at, activeLeaseCutoff)
+                  )
+                )
               )
             );
 

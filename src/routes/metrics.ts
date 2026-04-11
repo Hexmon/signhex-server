@@ -8,7 +8,6 @@ import { apiEndpoints } from '@/config/apiEndpoints';
 import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
-import { countActiveScheduledScreensNow } from '@/screens/playback';
 
 const logger = createLogger('metrics-routes');
 const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
@@ -90,7 +89,16 @@ export async function metricsRoutes(fastify: FastifyInstance) {
         const onlineScreens = Number(onlineScreensCount?.count || 0);
         const mediaStorageTotal = Number(mediaStorageBytes?.total || 0);
         const activeSchedules = Number(activeSchedulesCount?.count || 0);
-        const activeScreensNow = await countActiveScheduledScreensNow({ db, now });
+        const [activeScreensNowRow] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.screens)
+          .where(
+            sql`${schema.screens.current_schedule_id} IS NOT NULL
+              AND ${schema.screens.status} = 'ACTIVE'
+              AND ${schema.screens.last_heartbeat_at} IS NOT NULL
+              AND ${schema.screens.last_heartbeat_at} >= ${fiveMinutesAgo}`
+          );
+        const activeScreensNow = Number(activeScreensNowRow?.count || 0);
         const lastHeartbeatAt = latestHeartbeat?.timestamp ? new Date(latestHeartbeat.timestamp) : null;
         const systemStatus =
           !lastHeartbeatAt ? 'unknown' : lastHeartbeatAt >= fiveMinutesAgo ? 'healthy' : 'degraded';
