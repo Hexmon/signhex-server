@@ -109,6 +109,25 @@ describe('Auth Routes', () => {
       expect(body).toHaveProperty('email');
       expect(body).toHaveProperty('role');
     });
+
+    it('should accept access_token cookie when authorization header is absent', async () => {
+      const token = await generateTestToken(testUser.id);
+
+      const meResponse = await server.inject({
+        method: 'GET',
+        url: '/api/v1/auth/me',
+        headers: {
+          cookie: `access_token=${token}`,
+        },
+      });
+
+      expect(meResponse.statusCode).toBe(HTTP_STATUS.OK);
+      expect(meResponse.headers['x-access-token']).toBeTruthy();
+
+      const body = JSON.parse(meResponse.body);
+      expect(body.id).toBe(testUser.id);
+      expect(body.email).toBe(testUser.email);
+    });
   });
 
   describe('POST /api/v1/auth/logout', () => {
