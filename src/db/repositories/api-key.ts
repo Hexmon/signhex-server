@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import crypto from 'crypto';
 import { getDatabase, schema } from '@/db';
 
@@ -57,9 +57,12 @@ export class ApiKeyRepository {
       .limit(limit)
       .offset(offset);
 
-    const total = await db.select().from(schema.apiKeys).where(where as any);
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.apiKeys)
+      .where(where as any);
 
-    return { items, total: total.length, page, limit };
+    return { items, total: Number(totalRow?.count || 0), page, limit };
   }
 
   async findById(id: string) {

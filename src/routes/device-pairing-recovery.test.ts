@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import { randomUUID } from 'crypto';
+import forge from 'node-forge';
 import { eq } from 'drizzle-orm';
 import { createTestServer, closeTestServer, testUser } from '@/test/helpers';
 import { getDatabase, schema } from '@/db';
@@ -10,8 +11,12 @@ import { HTTP_STATUS } from '@/http-status-codes';
 import * as s3 from '@/s3';
 
 function buildCsrWithDeviceId(deviceId: string) {
-  const content = Buffer.from(`CN=${deviceId}`).toString('base64');
-  return `-----BEGIN CERTIFICATE REQUEST-----\n${content}\n-----END CERTIFICATE REQUEST-----`;
+  const keyPair = forge.pki.rsa.generateKeyPair(2048);
+  const csr = forge.pki.createCertificationRequest();
+  csr.publicKey = keyPair.publicKey;
+  csr.setSubject([{ name: 'commonName', value: deviceId }]);
+  csr.sign(keyPair.privateKey, forge.md.sha256.create());
+  return forge.pki.certificationRequestToPem(csr);
 }
 
 async function issueAdminToken() {
@@ -137,6 +142,8 @@ describe('Device pairing in-place recovery', () => {
     expect(revokedOld?.revoked_at).toBeTruthy();
     expect(revokedOld?.is_revoked).toBe(true);
     expect(activeNew?.revoked_at ?? null).toBeNull();
+    expect(activeNew?.public_key_pem).toContain('BEGIN PUBLIC KEY');
+    expect(activeNew?.auth_version).toBe('signature_v1');
 
     const oldHeartbeat = await server.inject({
       method: 'POST',

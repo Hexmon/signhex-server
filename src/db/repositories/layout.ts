@@ -60,17 +60,16 @@ export class LayoutRepository {
       query = query.where(whereClause) as any;
     }
 
-    let totalQuery = db.select().from(schema.layouts);
-    if (whereClause) {
-      totalQuery = totalQuery.where(whereClause) as any;
-    }
-    const total = await totalQuery;
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.layouts)
+      .where(whereClause);
 
     const items = await query.orderBy(desc(schema.layouts.created_at)).limit(limit).offset(offset);
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };

@@ -6,6 +6,7 @@ import { createServer } from '@/server';
 import { createLogger } from '@/utils/logger';
 import { validateRuntimeDependencies } from '@/utils/runtime-dependencies';
 import { type ProcessRole } from '@/runtime/process-role';
+import { clearQueuedScreenStateRefreshes } from '@/services/screen-state-refresh';
 
 const logger = createLogger('runtime-bootstrap');
 
@@ -74,6 +75,7 @@ export async function startRuntime(role: ProcessRole): Promise<RuntimeContext> {
 }
 
 export async function stopRuntime(context: RuntimeContext): Promise<void> {
+  clearQueuedScreenStateRefreshes();
   if (context.fastify) {
     await context.fastify.close();
   }

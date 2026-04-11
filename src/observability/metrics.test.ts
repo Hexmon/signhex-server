@@ -4,7 +4,11 @@ import {
   getObservabilityRegistry,
   observeJobProcessing,
   observeS3Operation,
+  recordDeviceAuthAttempt,
+  recordDeviceCommandClaim,
   recordJobEnqueue,
+  recordPairingCodeAllocation,
+  recordPairingCsrValidation,
   recordTelemetryIngest,
   resetObservabilityMetricsForTests,
 } from '@/observability/metrics';
@@ -44,6 +48,50 @@ describe('backend observability instrumentation', () => {
     expect(output).toContain('signhex_server_device_heartbeats_received_total{status="ONLINE",result="success",persist_mode="queue"} 1');
     expect(output).toContain('signhex_server_job_processing_total{queue="telemetry:heartbeat",result="success"} 1');
     expect(output).toContain('signhex_server_s3_operations_total{operation="put_object",result="success"} 1');
+  });
+
+  it('records runtime hardening metrics for pairing, auth, and command claim paths', async () => {
+    recordPairingCodeAllocation('device_request', 'collision_retry');
+    recordPairingCodeAllocation('device_request', 'success');
+    recordPairingCsrValidation('rejected', 'weak_rsa_key');
+    recordPairingCsrValidation('accepted', 'valid');
+    recordDeviceAuthAttempt({
+      configuredMode: 'dual',
+      authMethod: 'signature',
+      result: 'success',
+      reason: 'authorized',
+    });
+    recordDeviceAuthAttempt({
+      configuredMode: 'signature',
+      authMethod: 'signature',
+      result: 'failure',
+      reason: 'missing_device_signature',
+    });
+    recordDeviceCommandClaim('heartbeat', 3);
+    recordDeviceCommandClaim('poll', 1);
+
+    const output = await getObservabilityRegistry().metrics();
+
+    expect(output).toContain(
+      'signhex_server_device_pairing_code_allocations_total{mode="device_request",result="collision_retry"} 1'
+    );
+    expect(output).toContain(
+      'signhex_server_device_pairing_code_allocations_total{mode="device_request",result="success"} 1'
+    );
+    expect(output).toContain(
+      'signhex_server_device_pairing_csr_validation_total{result="rejected",reason="weak_rsa_key"} 1'
+    );
+    expect(output).toContain(
+      'signhex_server_device_pairing_csr_validation_total{result="accepted",reason="valid"} 1'
+    );
+    expect(output).toContain(
+      'signhex_server_device_auth_total{configured_mode="dual",auth_method="signature",result="success",reason="authorized"} 1'
+    );
+    expect(output).toContain(
+      'signhex_server_device_auth_total{configured_mode="signature",auth_method="signature",result="failure",reason="missing_device_signature"} 1'
+    );
+    expect(output).toContain('signhex_server_device_commands_claimed_total{source="heartbeat"} 3');
+    expect(output).toContain('signhex_server_device_commands_claimed_total{source="poll"} 1');
   });
 
   it('exposes a Prometheus scrape endpoint and preserves route templates', async () => {

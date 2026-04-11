@@ -26,6 +26,10 @@ export interface ProofOfPlayTelemetryJob {
   deviceId: string;
   mediaId: string;
   scheduleId: string;
+  playbackInstanceId: string;
+  sceneId?: string | null;
+  slotId?: string | null;
+  itemId?: string | null;
   startTime: string;
   endTime: string;
   duration: number;
@@ -39,6 +43,7 @@ export interface ScreenshotTelemetryJob {
   deviceId: string;
   timestamp: string;
   imageData: string;
+  mimeType?: string;
   objectKey: string;
   storageObjectId: string;
 }
@@ -52,15 +57,23 @@ export function buildHeartbeatObjectKey(deviceId: string, receivedAt: string, pa
   return `heartbeats/${deviceId}/${stamp}-${hashSuffix(JSON.stringify(payload))}.json`;
 }
 
-export function buildScreenshotObjectKey(deviceId: string, timestamp: string, storageObjectId: string) {
+export function buildScreenshotObjectKey(
+  deviceId: string,
+  timestamp: string,
+  storageObjectId: string,
+  mimeType: string = 'image/png'
+) {
   const stamp = Date.parse(timestamp) || Date.now();
-  return `device-screenshots/${deviceId}/${stamp}-${storageObjectId}.png`;
+  const extension =
+    mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+  return `device-screenshots/${deviceId}/${stamp}-${storageObjectId}.${extension}`;
 }
 
 export function buildProofOfPlayIdempotencyKey(input: {
   deviceId: string;
   mediaId: string;
   scheduleId: string;
+  playbackInstanceId?: string | null;
   startTime: string;
   endTime: string;
   duration: number;
@@ -72,6 +85,7 @@ export function buildProofOfPlayIdempotencyKey(input: {
         input.deviceId,
         input.mediaId,
         input.scheduleId,
+        input.playbackInstanceId ?? '',
         input.startTime,
         input.endTime,
         String(input.duration),
@@ -154,6 +168,10 @@ export async function processProofOfPlayTelemetry(job: ProofOfPlayTelemetryJob) 
     device_id: job.deviceId,
     media_id: job.mediaId,
     schedule_id: job.scheduleId,
+    playback_instance_id: job.playbackInstanceId,
+    scene_id: job.sceneId ?? null,
+    slot_id: job.slotId ?? null,
+    item_id: job.itemId ?? null,
     start_time: job.startTime,
     end_time: job.endTime,
     duration: job.duration,
@@ -198,6 +216,11 @@ export async function processProofOfPlayTelemetry(job: ProofOfPlayTelemetryJob) 
       screen_id: job.deviceId,
       media_id: job.mediaId,
       presentation_id: job.scheduleId,
+      schedule_id: job.scheduleId,
+      scene_id: job.sceneId ?? null,
+      slot_id: job.slotId ?? null,
+      item_id: job.itemId ?? null,
+      playback_instance_id: job.playbackInstanceId,
       started_at: new Date(job.startTime),
       ended_at: new Date(job.endTime),
       storage_object_id: storageObjectId,
@@ -229,7 +252,8 @@ export async function processScreenshotTelemetry(job: ScreenshotTelemetryJob) {
   }
 
   const imageBuffer = Buffer.from(job.imageData, 'base64');
-  const upload = await putObject(SCREENSHOT_BUCKET, job.objectKey, imageBuffer, 'image/png');
+  const contentType = job.mimeType === 'image/jpeg' || job.mimeType === 'image/webp' ? job.mimeType : 'image/png';
+  const upload = await putObject(SCREENSHOT_BUCKET, job.objectKey, imageBuffer, contentType);
   const [existingStorageObject] = await db
     .select({ id: schema.storageObjects.id })
     .from(schema.storageObjects)
@@ -242,7 +266,7 @@ export async function processScreenshotTelemetry(job: ScreenshotTelemetryJob) {
       .set({
         bucket: SCREENSHOT_BUCKET,
         object_key: job.objectKey,
-        content_type: 'image/png',
+        content_type: contentType,
         size: imageBuffer.length,
         sha256: upload.sha256,
       })
@@ -252,7 +276,7 @@ export async function processScreenshotTelemetry(job: ScreenshotTelemetryJob) {
       id: job.storageObjectId,
       bucket: SCREENSHOT_BUCKET,
       object_key: job.objectKey,
-      content_type: 'image/png',
+      content_type: contentType,
       size: imageBuffer.length,
       sha256: upload.sha256,
     });

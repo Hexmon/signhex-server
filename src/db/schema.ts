@@ -317,6 +317,8 @@ export const screens = pgTable(
     last_heartbeat_at: timestamp('last_heartbeat_at'),
     current_schedule_id: uuid('current_schedule_id'),
     current_media_id: uuid('current_media_id'),
+    current_scene_id: text('current_scene_id'),
+    active_slots: jsonb('active_slots').notNull().default(sql`'[]'::jsonb`),
     screenshot_interval_seconds: integer('screenshot_interval_seconds'),
     screenshot_enabled: boolean('screenshot_enabled').notNull().default(false),
     created_at: timestamp('created_at').notNull().defaultNow(),
@@ -326,6 +328,7 @@ export const screens = pgTable(
     statusIdx: index('screens_status_idx').on(table.status),
     currentScheduleIdx: index('screens_current_schedule_idx').on(table.current_schedule_id),
     currentMediaIdx: index('screens_current_media_idx').on(table.current_media_id),
+    currentSceneIdx: index('screens_current_scene_idx').on(table.current_scene_id),
   })
 );
 
@@ -446,6 +449,8 @@ export const deviceCertificates = pgTable(
     screen_id: uuid('screen_id').notNull(),
     serial: varchar('serial', { length: 255 }).notNull().unique(),
     certificate_pem: text('certificate_pem').notNull(),
+    public_key_pem: text('public_key_pem'),
+    auth_version: varchar('auth_version', { length: 32 }).notNull().default('legacy'),
     is_revoked: boolean('is_revoked').notNull().default(false),
     expires_at: timestamp('expires_at').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
@@ -467,6 +472,10 @@ export const deviceCommands = pgTable(
     type: commandTypeEnum('type').notNull(),
     status: commandStatusEnum('status').notNull().default('PENDING'),
     payload: jsonb('payload'),
+    delivery_token: uuid('delivery_token'),
+    claimed_at: timestamp('claimed_at'),
+    acknowledged_at: timestamp('acknowledged_at'),
+    delivery_attempts: integer('delivery_attempts').notNull().default(0),
     created_by: uuid('created_by').notNull(),
     created_at: timestamp('created_at').notNull().defaultNow(),
     updated_at: timestamp('updated_at').notNull().defaultNow(),
@@ -474,6 +483,8 @@ export const deviceCommands = pgTable(
   (table) => ({
     screenIdIdx: index('device_commands_screen_id_idx').on(table.screen_id),
     statusIdx: index('device_commands_status_idx').on(table.status),
+    deliveryTokenIdx: index('device_commands_delivery_token_idx').on(table.delivery_token),
+    claimStateIdx: index('device_commands_claim_state_idx').on(table.screen_id, table.status, table.claimed_at),
   })
 );
 
@@ -502,6 +513,11 @@ export const proofOfPlay = pgTable(
     screen_id: uuid('screen_id').notNull(),
     media_id: uuid('media_id'),
     presentation_id: uuid('presentation_id'),
+    schedule_id: uuid('schedule_id'),
+    scene_id: text('scene_id'),
+    slot_id: varchar('slot_id', { length: 255 }),
+    item_id: text('item_id'),
+    playback_instance_id: uuid('playback_instance_id'),
     started_at: timestamp('started_at').notNull(),
     ended_at: timestamp('ended_at'),
     storage_object_id: uuid('storage_object_id'),
@@ -511,6 +527,8 @@ export const proofOfPlay = pgTable(
   (table) => ({
     screenIdIdx: index('proof_of_play_screen_id_idx').on(table.screen_id),
     createdAtIdx: index('proof_of_play_created_at_idx').on(table.created_at),
+    playbackInstanceIdx: index('proof_of_play_playback_instance_idx').on(table.playback_instance_id),
+    scheduleIdx: index('proof_of_play_schedule_id_idx').on(table.schedule_id),
     idempotencyIdx: uniqueIndex('proof_of_play_idempotency_key_idx').on(table.idempotency_key),
   })
 );
@@ -1110,22 +1128,30 @@ export const publishTargets = pgTable(
 );
 
 // Device pairings (for backward compatibility with repositories)
-export const devicePairings = pgTable('device_pairings', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  device_id: uuid('device_id'),
-  pairing_code: varchar('pairing_code', { length: 255 }).notNull(),
-  used: boolean('used').notNull().default(false),
-  used_at: timestamp('used_at'),
-  expires_at: timestamp('expires_at').notNull(),
-  width: integer('width'),
-  height: integer('height'),
-  aspect_ratio: varchar('aspect_ratio', { length: 50 }),
-  orientation: varchar('orientation', { length: 50 }),
-  model: varchar('model', { length: 255 }),
-  codecs: varchar('codecs', { length: 255 }).array(),
-  device_info: jsonb('device_info'),
-  created_at: timestamp('created_at').notNull().defaultNow(),
-});
+export const devicePairings = pgTable(
+  'device_pairings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    device_id: uuid('device_id'),
+    pairing_code: varchar('pairing_code', { length: 255 }).notNull(),
+    used: boolean('used').notNull().default(false),
+    used_at: timestamp('used_at'),
+    expires_at: timestamp('expires_at').notNull(),
+    width: integer('width'),
+    height: integer('height'),
+    aspect_ratio: varchar('aspect_ratio', { length: 50 }),
+    orientation: varchar('orientation', { length: 50 }),
+    model: varchar('model', { length: 255 }),
+    codecs: varchar('codecs', { length: 255 }).array(),
+    device_info: jsonb('device_info'),
+    created_at: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    activeCodeIdx: uniqueIndex('device_pairings_active_code_idx')
+      .on(table.pairing_code)
+      .where(sql`${table.used} = false`),
+  })
+);
 
 // Emergencies (for backward compatibility with repositories)
 export const emergencies = pgTable('emergencies', {

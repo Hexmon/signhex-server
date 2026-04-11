@@ -83,6 +83,7 @@ export const apiEndpoints = {
   screens: {
     create: withBase('/screens'),
     list: withBase('/screens'),
+    summary: withBase('/screens/summary'),
     aspectRatios: withBase('/screens/aspect-ratios'),
     overview: withBase('/screens/overview'),
     scheduleTimeline: withBase('/screens/schedule-timeline'),

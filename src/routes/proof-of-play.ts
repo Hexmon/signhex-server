@@ -8,12 +8,10 @@ import { createLogger } from '@/utils/logger';
 import { stringify } from 'csv-stringify/sync';
 import { getPresignedUrl } from '@/s3';
 import { apiEndpoints } from '@/config/apiEndpoints';
-import { HTTP_STATUS } from '@/http-status-codes';
 import { respondWithError } from '@/utils/errors';
 import { AppError } from '@/utils/app-error';
 
 const logger = createLogger('proof-of-play-routes');
-const { BAD_REQUEST, FORBIDDEN, UNAUTHORIZED } = HTTP_STATUS;
 
 const listSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
@@ -122,7 +120,10 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
           .limit(limit)
           .offset(offset);
 
-        const total = await db.select().from(schema.proofOfPlay).where(where as any);
+        const [total] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.proofOfPlay)
+          .where(where as any);
 
         let enriched = items;
         if (query.include_url === 'true') {
@@ -145,7 +146,7 @@ export async function proofOfPlayRoutes(fastify: FastifyInstance) {
 
         return reply.send({
           items: enriched,
-          pagination: { page, limit, total: total.length },
+          pagination: { page, limit, total: Number(total?.count ?? 0) },
         });
       } catch (error) {
         logger.error(error, 'List proof-of-play error');

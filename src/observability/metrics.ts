@@ -6,6 +6,7 @@ import { getDatabasePool } from '@/db';
 const registry = new Registry();
 
 const OBSERVED_QUEUE_NAMES = [
+  'playback:refresh-dispatch',
   'telemetry:heartbeat',
   'telemetry:proof-of-play',
   'telemetry:screenshot',
@@ -25,6 +26,22 @@ const FLEET_STATES = ['ACTIVE', 'INACTIVE', 'OFFLINE'] as const;
 
 type TelemetryType = 'heartbeat' | 'proof_of_play' | 'screenshot';
 type TelemetryPersistMode = 'queue' | 'inline' | 'fallback';
+type PairingCodeMode = 'device_request' | 'recovery';
+type PairingCodeAllocationResult = 'success' | 'collision_retry' | 'exhausted';
+type PairingCsrValidationResult = 'accepted' | 'rejected';
+type PairingCsrValidationReason =
+  | 'valid'
+  | 'invalid_format'
+  | 'verification_failed'
+  | 'missing_public_key'
+  | 'missing_common_name'
+  | 'weak_rsa_key'
+  | 'device_mismatch'
+  | 'unknown';
+type DeviceAuthMode = 'legacy' | 'dual' | 'signature';
+type DeviceAuthMethod = 'legacy_serial' | 'signature' | 'user_token' | 'missing_identity';
+type DeviceAuthResult = 'success' | 'failure';
+type DeviceCommandClaimSource = 'heartbeat' | 'poll';
 
 type JobResult = 'success' | 'error';
 
@@ -74,6 +91,34 @@ const heartbeatCounter = new Counter({
   name: 'signhex_server_device_heartbeats_received_total',
   help: 'Heartbeat payloads received by the backend.',
   labelNames: ['status', 'result', 'persist_mode'],
+  registers: [registry],
+});
+
+const pairingCodeAllocationCounter = new Counter({
+  name: 'signhex_server_device_pairing_code_allocations_total',
+  help: 'Device pairing code allocation attempts and retries by flow.',
+  labelNames: ['mode', 'result'],
+  registers: [registry],
+});
+
+const pairingCsrValidationCounter = new Counter({
+  name: 'signhex_server_device_pairing_csr_validation_total',
+  help: 'CSR validation outcomes during device pairing completion.',
+  labelNames: ['result', 'reason'],
+  registers: [registry],
+});
+
+const deviceAuthCounter = new Counter({
+  name: 'signhex_server_device_auth_total',
+  help: 'Device authentication outcomes by configured auth mode and request auth method.',
+  labelNames: ['configured_mode', 'auth_method', 'result', 'reason'],
+  registers: [registry],
+});
+
+const deviceCommandClaimCounter = new Counter({
+  name: 'signhex_server_device_commands_claimed_total',
+  help: 'Device commands claimed for delivery by source.',
+  labelNames: ['source'],
   registers: [registry],
 });
 
@@ -379,6 +424,45 @@ export function recordTelemetryIngest(params: {
         result: params.result,
         persist_mode: params.persistMode,
       });
+    }
+  });
+}
+
+export function recordPairingCodeAllocation(mode: PairingCodeMode, result: PairingCodeAllocationResult) {
+  safeRecord(() => {
+    pairingCodeAllocationCounter.inc({ mode, result });
+  });
+}
+
+export function recordPairingCsrValidation(
+  result: PairingCsrValidationResult,
+  reason: PairingCsrValidationReason
+) {
+  safeRecord(() => {
+    pairingCsrValidationCounter.inc({ result, reason });
+  });
+}
+
+export function recordDeviceAuthAttempt(params: {
+  configuredMode: DeviceAuthMode;
+  authMethod: DeviceAuthMethod;
+  result: DeviceAuthResult;
+  reason: string;
+}) {
+  safeRecord(() => {
+    deviceAuthCounter.inc({
+      configured_mode: params.configuredMode,
+      auth_method: params.authMethod,
+      result: params.result,
+      reason: params.reason,
+    });
+  });
+}
+
+export function recordDeviceCommandClaim(source: DeviceCommandClaimSource, count: number) {
+  safeRecord(() => {
+    if (count > 0) {
+      deviceCommandClaimCounter.inc({ source }, count);
     }
   });
 }

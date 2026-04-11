@@ -48,6 +48,44 @@ type BuildScreenPlaybackStateOptions = {
   includeUrls?: boolean;
   groupIds?: string[];
   lastProofOfPlayAt?: string | null;
+  recoveryState?: ScreenRecoveryState;
+};
+
+export type ScreenRecoveryState = {
+  active_pairing: {
+    id?: string;
+    created_at?: string | null;
+    expires_at?: string | null;
+    confirmed?: boolean;
+    mode?: string | null;
+  } | null;
+  auth_diagnostics: {
+    state: 'VALID' | 'MISSING_CERTIFICATE' | 'EXPIRED_CERTIFICATE' | 'REVOKED_CERTIFICATE';
+    reason: string;
+    latest_certificate_expires_at: string | null;
+    latest_certificate_revoked_at: string | null;
+    latest_certificate_serial: string | null;
+  };
+};
+
+export type ScreenFleetSummary = {
+  server_time: string;
+  total: number;
+  online: number;
+  recovery: number;
+  stale: number;
+  offline: number;
+  error: number;
+};
+
+export type ActiveSlotPlaybackState = {
+  scene_id: string;
+  slot_id: string;
+  item_id: string;
+  media_id: string | null;
+  schedule_id?: string | null;
+  playback_instance_id: string;
+  started_at: string;
 };
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -181,6 +219,42 @@ function dedupeScheduleItemMedia(items: ScreenPlaybackItemMediaSummary[]): Scree
   }
 
   return deduped;
+}
+
+function normalizeActiveSlots(value: unknown): ActiveSlotPlaybackState[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: ActiveSlotPlaybackState[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+
+    const slot = entry as Record<string, unknown>;
+    if (
+      typeof slot.scene_id !== 'string' ||
+      typeof slot.slot_id !== 'string' ||
+      typeof slot.item_id !== 'string' ||
+      typeof slot.playback_instance_id !== 'string' ||
+      typeof slot.started_at !== 'string'
+    ) {
+      continue;
+    }
+
+    normalized.push({
+      scene_id: slot.scene_id,
+      slot_id: slot.slot_id,
+      item_id: slot.item_id,
+      media_id: typeof slot.media_id === 'string' ? slot.media_id : null,
+      schedule_id: typeof slot.schedule_id === 'string' ? slot.schedule_id : null,
+      playback_instance_id: slot.playback_instance_id,
+      started_at: slot.started_at,
+    });
+  }
+
+  return normalized;
 }
 
 export function buildScheduleItemSummary(item: any): ScreenPlaybackItemSummary {
@@ -423,11 +497,6 @@ export async function getActiveEmergencyForScreen(
   };
 }
 
-async function getMediaById(id: string, db = getDatabase()) {
-  const [media] = await db.select().from(schema.media).where(eq(schema.media.id, id)).limit(1);
-  return media || null;
-}
-
 async function getMediaSummary(id: string, db = getDatabase()) {
   return await buildResolvedMediaRecord(id, db);
 }
@@ -472,39 +541,27 @@ export async function getLatestScreenshotPreview(
   };
 }
 
-async function getScreenRecoveryState(screenId: string, db = getDatabase()) {
-  const [activePairing] = await db
-    .select({
-      id: schema.devicePairings.id,
-      created_at: schema.devicePairings.created_at,
-      expires_at: schema.devicePairings.expires_at,
-      device_info: schema.devicePairings.device_info,
-    })
-    .from(schema.devicePairings)
-    .where(
-      and(
-        eq(schema.devicePairings.device_id, screenId),
-        eq(schema.devicePairings.used, false),
-        gt(schema.devicePairings.expires_at, new Date())
-      )
-    )
-    .orderBy(desc(schema.devicePairings.created_at))
-    .limit(1);
-
-  const [latestCertificate] = await db
-    .select({
-      id: schema.deviceCertificates.id,
-      serial: schema.deviceCertificates.serial,
-      expires_at: schema.deviceCertificates.expires_at,
-      revoked_at: schema.deviceCertificates.revoked_at,
-      is_revoked: schema.deviceCertificates.is_revoked,
-      created_at: schema.deviceCertificates.created_at,
-    })
-    .from(schema.deviceCertificates)
-    .where(eq(schema.deviceCertificates.screen_id, screenId))
-    .orderBy(desc(schema.deviceCertificates.created_at))
-    .limit(1);
-
+function buildScreenRecoveryState(
+  activePairing:
+    | {
+        id: string;
+        created_at: Date;
+        expires_at: Date;
+        device_info: unknown;
+      }
+    | null
+    | undefined,
+  latestCertificate:
+    | {
+        serial: string;
+        expires_at: Date;
+        revoked_at: Date | null;
+        is_revoked: boolean;
+      }
+    | null
+    | undefined,
+  now = new Date()
+): ScreenRecoveryState {
   const pairingInfo = ((activePairing?.device_info as Record<string, unknown> | null) || {}) as Record<string, any>;
   const pairingMeta = (pairingInfo?.pairing || {}) as Record<string, any>;
   const activePairingMode =
@@ -529,7 +586,7 @@ async function getScreenRecoveryState(screenId: string, db = getDatabase()) {
   } else if (latestCertificate.is_revoked || latestCertificate.revoked_at) {
     authState = 'REVOKED_CERTIFICATE';
     authReason = 'The latest device certificate has been revoked.';
-  } else if (latestCertificate.expires_at && latestCertificate.expires_at.getTime() <= Date.now()) {
+  } else if (latestCertificate.expires_at && latestCertificate.expires_at.getTime() <= now.getTime()) {
     authState = 'EXPIRED_CERTIFICATE';
     authReason = 'The latest device certificate has expired.';
   }
@@ -544,6 +601,86 @@ async function getScreenRecoveryState(screenId: string, db = getDatabase()) {
       latest_certificate_serial: latestCertificate?.serial ?? null,
     },
   };
+}
+
+export async function buildScreenRecoveryStateMap(
+  screenIds: string[],
+  db = getDatabase(),
+  now = new Date()
+): Promise<Map<string, ScreenRecoveryState>> {
+  if (screenIds.length === 0) {
+    return new Map();
+  }
+
+  const activePairings = await db
+    .select({
+      id: schema.devicePairings.id,
+      device_id: schema.devicePairings.device_id,
+      created_at: schema.devicePairings.created_at,
+      expires_at: schema.devicePairings.expires_at,
+      device_info: schema.devicePairings.device_info,
+    })
+    .from(schema.devicePairings)
+    .where(
+      and(
+        inArray(schema.devicePairings.device_id, screenIds as any),
+        eq(schema.devicePairings.used, false),
+        gt(schema.devicePairings.expires_at, now)
+      )
+    )
+    .orderBy(desc(schema.devicePairings.created_at));
+
+  const latestCertificates = await db
+    .select({
+      screen_id: schema.deviceCertificates.screen_id,
+      serial: schema.deviceCertificates.serial,
+      expires_at: schema.deviceCertificates.expires_at,
+      revoked_at: schema.deviceCertificates.revoked_at,
+      is_revoked: schema.deviceCertificates.is_revoked,
+      created_at: schema.deviceCertificates.created_at,
+    })
+    .from(schema.deviceCertificates)
+    .where(inArray(schema.deviceCertificates.screen_id, screenIds as any))
+    .orderBy(desc(schema.deviceCertificates.created_at));
+
+  const activePairingByScreenId = new Map<string, (typeof activePairings)[number]>();
+  for (const pairing of activePairings) {
+    if (!pairing.device_id || activePairingByScreenId.has(pairing.device_id)) continue;
+    activePairingByScreenId.set(pairing.device_id, pairing);
+  }
+
+  const latestCertificateByScreenId = new Map<string, (typeof latestCertificates)[number]>();
+  for (const certificate of latestCertificates) {
+    if (latestCertificateByScreenId.has(certificate.screen_id)) continue;
+    latestCertificateByScreenId.set(certificate.screen_id, certificate);
+  }
+
+  return new Map(
+    screenIds.map((screenId) => [
+      screenId,
+      buildScreenRecoveryState(
+        activePairingByScreenId.get(screenId),
+        latestCertificateByScreenId.get(screenId),
+        now
+      ),
+    ])
+  );
+}
+
+async function getScreenRecoveryState(screenId: string, db = getDatabase(), now = new Date()) {
+  const recoveryStateMap = await buildScreenRecoveryStateMap([screenId], db, now);
+  return (
+    recoveryStateMap.get(screenId) ?? {
+      active_pairing: null,
+      auth_diagnostics: {
+        state: 'MISSING_CERTIFICATE',
+        reason: 'No device certificate exists for this screen.',
+        latest_certificate_expires_at: null,
+        latest_certificate_revoked_at: null,
+        latest_certificate_serial: null,
+      },
+    }
+  );
 }
 
 function deriveHealthState(params: {
@@ -634,6 +771,7 @@ function derivePlaybackState(params: {
   lastProofOfPlayAt?: string | null;
   includeMedia?: boolean;
   currentMedia?: Record<string, unknown> | null;
+  activeSlots: ActiveSlotPlaybackState[];
 }): Record<string, unknown> {
   const fallbackItem =
     params.activeItems.find((item) => params.currentMediaId && itemIncludesMediaId(item, params.currentMediaId)) ??
@@ -646,32 +784,40 @@ function derivePlaybackState(params: {
 
   const resolvedCurrentMediaId =
     params.emergency?.media_id ??
+    params.activeSlots[0]?.media_id ??
     params.reportedHeartbeatMediaId ??
     fallbackMediaIdFromItem ??
     params.defaultMedia?.media_id ??
     null;
 
   const reportedHeartbeatScheduleId = params.screen.current_schedule_id ?? null;
+  const reportedHeartbeatSceneId =
+    params.activeSlots[0]?.scene_id ??
+    (typeof (params.screen as any).current_scene_id === 'string' ? String((params.screen as any).current_scene_id) : null);
   let source: PlaybackSource = 'UNKNOWN';
   if (params.emergency?.media_id) source = 'EMERGENCY';
-  else if (params.reportedHeartbeatMediaId || reportedHeartbeatScheduleId) source = 'HEARTBEAT';
+  else if (params.activeSlots.length > 0 || params.reportedHeartbeatMediaId || reportedHeartbeatScheduleId) source = 'HEARTBEAT';
   else if (fallbackItem) source = 'SCHEDULE';
   else if (params.defaultMedia?.media_id) source = 'DEFAULT';
 
   let playbackScheduleId: string | null = null;
   if (source === 'HEARTBEAT') {
-    playbackScheduleId = reportedHeartbeatScheduleId ?? params.latest?.schedule_id ?? null;
+    playbackScheduleId = params.activeSlots[0]?.schedule_id ?? reportedHeartbeatScheduleId ?? params.latest?.schedule_id ?? null;
   } else if (source === 'SCHEDULE') {
     playbackScheduleId = params.latest?.schedule_id ?? null;
   }
+
+  const primaryActiveSlot = params.activeSlots[0] ?? null;
 
   const playback: Record<string, unknown> = {
     source,
     is_live: Boolean(resolvedCurrentMediaId || fallbackItem || params.emergency || params.defaultMedia?.media_id),
     current_media_id: resolvedCurrentMediaId,
     current_schedule_id: playbackScheduleId,
-    current_item_id: fallbackItem?.id ?? null,
-    started_at: toIso(fallbackItem?.start_at),
+    current_scene_id: reportedHeartbeatSceneId,
+    active_slots: params.activeSlots,
+    current_item_id: primaryActiveSlot?.item_id ?? fallbackItem?.id ?? null,
+    started_at: primaryActiveSlot?.started_at ?? toIso(fallbackItem?.start_at),
     ends_at: toIso(fallbackItem?.end_at),
     heartbeat_received_at: toIso(params.screen.last_heartbeat_at),
     last_proof_of_play_at: params.lastProofOfPlayAt ?? null,
@@ -701,17 +847,19 @@ export async function buildScreenPlaybackState(
     includeUrls: options.includeUrls,
     groupIds,
   });
+  const activeSlots = normalizeActiveSlots((screen as any).active_slots);
   const currentMediaId =
     emergency?.media_id ??
+    activeSlots[0]?.media_id ??
     screen.current_media_id ??
     pickPrimaryMediaIdFromPresentation(activeItems[0]?.presentation) ??
     defaultMedia?.media_id ??
     null;
-  const reportedHeartbeatMediaId = emergency?.media_id ?? screen.current_media_id ?? null;
+  const reportedHeartbeatMediaId = emergency?.media_id ?? activeSlots[0]?.media_id ?? screen.current_media_id ?? null;
   const currentMedia =
     options.includeMedia && currentMediaId ? await getMediaSummary(currentMediaId, db) : null;
   const preview = options.includePreview ? await getLatestScreenshotPreview(screen.id, { db, now }) : null;
-  const recoveryState = await getScreenRecoveryState(screen.id, db);
+  const recoveryState = options.recoveryState ?? (await getScreenRecoveryState(screen.id, db, now));
   const health = deriveHealthState({
     screen,
     authDiagnostics: recoveryState.auth_diagnostics,
@@ -736,6 +884,8 @@ export async function buildScreenPlaybackState(
     last_heartbeat_at: toIso(screen.last_heartbeat_at),
     current_schedule_id: screen.current_schedule_id ?? null,
     current_media_id: screen.current_media_id ?? null,
+    current_scene_id: typeof (screen as any).current_scene_id === 'string' ? String((screen as any).current_scene_id) : null,
+    active_slots: activeSlots,
     active_items: activeItems,
     upcoming_items: upcomingItems,
     booked_until: bookedUntil,
@@ -775,6 +925,7 @@ export async function buildScreenPlaybackState(
       lastProofOfPlayAt: options.lastProofOfPlayAt ?? null,
       includeMedia: options.includeMedia,
       currentMedia,
+      activeSlots,
     }),
     emergency,
     preview,
@@ -797,7 +948,7 @@ function dedupeItems(items: any[]) {
   return result.sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
 }
 
-function summarizeGroupPlayback(
+export function summarizeGroupPlayback(
   group: ScreenGroupRecord,
   memberIds: string[],
   screenSummaries: Map<string, Awaited<ReturnType<typeof buildScreenPlaybackState>>>
@@ -885,6 +1036,69 @@ export async function buildScreensOverviewPayload(options: {
     screens: screenSummaries,
     groups: await groupSummaries,
   };
+}
+
+export async function buildScreensFleetSummary(options: {
+  db?: ReturnType<typeof getDatabase>;
+  now?: Date;
+} = {}): Promise<ScreenFleetSummary> {
+  const db = options.db ?? getDatabase();
+  const now = options.now ?? new Date();
+  const screens = await db.select().from(schema.screens);
+  const recoveryStateMap = await buildScreenRecoveryStateMap(
+    screens.map((screen) => screen.id),
+    db,
+    now
+  );
+
+  const summary: ScreenFleetSummary = {
+    server_time: now.toISOString(),
+    total: screens.length,
+    online: 0,
+    recovery: 0,
+    stale: 0,
+    offline: 0,
+    error: 0,
+  };
+
+  for (const screen of screens) {
+    const recoveryState = recoveryStateMap.get(screen.id);
+    const health = deriveHealthState({
+      screen,
+      authDiagnostics:
+        recoveryState?.auth_diagnostics ?? {
+          state: 'MISSING_CERTIFICATE',
+          reason: 'No device certificate exists for this screen.',
+          latest_certificate_expires_at: null,
+          latest_certificate_revoked_at: null,
+          latest_certificate_serial: null,
+        },
+      activePairing: recoveryState?.active_pairing ?? null,
+      now,
+    });
+
+    switch (health.health_state) {
+      case 'ONLINE':
+        summary.online += 1;
+        break;
+      case 'RECOVERY_REQUIRED':
+        summary.recovery += 1;
+        break;
+      case 'STALE':
+        summary.stale += 1;
+        break;
+      case 'OFFLINE':
+        summary.offline += 1;
+        break;
+      case 'ERROR':
+        summary.error += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return summary;
 }
 
 export async function buildScreenPlaybackStateById(

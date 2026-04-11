@@ -1,4 +1,4 @@
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class RequestMessageRepository {
@@ -51,8 +51,8 @@ export class RequestMessageRepository {
     const limit = options.limit || 50;
     const offset = (page - 1) * limit;
 
-    const total = await db
-      .select()
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
       .from(schema.requestMessages)
       .where(eq(schema.requestMessages.request_id, requestId));
 
@@ -85,7 +85,7 @@ export class RequestMessageRepository {
         ...i,
         attachments: attachmentMap.get(i.id) || [],
       })),
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };

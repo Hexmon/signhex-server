@@ -1,26 +1,36 @@
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
+
+type DbExecutor = any;
+
+function resolveDb(executor?: DbExecutor) {
+  return executor ?? getDatabase();
+}
 
 export class DeviceCertificateRepository {
   async create(data: {
     device_id: string;
     certificate: string;
     private_key: string;
-    fingerprint: string;
+    serial: string;
     expires_at: Date;
-  }) {
-    const db = getDatabase();
+    public_key_pem?: string | null;
+    auth_version?: string | null;
+  }, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db.insert(schema.deviceCertificates).values({
       screen_id: data.device_id,
-      serial: data.fingerprint,
+      serial: data.serial,
       certificate_pem: data.certificate,
+      public_key_pem: data.public_key_pem ?? null,
+      auth_version: data.auth_version ?? 'legacy',
       expires_at: data.expires_at,
     }).returning();
     return result[0];
   }
 
-  async findByDeviceId(deviceId: string) {
-    const db = getDatabase();
+  async findByDeviceId(deviceId: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.deviceCertificates)
@@ -28,8 +38,8 @@ export class DeviceCertificateRepository {
     return result[0] || null;
   }
 
-  async listByDeviceId(deviceId: string) {
-    const db = getDatabase();
+  async listByDeviceId(deviceId: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     return await db
       .select()
       .from(schema.deviceCertificates)
@@ -37,8 +47,8 @@ export class DeviceCertificateRepository {
       .orderBy(desc(schema.deviceCertificates.created_at));
   }
 
-  async findLatestByDeviceId(deviceId: string) {
-    const db = getDatabase();
+  async findLatestByDeviceId(deviceId: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.deviceCertificates)
@@ -48,8 +58,8 @@ export class DeviceCertificateRepository {
     return result[0] || null;
   }
 
-  async findByFingerprint(fingerprint: string) {
-    const db = getDatabase();
+  async findByFingerprint(fingerprint: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.deviceCertificates)
@@ -66,7 +76,7 @@ export class DeviceCertificateRepository {
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    const total = await db.select().from(schema.deviceCertificates);
+    const total = await db.select({ count: sql<number>`count(*)` }).from(schema.deviceCertificates);
 
     const items = await db
       .select()
@@ -77,14 +87,14 @@ export class DeviceCertificateRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(total[0]?.count ?? 0),
       page,
       limit,
     };
   }
 
-  async revoke(id: string) {
-    const db = getDatabase();
+  async revoke(id: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .update(schema.deviceCertificates)
       .set({ is_revoked: true, revoked_at: new Date() })
@@ -93,8 +103,8 @@ export class DeviceCertificateRepository {
     return result[0] || null;
   }
 
-  async revokeByDeviceId(deviceId: string) {
-    const db = getDatabase();
+  async revokeByDeviceId(deviceId: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     return await db
       .update(schema.deviceCertificates)
       .set({ is_revoked: true, revoked_at: new Date() })
@@ -102,8 +112,8 @@ export class DeviceCertificateRepository {
       .returning();
   }
 
-  async findById(id: string) {
-    const db = getDatabase();
+  async findById(id: string, executor?: DbExecutor) {
+    const db = resolveDb(executor);
     const result = await db
       .select()
       .from(schema.deviceCertificates)

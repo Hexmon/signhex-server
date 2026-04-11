@@ -69,6 +69,47 @@ type RequestWithRefresh = FastifyRequest & {
   [REFRESHED_AUTH_KEY]?: RefreshedAuthState;
 };
 
+function getAccessTokenFromCookie(request: FastifyRequest) {
+  const cookieToken = request.cookies?.access_token;
+  if (typeof cookieToken !== 'string') return null;
+  const trimmed = cookieToken.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function hydrateAuthorizationHeaderFromCookie(request: FastifyRequest) {
+  if (request.headers.authorization) return;
+  const cookieToken = getAccessTokenFromCookie(request);
+  if (!cookieToken) return;
+  request.headers.authorization = `Bearer ${cookieToken}`;
+}
+
+async function refreshSessionFromRequestToken(request: FastifyRequest) {
+  if ((request as unknown as RequestWithRefresh)[REFRESHED_AUTH_KEY]) {
+    return;
+  }
+  if (hasObservabilityMetricsBearerAccess(request)) {
+    return;
+  }
+
+  const token = extractTokenFromHeader(request.headers.authorization);
+  if (!token) return;
+
+  const payload = await verifyAccessToken(token);
+  const sessionRepo = createSessionRepository();
+  const session = await sessionRepo.findByJti(payload.jti);
+  if (!session || session.user_id !== payload.sub || session.expires_at.getTime() <= Date.now()) {
+    throw AppError.unauthorized('Token has been revoked');
+  }
+
+  const expiresInSeconds = getIdleTimeoutSeconds();
+  const refreshed = await refreshAccessToken(payload, expiresInSeconds);
+  await sessionRepo.extendByJti(payload.jti, refreshed.expiresAt);
+  (request as unknown as RequestWithRefresh)[REFRESHED_AUTH_KEY] = {
+    token: refreshed.token,
+    expiresAt: refreshed.expiresAt,
+  };
+}
+
 function hasObservabilityMetricsBearerAccess(request: FastifyRequest) {
   const configuredToken = appConfig.OBSERVABILITY_METRICS_BEARER_TOKEN;
   if (!configuredToken) {
@@ -168,27 +209,7 @@ export async function createServer() {
   await registerObservabilityHttp(fastify);
 
   fastify.addHook('onRequest', async (request) => {
-    if (hasObservabilityMetricsBearerAccess(request)) {
-      return;
-    }
-
-    const token = extractTokenFromHeader(request.headers.authorization);
-    if (!token) return;
-
-    const payload = await verifyAccessToken(token);
-    const sessionRepo = createSessionRepository();
-    const session = await sessionRepo.findByJti(payload.jti);
-    if (!session || session.user_id !== payload.sub || session.expires_at.getTime() <= Date.now()) {
-      throw AppError.unauthorized('Token has been revoked');
-    }
-
-    const expiresInSeconds = getIdleTimeoutSeconds();
-    const refreshed = await refreshAccessToken(payload, expiresInSeconds);
-    await sessionRepo.extendByJti(payload.jti, refreshed.expiresAt);
-    (request as unknown as RequestWithRefresh)[REFRESHED_AUTH_KEY] = {
-      token: refreshed.token,
-      expiresAt: refreshed.expiresAt,
-    };
+    await refreshSessionFromRequestToken(request);
   });
 
   fastify.addHook('onSend', async (request, reply, payload) => {
@@ -249,6 +270,9 @@ export async function createServer() {
     if (appError.code === 'CA_CERT_MISSING') {
       request.log.warn({ path: appConfig.CA_CERT_PATH }, 'CA certificate missing');
     }
+    if (appError.code === 'CA_KEY_MISSING') {
+      request.log.warn({ path: appConfig.CA_KEY_PATH }, 'CA private key missing');
+    }
 
     let clientError = appError;
     if (appConfig.NODE_ENV === 'development' && appError.code === 'INTERNAL_ERROR') {
@@ -283,6 +307,11 @@ export async function createServer() {
   await fastify.register(fastifyCookie, {
     secret: appConfig.JWT_SECRET,
     hook: 'onRequest',
+  });
+
+  fastify.addHook('preHandler', async (request) => {
+    hydrateAuthorizationHeaderFromCookie(request);
+    await refreshSessionFromRequestToken(request);
   });
 
   const allowedOrigins = getHttpAllowedOrigins();

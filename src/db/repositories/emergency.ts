@@ -1,4 +1,4 @@
-import { eq, desc, isNull, and, or, gt } from 'drizzle-orm';
+import { eq, desc, isNull, and, or, gt, sql } from 'drizzle-orm';
 import { getDatabase, schema } from '@/db';
 
 export class EmergencyRepository {
@@ -74,7 +74,9 @@ export class EmergencyRepository {
     const limit = options.limit || 20;
     const offset = (page - 1) * limit;
 
-    const total = await db.select().from(schema.emergencies);
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.emergencies);
 
     const items = await db
       .select()
@@ -85,7 +87,7 @@ export class EmergencyRepository {
 
     return {
       items,
-      total: total.length,
+      total: Number(totalRow?.count || 0),
       page,
       limit,
     };
